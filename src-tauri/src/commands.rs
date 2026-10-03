@@ -870,6 +870,26 @@ pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)
     Ok(state(&app).webhook.pending())
 }
 
+// ─── memory reflector (condense oversized memory.md via headless claude) ────
+
+/// Manually condense one agent's memory.md — skips the trigger (on-demand);
+/// the full backup→summarize→rebuild→verify→swap pipeline still runs.
+#[tauri::command]
+pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let st = state(&app);
+    let settings = crate::reflect::ReflectSettings { enabled: true, ..Default::default() };
+    let hive_root = st.hive.root.clone();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let claude = match pty::resolve_program("claude", &path) {
+        Some(pty::Resolved::Exe(p)) | Some(pty::Resolved::Script(p)) => p.display().to_string(),
+        None => "claude".to_string(),
+    };
+    if let Some(id) = agent_id {
+        return Ok(vec![crate::reflect::condense_one(&hive_root, &id, &claude, &settings, true)]);
+    }
+    Ok(crate::reflect::reflect_scan(&hive_root, &claude, &settings))
+}
+
 // ─── git pane (read surface; safe_resolve confinement on the caller path) ──
 
 /// One git snapshot for the pane — is_repo? branch? counts? ahead/behind?

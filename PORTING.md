@@ -327,3 +327,34 @@ retry+backoff on index.lock).
   git pane read surface via git2 (branch/status/ahead-behind/log/
   unintegrated-work guard for worktree removal). Commands:
   git_snapshot/git_log. 63 tests green.
+- 2026-10-04 (31): reflect.rs — the memory janitor's CONDENSE half:
+  3-region parse (pinned/condensed/recent), merge+rebuild, the
+  verify-don't-trust gate (structure, size, pinned-line, recent
+  round-trip, not-smaller checks), framed <<<CONDENSED>>>/<<<HOIST>>>/
+  <<<END>>> summary protocol + legacy JSON path, headless `claude -p`
+  (Haiku, disallowedTools, 180s timeout), backup→summarize→rebuild→
+  verify→atomic-swap pipeline. Command: reflect_now. 66 tests green.
+
+## Remaining upstream surface (deliberately unported — external deps)
+
+- realtimeActions.ts + realtimeCompletionWatcher.ts — voice Michael
+  (OpenAI Realtime API sessions, realtimePricing). Requires a live
+  realtime session; the underlying rails it drives (dispatch, steer,
+  pause/halt/kill, schedules, task board) are ALL ported.
+- updater.ts + releaseDrop/releaseNotes/updateState — the GitHub-
+  releases self-updater. Tauri has its own updater plugin; wire at
+  release time (deviation, not omission).
+- analytics.ts — PostHog product analytics (outbound; TELEMETRY.md
+  opt-out). Deliberately not ported pending the same opt-in/out UX.
+- memory.ts — MemPalace CLI semantic memory. External tool dep;
+  memory.md append/janitor (reflect) are native.
+- integrationBroker.ts + shared/integrations.ts — per-agent integration
+  secret broker (Phase 2 foundation upstream).
+- hiddenClaude.ts — superseded: reflect.rs runs `claude -p` directly.
+- git.ts write half — worktree add/remove, diffs, commit file lists;
+  the read surface + unintegrated-work guard are ported (git_ops.rs).
+- nodeInstall.ts + cliInstall.ts — N/A: Tauri ships a native binary
+  (the porting win — no Node runtime to bootstrap).
+- shellEnv.ts — N/A: ptyenv.rs handles env sanitization natively.
+- Monaco/CodeEditor/Pixi multi-window renderer surfaces — frontend
+  scope; Tauri single-window + OfficeFloorLite covers the floor.

@@ -16,6 +16,7 @@ pub mod pricing;
 mod pty;
 pub mod proxy;
 mod ptyenv;
+pub mod reflect;
 pub mod roster;
 pub mod skills;
 mod slack;
@@ -593,6 +594,7 @@ pub fn run() {
             commands::fs_read,
             commands::git_snapshot,
             commands::git_log,
+            commands::reflect_now,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,
