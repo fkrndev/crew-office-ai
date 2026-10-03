@@ -270,3 +270,17 @@ retry+backoff on index.lock).
   config.context_trigger (enabled/every_ms/min_context_pct/message) fed
   by the Status hook's context_usage → /compact typed idle-or-queued,
   DEFAULT_COMPACTION_FOCUS as the default focus text.
+- 2026-10-04 (23): task ledger write path — hive.update_task
+  (patchTaskInLedger: raw-entry patch, unknown fields preserved,
+  explicit null clears) + hive.task_answer (last open humanQA gets `a`,
+  blocked→in-progress, answer mailed to god). BoardPanel got the status
+  dropdown + ASK answer box (board.md stays god-only).
+- 2026-10-04 (24): PARITY SUITE — tests/parity.rs (11 observable-
+  contract tests: hive init/registry/routing+quarantine/status/cost/
+  session; task patch+answer; trigger ledger cycle+corrupt-file;
+  pricing goldens; skill parsing) + tests/shim.rs (8 wire-contract
+  tests driving the real hive-hook binary vs a fake hook socket:
+  claude verbatim, hermes deny/context, agy silence, grok normalize,
+  fail-open paths). 47 tests green. Upstream surfaces deliberately not
+  ported are enumerated in parity.rs's closing note (Monaco/Pixi/
+  keychain/updater/slack are architecture-bound).

@@ -197,3 +197,104 @@ impl TriggerHistory {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ledger() -> (TriggerHistory, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oa-trig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (TriggerHistory::new(dir.clone()), dir)
+    }
+
+    fn entry(id: &str, decision: Option<&str>) -> TriggerHistoryEntry {
+        TriggerHistoryEntry {
+            id: id.into(),
+            source: "webhook".into(),
+            source_id: "ep1".into(),
+            source_name: "hook".into(),
+            direction: "inbound".into(),
+            peer: "sender".into(),
+            title: None,
+            body: "do the thing".into(),
+            kind: "directive".into(),
+            decision: decision.map(|d| d.into()),
+            correlation_id: None,
+            task_id: None,
+            at: 0,
+        }
+    }
+
+    #[test]
+    fn append_is_newest_first_and_normalises_kind() {
+        let (h, dir) = ledger();
+        h.append(entry("a", None));
+        h.append(entry("b", None));
+        let all = h.list();
+        assert_eq!(all[0].id, "b");
+        assert_eq!(all[1].id, "a");
+        let mut c = entry("c", None);
+        c.kind = "bogus".into(); // normaliseKind: anything ≠ communication → directive
+        let e = h.append(c);
+        assert_eq!(e.kind, "directive");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn update_flips_verdict_and_records_task() {
+        let (h, dir) = ledger();
+        let e = h.append(entry("x", Some("pending")));
+        let out = h
+            .update(&e.id, Some("approved".into()), Some("task-9".into()), None, None)
+            .unwrap();
+        assert_eq!(out.decision.as_deref(), Some("approved"));
+        assert_eq!(out.task_id.as_deref(), Some("task-9"));
+        // Aged-out ids are a normal miss, not an error.
+        assert!(h.update("nope", Some("rejected".into()), None, None, None).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clear_by_source_keeps_other_half() {
+        let (h, dir) = ledger();
+        h.append(entry("w", None));
+        let mut org = entry("o", None);
+        org.source = "org".into();
+        h.append(org);
+        h.clear(Some("webhook"));
+        let all = h.list();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "o");
+        h.clear(None);
+        assert!(h.list().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cap_drops_oldest() {
+        let (h, dir) = ledger();
+        for i in 0..(TRIGGER_HISTORY_LIMIT + 5) {
+            let mut e = entry(&format!("e{i}"), None);
+            e.at = i as u64;
+            h.append(e);
+        }
+        let all = h.list();
+        assert_eq!(all.len(), TRIGGER_HISTORY_LIMIT);
+        assert_eq!(all[0].id, format!("e{}", TRIGGER_HISTORY_LIMIT + 4)); // newest first
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn classify_matches_upstream_golden_cases() {
+        // Ported verbatim from classifyInboundKind: question-opener + '?'
+        // + no imperative verb = communication; everything else directive.
+        assert_eq!(classify_inbound_kind(""), "communication");
+        assert_eq!(classify_inbound_kind("what is the weather?"), "communication");
+        assert_eq!(classify_inbound_kind("can you see the progress?"), "communication");
+        assert_eq!(classify_inbound_kind("what is the build status?"), "directive"); // 'build' is imperative
+        assert_eq!(classify_inbound_kind("what should we deploy?"), "directive"); // imperative inside
+        assert_eq!(classify_inbound_kind("deploy the release now"), "directive");
+        assert_eq!(classify_inbound_kind("status"), "directive"); // no '?'
+    }
+}

@@ -1,18 +1,18 @@
-mod breaker;
+pub mod breaker;
 mod bridges;
 mod commands;
-mod config;
+pub mod config;
 mod control;
-mod hive;
+pub mod hive;
 mod hooks;
-mod missions;
-mod pricing;
+pub mod missions;
+pub mod pricing;
 mod pty;
-mod proxy;
+pub mod proxy;
 mod ptyenv;
-mod skills;
+pub mod skills;
 mod telemetry;
-mod trigger_history;
+pub mod trigger_history;
 mod usage;
 mod webhook;
 mod workerwake;
@@ -503,6 +503,8 @@ pub fn run() {
             commands::webhook_pending,
             commands::triggers_list,
             commands::triggers_clear,
+            commands::task_update,
+            commands::task_answer,
             commands::skills_local,
             commands::skills_catalog,
             commands::skills_install,

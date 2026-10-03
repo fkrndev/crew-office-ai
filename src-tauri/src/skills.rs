@@ -595,3 +595,101 @@ pub fn uninstall_skill(skill_path: &str, cwds: &[String]) -> std::result::Result
         .or_else(|_| fs::remove_file(&target))
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontmatter_inline_and_block_scalar() {
+        let (n, d) = parse_skill_frontmatter(
+            "---\nname: pdf-tools\ndescription: Work with PDFs.\n---\nbody",
+        );
+        assert_eq!(n.as_deref(), Some("pdf-tools"));
+        assert_eq!(d.as_deref(), Some("Work with PDFs."));
+        // Block scalar — consecutive indented lines joined (the naive split
+        // at the first line is the upstream bug this contract covers).
+        let (_, d2) = parse_skill_frontmatter(
+            "---\nname: x\ndescription: |\n  first line\n  second line\nnext: y\n---\n",
+        );
+        assert_eq!(d2.as_deref(), Some("first line second line"));
+        assert_eq!(parse_skill_frontmatter("no frontmatter"), (None, None));
+    }
+
+    #[test]
+    fn safe_dir_name_rejects_traversal_and_dots() {
+        assert_eq!(safe_skill_dir_name("pdf"), Some("pdf".into()));
+        assert_eq!(safe_skill_dir_name("skills/pdf-tools"), Some("pdf-tools".into()));
+        assert!(safe_skill_dir_name("..").is_none());
+        assert!(safe_skill_dir_name(".hidden").is_none());
+        assert!(safe_skill_dir_name("").is_none());
+        assert!(safe_skill_dir_name("bad name!").is_none());
+        // Only the basename is used, so traversal segments can't escape —
+        // "../../etc" installs as a folder literally named "etc" under root.
+        assert_eq!(safe_skill_dir_name("../../etc"), Some("etc".into()));
+    }
+
+    #[test]
+    fn github_source_url_parses_both_shapes() {
+        let (o, r, rf, p) = parse_github_source_url(
+            "https://github.com/anthropics/skills/tree/main/skills/docx",
+        )
+        .unwrap();
+        assert_eq!((o.as_str(), r.as_str(), rf.as_str(), p.as_str()), ("anthropics", "skills", "main", "skills/docx"));
+        let (o, r, rf, p) = parse_github_source_url("https://github.com/foo/bar").unwrap();
+        assert_eq!((o.as_str(), r.as_str(), rf.as_str(), p.as_str()), ("foo", "bar", "", ""));
+        assert!(parse_github_source_url("https://github.com/orgs/x").is_none());
+        assert!(parse_github_source_url("https://example.com/a/b").is_none());
+        // Query/fragment + trailing slash stripped like upstream.
+        assert!(parse_github_source_url("https://github.com/foo/bar/").is_some());
+        let (_, r, _, _) = parse_github_source_url("https://github.com/foo/bar.git?tab=x").unwrap();
+        assert_eq!(r, "bar");
+    }
+
+    #[test]
+    fn catalog_markdown_skips_headers_rules_and_dedupes() {
+        let md = "## 🧰 Productivity\n\n| Name | Description | Link |\n|---|---|---|\n| **docx** | Word docs | [Source](https://github.com/a/b/tree/main/skills/docx) |\n| rows | cols | not-a-link |\n| docx | dup | [x](https://github.com/a/b/tree/main/skills/docx) |\n\n## Testing\n\n| pdf | Files | https://github.com/c/d |\n";
+        let out = parse_catalog_markdown(md);
+        assert_eq!(out.len(), 2); // no-link row dropped; dup dropped
+        assert_eq!(out[0].name, "docx");
+        assert_eq!(out[0].category, "Productivity"); // emoji stripped
+        assert_eq!(out[0].owner, "a");
+        assert_eq!(out[1].category, "Testing");
+        assert_eq!(out[1].owner, "c");
+    }
+
+    #[test]
+    fn uninstall_refuses_outside_managed_roots() {
+        let dir = std::env::temp_dir().join(format!("oa-skill-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A folder outside every skills root can never be deleted, even if
+        // it contains a SKILL.md.
+        std::fs::write(dir.join("SKILL.md"), "x").unwrap();
+        assert!(uninstall_skill(&dir.display().to_string(), &[]).is_err());
+        assert!(dir.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_finds_skill_dirs_and_reads_frontmatter() {
+        let root = std::env::temp_dir().join(format!("oa-scan-{}", uuid::Uuid::new_v4()));
+        let sd = root.join("pdf-tools");
+        std::fs::create_dir_all(&sd).unwrap();
+        std::fs::write(
+            sd.join("SKILL.md"),
+            "---\nname: pdf-tools\ndescription: PDFs.\n---\n",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        scan_skill_dir(&root, "claude", "user", &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "pdf-tools");
+        assert_eq!(out[0].id, "user:pdf-tools");
+        // Non-dir entries and missing SKILL.md are skipped.
+        std::fs::write(root.join("README"), "x").unwrap();
+        let mut out2 = Vec::new();
+        scan_skill_dir(&root, "claude", "user", &mut out2);
+        assert_eq!(out2.len(), 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

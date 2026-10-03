@@ -839,6 +839,25 @@ pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)
     Ok(state(&app).webhook.pending())
 }
 
+// ─── task ledger writes (patchTaskInLedger semantics) ───────────────────────
+
+#[tauri::command]
+pub fn task_update(
+    app: AppHandle,
+    id: String,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    state(&app).hive.update_task(&id, &patch).map_err(err_str)
+}
+
+/// The ASK ME answer flow: sets the last open humanQA entry's `a`, unblocks
+/// the card, and mails god the answer — the two-channel contract upstream
+/// spells out in the orchestrator prompt.
+#[tauri::command]
+pub fn task_answer(app: AppHandle, id: String, answer: String) -> Result<serde_json::Value, String> {
+    state(&app).hive.task_answer(&id, &answer).map_err(err_str)
+}
+
 // ─── skills (local discovery + catalog + hardened install) ─────────────────
 
 #[tauri::command]

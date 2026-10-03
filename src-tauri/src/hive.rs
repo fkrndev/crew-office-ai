@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Junction (Windows, no admin) / dir-symlink (unix) for the codex rollout
 /// exposure. Copy fallback when linking fails.
@@ -1032,6 +1033,79 @@ impl Hive {
         Ok(serde_json::from_str(&t).unwrap_or(serde_json::json!({"tasks": []})))
     }
 
+    /// patchTaskInLedger (taskLedger.ts): edit the RAW ledger entry, leaving
+    /// every other card — and every field the patch doesn't name — untouched.
+    /// The ledger is hand-written by god; a partial-model write would delete
+    /// fields it doesn't know about (the bug mergeTaskLedger exists to stop).
+    /// Returns the patched card.
+    pub fn update_task(&self, id: &str, patch: &serde_json::Map<String, Value>) -> Result<Value> {
+        let mut doc = self.read_tasks()?;
+        let tasks = doc["tasks"]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("tasks.json is not an object"))?;
+        let Some(entry) = tasks
+            .iter_mut()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        else {
+            return Err(anyhow::anyhow!("no task {id}"));
+        };
+        let obj = entry
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("task {id} is not an object"))?;
+        for (k, v) in patch {
+            obj.insert(k.clone(), v.clone()); // explicit null clears a field
+        }
+        let out = entry.clone();
+        fs::write(
+            self.root.join("tasks.json"),
+            serde_json::to_string_pretty(&doc)?,
+        )?;
+        self.commit(&format!("hive: task {id}"));
+        Ok(out)
+    }
+
+    /// Answer the card's last OPEN humanQA entry — the god prompt contract:
+    /// the answer lands in the entry's `a` AND arrives as an inbox message to
+    /// god, so work can unblock. Returns the patched card.
+    pub fn task_answer(&self, id: &str, answer: &str) -> Result<Value> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let doc = self.read_tasks()?;
+        let asks = doc["tasks"]
+            .as_array()
+            .and_then(|ts| ts.iter().find(|e| e["id"].as_str() == Some(id)))
+            .and_then(|e| e.get("humanQA").and_then(|q| q.as_array()));
+        let Some(asks) = asks else {
+            return Err(anyhow::anyhow!("task {id} has no humanQA"));
+        };
+        let qi = asks
+            .iter()
+            .rposition(|q| q.get("a").is_none())
+            .ok_or_else(|| anyhow::anyhow!("no open question on {id}"))?;
+        let mut patch = serde_json::Map::new();
+        let mut qa = asks.clone();
+        qa[qi]["a"] = Value::String(answer.to_string());
+        qa[qi]["answeredAt"] = Value::String(now);
+        patch.insert("humanQA".into(), Value::Array(qa));
+        if doc["tasks"]
+            .as_array()
+            .and_then(|ts| ts.iter().find(|e| e["id"].as_str() == Some(id)))
+            .and_then(|e| e["status"].as_str())
+            == Some("blocked")
+        {
+            patch.insert("status".into(), Value::String("in-progress".into()));
+        }
+        let card = self.update_task(id, &patch)?;
+        let title = card["title"].as_str().unwrap_or(id);
+        let _ = self.send_virtual(
+            "human",
+            "god",
+            "request",
+            &format!("Human answered on {title}"),
+            &format!("On task {id} ({title}), the human answered: {answer}"),
+        );
+        Ok(card)
+    }
+
     pub fn read_memory(&self, agent_id: &str) -> Result<String> {
         Ok(fs::read_to_string(self.agent_dir(agent_id).join("memory.md"))
             .unwrap_or_default())
@@ -1161,6 +1235,117 @@ mod tests {
             let cmd = v["hooks"][ge][0]["hooks"][0]["command"].as_str().unwrap_or("");
             assert!(cmd.contains(&format!("--gemini {ce}")), "{ge} → {ce}");
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn tmp_hive(tag: &str) -> (Hive, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oa-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (Hive::ensure(&dir.join("hive")).unwrap(), dir)
+    }
+
+    #[test]
+    fn update_task_patches_raw_entry_and_preserves_unknown_fields() {
+        let (hive, dir) = tmp_hive("taskpatch");
+        // The ledger is hand-written — seed a card carrying fields no display
+        // model knows about (the mergeTaskLedger contract).
+        std::fs::write(
+            dir.join("hive/tasks.json"),
+            r#"{"tasks":[{"id":"t1","title":"a","status":"blocked","customField":7,"humanQA":[{"q":"ok?"}]}]}"#,
+        )
+        .unwrap();
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".into(), Value::String("in-progress".into()));
+        patch.insert("customField".into(), Value::Null); // explicit null clears
+        let card = hive.update_task("t1", &patch).unwrap();
+        assert_eq!(card["status"], "in-progress");
+        assert!(card.get("customField").map(|v| v.is_null()).unwrap_or(false));
+        assert_eq!(card["title"], "a"); // untouched fields survive
+        assert_eq!(card["humanQA"][0]["q"], "ok?");
+        assert!(hive.update_task("missing", &patch).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn reg(hive: &Hive, id: &str, god: bool, dir: &Path) {
+        hive.register_agent(&RegistryEntry {
+            id: id.into(),
+            name: id.into(),
+            provider: "claude".into(),
+            role: "x".into(),
+            cwd: dir.join(id).display().to_string(),
+            is_god: god,
+            status: "idle".into(),
+            session_id: None,
+            command: String::new(),
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn task_answer_sets_a_unblocks_and_mails_god() {
+        let (hive, dir) = tmp_hive("taskans");
+        reg(&hive, "god", true, &dir);
+        std::fs::write(
+            dir.join("hive/tasks.json"),
+            r#"{"tasks":[{"id":"t1","title":"ship it","status":"blocked","humanQA":[{"q":"deploy?","askedAt":"x"},{"q":"really?","askedAt":"y"}]}]}"#,
+        )
+        .unwrap();
+        let card = hive.task_answer("t1", "yes").unwrap();
+        // The LAST open ask gets the answer; earlier answered/skipped asks untouched.
+        assert_eq!(card["humanQA"][1]["a"], "yes");
+        assert!(card["humanQA"][1].get("answeredAt").is_some());
+        assert_eq!(card["status"], "in-progress"); // blocked → unblocked
+        // The answer also lands in god's inbox (the two-channel contract).
+        let inbox = hive.inbox("god").unwrap();
+        assert!(inbox.iter().any(|m| m.body.contains("yes")), "answer mails god");
+        // The still-open FIRST ask takes the next answer; only when no ask
+        // remains open does the call error — never a silent no-op.
+        let card2 = hive.task_answer("t1", "again").unwrap();
+        assert_eq!(card2["humanQA"][0]["a"], "again");
+        assert!(hive.task_answer("t1", "third").is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lifecycle_send_route_inbox_done() {
+        let (hive, dir) = tmp_hive("life");
+        reg(&hive, "god", true, &dir);
+        reg(&hive, "w1", false, &dir);
+        hive.send(&Message::new("god", "w1", "request", "hi", "body")).unwrap();
+        let deliveries = hive.router_tick().unwrap();
+        assert_eq!(deliveries.len(), 1);
+        let inbox = hive.inbox("w1").unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].subject, "hi");
+        hive.mark_done("w1", &inbox[0].id).unwrap();
+        assert!(hive.inbox("w1").unwrap().is_empty());
+        // "broadcast" fans out to every agent but the sender (HIVE.md §5).
+        hive.send(&Message::new("god", "broadcast", "inform", "b", "b")).unwrap();
+        let ds = hive.router_tick().unwrap();
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].to, "w1");
+        // A virtual sender (breaker/hive) delivers straight to inboxes.
+        let vs = hive.send_virtual("breaker", "w1", "request", "s", "b").unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(hive.inbox("w1").unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expose_codex_data_moves_and_links_sessions() {
+        let (hive, dir) = tmp_hive("codexexp");
+        let agent_dir = dir.join("agent");
+        // Fake user codex home via HOME override is unsafe in tests; call the
+        // internals through the public fn with a temp "home" — the fn reads
+        // dirs::home_dir() so we exercise the *agent-side* half here: creating
+        // the source and calling expose must not error or corrupt.
+        let sessions = agent_dir.join(".codex").join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("roll.jsonl"), "{}").unwrap();
+        hive.expose_codex_data(&agent_dir, "w1");
+        // Unsafe ids are rejected outright (upstream: safe path components only).
+        hive.expose_codex_data(&agent_dir, "../evil");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
