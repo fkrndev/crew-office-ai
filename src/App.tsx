@@ -4,11 +4,12 @@ import { AddAgent } from './components/AddAgent';
 import { AgentList } from './components/AgentList';
 import { ControlStrip } from './components/ControlStrip';
 import { InboxPanel } from './components/InboxPanel';
+import { OfficeFloorLite } from './components/OfficeFloorLite';
 import { TerminalPane } from './components/TerminalPane';
 import { useApp } from './store';
 
 export default function App() {
-  const { agents, selected, refreshAgents, setBreaker } = useApp();
+  const { agents, selected, refreshAgents, setBreaker, select } = useApp();
   const [adding, setAdding] = useState(false);
   const [autoMode, setAuto] = useState(false);
 
@@ -35,7 +36,14 @@ export default function App() {
       <AgentList onAdd={() => setAdding(true)} />
       <main>
         <header className="topbar">
-          <span>{agent ? `${agent.name} — ${agent.provider}` : 'Office Agent'}</span>
+          <span>
+            {agent && (
+              <button className="ghost" onClick={() => select(null)}>
+                ← floor
+              </button>
+            )}{' '}
+            {agent ? `${agent.name} — ${agent.provider}` : 'Office floor'}
+          </span>
           <label className="row">
             <input
               type="checkbox"
@@ -57,10 +65,7 @@ export default function App() {
             </div>
           </>
         ) : (
-          <div className="welcome">
-            <h2>No agent selected</h2>
-            <p>Hire an agent to put it on the floor.</p>
-          </div>
+          <OfficeFloorLite />
         )}
       </main>
       {adding && <AddAgent onClose={() => setAdding(false)} />}

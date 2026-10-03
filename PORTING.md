@@ -155,3 +155,9 @@ retry+backoff on index.lock).
   queues /compact per agent delivered at idle boundary. Verified: build
   clean, app alive, missions seeded in config.json.
   Next up: Pixi office floor (the big one) or Slack/webhook ingress.
+- 2026-10-04 (6): floor LITE. OfficeFloorLite.tsx renders the real office.tmj
+  tilemap (34×22, 3 tilesets, gid-mapped draw) on canvas2d — below/above
+  z-bands pre-rendered, procedural pixel-people stand-ins, deterministic
+  spawn-point seating, status-colored glow, envelope arc animation on
+  hive-deliver. Full Pixi pipeline (Character.ts 38KB, portraitArt 33KB,
+  wander/paths/bubbles) intentionally deferred — documented in mapping table.

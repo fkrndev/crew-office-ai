@@ -10,5 +10,7 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] }
   },
-  envPrefix: ['VITE_', 'TAURI_']
+  envPrefix: ['VITE_', 'TAURI_'],
+  // .tmj (Tiled map JSON) is shipped as a static asset for the floor renderer.
+  assetsInclude: ['**/*.tmj']
 });
