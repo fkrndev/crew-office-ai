@@ -21,7 +21,8 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `memory.ts`, `palaceReap.ts`, `reflect.ts` (memory.md + mempalace CLI) | `memory.rs` (memory.md read/append only; mempalace/condense = TODO) | PARTIAL |
 | `knowledge.ts`, `kg-core.cjs`, `resources/kg.cjs` (KG sidecar) | — decide: Rust port or drop | TODO |
 | `slack.ts`, `webhook.ts`, `slack-trigger.cjs` (HTTP ingress + tunnelmole) | `ingress.rs` (axum) + `tauri-plugin-localhost`? tunnel = external proc | TODO |
-| `breaker.ts`, `control.ts` (steer→constrain→stop) | `breaker.rs` | TODO |
+| `breaker.ts` (circuit breaker: loop/error-storm/velocity/caps/no-progress) | `breaker.rs` + 30s beat in lib.rs (steer/constrain mail, stop kills PTY; hardStop off caps at constrained) | DONE (api_error source pending telemetry) |
+| `control.ts` (ControlRegistry: pause/halt/steer/tool gates) | `control.rs` + commands + ControlStrip UI; wired into hooks (halt→continue:false, PreToolUse deny, steer→additionalContext) | DONE |
 | `transcript.ts`, `usage.ts`, `costLifetime.ts`, `telemetry.ts`, `pricing.ts` | `usage.rs` | TODO |
 | `updater.ts` (electron-updater) | `tauri-plugin-updater` | TODO |
 | `integrations.ts` (Electron safeStorage secrets) | `keyring` crate or `tauri-plugin-stronghold` | TODO |
@@ -90,8 +91,15 @@ retry+backoff on index.lock).
 - Stop→drain: upstream REMOVED forced `{decision:'block'}` at Stop (bypassed
   HITL safety). Ported as guarded idle-wake: on Stop → 1.2s later, if still
   idle AND inbox non-empty → work-order typed into the PTY.
-- Not yet ported inside hooks: breaker tool-loop detection, control/HITL
-  deny gate, steer injection, goal injection, transcript cost/OTel.
+- Not yet ported inside hooks: goal injection (roster store), transcript
+  cost/OTel telemetry (the breaker's usage sample currently comes from
+  cost.jsonl accumulation only — live OTel spans land with telemetry.rs).
+- Breaker beat inputs: live-PTY agents only (dead entries steer into a
+  god-bounce flood — same reasoning as upstream's startup migration);
+  `progressing` = hive coordination-file mtimes, `last_work_at` = cwd .git
+  markers, `sample` = cumulative cost.jsonl fold per agent.
+- Virtual senders ('breaker') deliver directly to inboxes via
+  `hive.send_virtual` — no outbox dir for non-agents.
 - `git2` (0.21) for single-committer commits; degraded to no-op if repo
   can't init (matching electron's best-effort commit).
 - Hook shims (`cth-hook.cjs`, agy/codex/grok/gemini/pi/opencode translators,
@@ -122,3 +130,12 @@ retry+backoff on index.lock).
   socket harness (envelope in, decision out, no-sock noop), cargo build clean,
   app smoke — hive-hook.exe staged to harness/bin, hive tree created.
   Next up: Pixi floor port OR breaker/control (steer→constrain→stop).
+- 2026-10-04 (3): phase 3 guardrails. breaker.rs (ladder + all 6 trip arms:
+  repeat-loop hash-key, error storm, per-agent work-token cap, floor $/token
+  caps w/ top-spender blame, velocity, no-progress w/ 3 progress clocks +
+  debounce + compact exemption), control.rs (pause/gate/steer queue/halt/
+  snapshot), hooks wiring (halt→continue:false, PreToolUse deny, merged
+  roster+steer additionalContext), 30s beat + send_virtual for breaker mail,
+  ControlStrip UI + breaker badges. Also default-run=office-agent (cargo run
+  ambiguity after hive-hook bin). Verified: cargo build + vite build clean.
+  Next up: Pixi floor port, then missions/heartbeat, telemetry/OTel.

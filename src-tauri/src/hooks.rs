@@ -122,6 +122,29 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
         let _ = st.hive.record_session(id, sid);
     }
 
+    // 7C.3 — an operator HALT overrides everything at the next hook boundary:
+    // stop CLEANLY ({continue:false}) rather than killing the PTY.
+    if !agent_id.is_empty() && st.control.lock().unwrap().should_halt(&agent_id) {
+        return json!({ "continue": false, "stopReason": "Halted by the operator from the floor." });
+    }
+
+    // Breaker inputs from the hook stream (breaker.ts event-driven inputs).
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    match event.as_str() {
+        "PostToolUse" => st.breaker.lock().unwrap().record_tool_use(
+            &agent_id,
+            p.get("tool_name").and_then(|v| v.as_str()),
+            p.get("tool_input").unwrap_or(&Value::Null),
+            now_ms,
+        ),
+        "UserPromptSubmit" => st.breaker.lock().unwrap().record_user_prompt(&agent_id, now_ms),
+        "PreCompact" => st.breaker.lock().unwrap().record_compact_start(&agent_id, now_ms),
+        "PostCompact" | "SessionStart" => {
+            st.breaker.lock().unwrap().record_compact_end(&agent_id, now_ms)
+        }
+        _ => {}
+    }
+
     match event.as_str() {
         "Stop" | "SubagentStop" => {
             // Upstream: respect an upstream Stop hook that already re-entered.
@@ -141,19 +164,40 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
                 "working",
                 p.get("tool_name").and_then(|v| v.as_str()),
             );
+            // 7C.1 — HITL deny at the tool boundary: race-free (no renderer
+            // round-trip); slow human approval stays on the CLI's native prompt.
+            let deny = st.control.lock().unwrap().tool_decision(
+                &agent_id,
+                p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""),
+            );
+            if let Some(reason) = deny {
+                let _ = app.emit(
+                    "control-approval",
+                    json!({ "agentId": agent_id, "tool": p.get("tool_name"), "reason": reason }),
+                );
+                return json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason
+                    }
+                });
+            }
             json!({})
         }
         "PostToolUse" => {
             emit_status(app, &agent_id, "working", None);
-            json!({})
+            // 7C.2 — mid-run steering: a queued operator note rides back as
+            // additionalContext once, merged with the god roster below.
+            injected_context(&st, &agent_id, &event)
         }
         "UserPromptSubmit" => {
             emit_status(app, &agent_id, "working", None);
-            maybe_roster_context(&st, &agent_id, &event)
+            injected_context(&st, &agent_id, &event)
         }
         "SessionStart" => {
             emit_status(app, &agent_id, "idle", None);
-            maybe_roster_context(&st, &agent_id, &event)
+            injected_context(&st, &agent_id, &event)
         }
         "Notification" => {
             emit_status(app, &agent_id, "waiting", None);
@@ -171,34 +215,51 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     }
 }
 
-/// God's live roster, injected as additionalContext on SessionStart and every
-/// prompt (hooks.ts:530) — god always sees the current floor instead of a
-/// transcript describing an old one.
-fn maybe_roster_context(st: &AppState, agent_id: &str, event: &str) -> Value {
-    if agent_id.is_empty() || !st.hive.is_god(agent_id) {
+/// additionalContext injection — merged into ONE value because a hook can only
+/// return a single additionalContext (hooks.ts:523): god's live roster
+/// (SessionStart/UserPromptSubmit, hooks.ts:530) + a queued operator steer
+/// (UserPromptSubmit/PostToolUse, hooks.ts:526).
+fn injected_context(st: &AppState, agent_id: &str, event: &str) -> Value {
+    if agent_id.is_empty() {
         return json!({});
     }
-    let roster = st
-        .hive
-        .registry()
-        .iter()
-        .map(|a| {
-            format!(
-                "{}{}{}({})",
-                a.name,
-                if a.is_god { " [god] " } else { " " },
-                a.id,
-                a.status
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": event,
-            "additionalContext": format!("Live floor roster: {roster}")
+    let mut parts: Vec<String> = Vec::new();
+
+    if (event == "SessionStart" || event == "UserPromptSubmit") && st.hive.is_god(agent_id) {
+        let roster = st
+            .hive
+            .registry()
+            .iter()
+            .map(|a| {
+                format!(
+                    "{}{}{}({})",
+                    a.name,
+                    if a.is_god { " [god] " } else { " " },
+                    a.id,
+                    a.status
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        parts.push(format!("Live floor roster: {roster}"));
+    }
+
+    if event == "UserPromptSubmit" || event == "PostToolUse" {
+        if let Some(note) = st.control.lock().unwrap().take_steer(agent_id) {
+            parts.push(format!("Operator guidance: {note}"));
         }
-    })
+    }
+
+    if parts.is_empty() {
+        json!({})
+    } else {
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": parts.join("\n")
+            }
+        })
+    }
 }
 
 /// The guarded idle-only delivery path: after a Stop, if the agent is still

@@ -9,7 +9,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::breaker::CircuitBreaker;
 use crate::config::{Config, ConfigStore};
+use crate::control::{ControlRegistry, ControlSnapshot};
 use crate::hive::{Hive, Message, RegistryEntry};
 use crate::pty::{self, PtyHandle};
 use crate::ptyenv::build_pty_env;
@@ -19,6 +21,8 @@ pub struct AppState {
     pub config_store: ConfigStore,
     pub config: Mutex<Config>,
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
+    pub breaker: Mutex<CircuitBreaker>,
+    pub control: Mutex<ControlRegistry>,
     /// TCP loopback addr of the HookServer (`127.0.0.1:port`) → env HIVE_SOCK.
     pub sock_addr: Option<String>,
     /// The native hook-shim binary copied into `<harness>/bin/` — the analogue
@@ -41,6 +45,8 @@ impl AppState {
             config_store,
             config: Mutex::new(config),
             ptys: Mutex::new(HashMap::new()),
+            breaker: Mutex::new(CircuitBreaker::default()),
+            control: Mutex::new(ControlRegistry::default()),
             sock_addr: None,
             hook_bin,
         })
@@ -274,6 +280,8 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
         let _ = h.kill();
     }
+    // Dead agents can't leak a tripped breaker level or a pending steer.
+    st.breaker.lock().unwrap().forget(&id);
     st.hive.set_status(&id, "stopped").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",
@@ -358,6 +366,70 @@ pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     }
     let _ = app.emit("config-changed", serde_json::json!({ "auto_mode": enabled }));
     Ok(())
+}
+
+// ─── operator control (control.ts IPC equivalents) ──────────────────────────
+
+#[tauri::command]
+pub fn control_pause(app: AppHandle, agent_id: String, on: bool) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.pause(&agent_id, on);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_resume(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.resume(&agent_id);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_halt(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.halt(&agent_id);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_steer(
+    app: AppHandle,
+    agent_id: String,
+    text: String,
+) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.steer(&agent_id, &text);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_gate_tool(
+    app: AppHandle,
+    agent_id: String,
+    tool: String,
+    on: bool,
+) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.gate_tool(&agent_id, &tool, on);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_snapshot(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
+    Ok(state(&app).control.lock().unwrap().snapshot(&agent_id))
+}
+
+// ─── breaker (the beat's data seam + level read) ────────────────────────────
+
+#[tauri::command]
+pub fn breaker_level(app: AppHandle, agent_id: String) -> Result<String, String> {
+    let lvl = state(&app).breaker.lock().unwrap().level_for(&agent_id);
+    Ok(format!("{lvl:?}").to_lowercase())
 }
 
 fn err_str(e: anyhow::Error) -> String {

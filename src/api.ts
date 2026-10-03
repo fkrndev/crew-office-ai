@@ -81,6 +81,40 @@ export const appendMemory = (agentId: string, entry: string) =>
 export const getConfig = () => invoke<Config>('get_config');
 export const setAutoMode = (enabled: boolean) => invoke('set_auto_mode', { enabled });
 
+// ─── control + breaker ──────────────────────────────────────────────────────
+
+export interface ControlSnapshot {
+  paused: boolean;
+  halted: boolean;
+  autoDeliveryPaused: boolean;
+  gatedTools: string[];
+  pendingSteers: number;
+}
+
+export const controlPause = (agentId: string, on: boolean) =>
+  invoke<ControlSnapshot>('control_pause', { agentId, on });
+export const controlResume = (agentId: string) =>
+  invoke<ControlSnapshot>('control_resume', { agentId });
+export const controlHalt = (agentId: string) =>
+  invoke<ControlSnapshot>('control_halt', { agentId });
+export const controlSteer = (agentId: string, text: string) =>
+  invoke<ControlSnapshot>('control_steer', { agentId, text });
+export const controlGateTool = (agentId: string, tool: string, on: boolean) =>
+  invoke<ControlSnapshot>('control_gate_tool', { agentId, tool, on });
+export const controlSnapshot = (agentId: string) =>
+  invoke<ControlSnapshot>('control_snapshot', { agentId });
+
+export interface BreakerStatePayload {
+  agent_id: string;
+  level: 'healthy' | 'steering' | 'constrained' | 'stopped';
+  reason: string;
+  ts: number;
+}
+export const onBreakerState = (cb: (p: BreakerStatePayload) => void): Promise<UnlistenFn> =>
+  listen<BreakerStatePayload>('breaker-state', (e) => cb(e.payload));
+export const onBreakerToast = (cb: (p: { text: string; reason: string }) => void): Promise<UnlistenFn> =>
+  listen<{ text: string; reason: string }>('breaker-toast', (e) => cb(e.payload));
+
 // ─── events ─────────────────────────────────────────────────────────────────
 
 export const onPtyOutput = (cb: (p: PtyOutputPayload) => void): Promise<UnlistenFn> =>

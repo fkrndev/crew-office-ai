@@ -132,3 +132,17 @@ label.row, .row { display: flex; flex-direction: row; align-items: center; gap: 
   width: 380px;
 }
 .modal h2 { margin-top: 0; font-size: 17px; }
+
+.control-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.control-strip .grow { flex: 1; }
+.steer-input { flex: 0 0 260px; font-size: 12px; }
+.tag.breaker.steering { background: #4a3b10; }
+.tag.breaker.constrained { background: #5a2a10; }
+.tag.breaker.stopped { background: #5a1010; }

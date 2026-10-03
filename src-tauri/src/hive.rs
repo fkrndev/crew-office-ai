@@ -160,6 +160,33 @@ Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.
 const BOARD_MD: &str = "# Shared board\n\nCo-authored plans live here. Written by the god agent (single scribe).\n";
 const TASKS_JSON: &str = "{\n  \"tasks\": []\n}\n";
 
+/// Newest mtime (epoch-ms) of a path — a file's own mtime, or the newest
+/// direct child of a directory (one level: enough for inbox/outbox dirs).
+fn newest_mtime(path: &PathBuf) -> u64 {
+    fn epoch_ms(meta: &fs::Metadata) -> u64 {
+        meta.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+    let Ok(meta) = fs::metadata(path) else {
+        return 0;
+    };
+    if meta.is_file() {
+        return epoch_ms(&meta);
+    }
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| epoch_ms(&m))
+        .max()
+        .unwrap_or(0)
+}
+
 pub struct Hive {
     pub root: PathBuf,
 }
@@ -235,6 +262,73 @@ impl Hive {
             }
         }
         Ok(())
+    }
+
+    /// Newest coordination-file mtime for one agent (index.ts
+    /// lastCoordinationAt): inbox + .done, outbox, memory.md — FILES only, so
+    /// "no progress" means "not coordinating" even while tokens print.
+    /// Returns epoch-ms, 0 when nothing exists.
+    pub fn last_coordination_at(&self, agent_id: &str) -> u64 {
+        let dir = self.agent_dir(agent_id);
+        [
+            dir.join("inbox"),
+            dir.join("inbox").join(".done"),
+            dir.join("outbox"),
+            dir.join("memory.md"),
+        ]
+        .iter()
+        .map(newest_mtime)
+        .max()
+        .unwrap_or(0)
+    }
+
+    /// Agent's working-dir "work" clock — git markers (.git/index, logs/HEAD,
+    /// FETCH_HEAD, packed-refs) like index.ts lastWorkAt. None when the caller
+    /// can't tell (no .git), so the breaker's work arm skips it.
+    pub fn last_work_at(cwd: &str) -> Option<u64> {
+        let g = Path::new(cwd).join(".git");
+        if !g.exists() {
+            return None;
+        }
+        let t = [
+            g.join("index"),
+            g.join("logs").join("HEAD"),
+            g.join("FETCH_HEAD"),
+            g.join("packed-refs"),
+            g.join("refs").join("remotes"),
+        ]
+        .iter()
+        .map(newest_mtime)
+        .max()
+        .unwrap_or(0);
+        Some(t)
+    }
+
+    /// Cumulative usage for one agent, folded from cost.jsonl each beat —
+    /// the same pull seam upstream's UsageProvider feeds the breaker.
+    pub fn usage_sample(&self, agent_id: &str) -> Option<crate::breaker::UsageSample> {
+        let text = fs::read_to_string(self.root.join("cost.jsonl")).ok()?;
+        let mut s = crate::breaker::UsageSample::default();
+        let mut seen = false;
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("agent").and_then(|a| a.as_str()) != Some(agent_id) {
+                continue;
+            }
+            seen = true;
+            s.input += v.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
+            s.output += v.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
+            s.cache_read += v.get("cache_read").and_then(|x| x.as_u64()).unwrap_or(0);
+            s.cache_creation += v.get("cache_creation").and_then(|x| x.as_u64()).unwrap_or(0);
+            if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
+                if let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) {
+                    s.ts = t.timestamp_millis() as u64;
+                }
+            }
+        }
+        seen.then_some(s)
     }
 
     /// Persist a proxy-bridge usage sample to the cost ledger — a separate
@@ -391,11 +485,63 @@ impl Hive {
         )
     }
 
+    /// A virtual sender ('breaker', 'hive') has no outbox on disk — its
+    /// message is delivered to the resolved inboxes immediately, same target
+    /// resolution the router applies.
+    pub fn send_virtual(
+        &self,
+        from: &str,
+        to: &str,
+        act: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<Vec<Delivery>> {
+        let msg = Message::new(from, to, act, subject, body);
+        let delivered = self.deliver(&msg, &serde_json::to_string_pretty(&msg)?)?;
+        if !delivered.is_empty() {
+            self.commit(&format!("hive: deliver {}", msg.id));
+        }
+        Ok(delivered)
+    }
+
+    /// Resolve targets and write the message into recipient inboxes — the
+    /// inner loop the outbox router and send_virtual share.
+    fn deliver(&self, msg: &Message, raw: &str) -> Result<Vec<Delivery>> {
+        let known: HashSet<String> = self.registry().iter().map(|a| a.id.clone()).collect();
+        let god = self.god_id();
+        let mut out = Vec::new();
+        for (target_id, bounced) in self.resolve_targets(msg, &known, &god, &msg.from) {
+            let inbox = self.agent_dir(&target_id).join("inbox");
+            let _ = fs::create_dir_all(&inbox);
+            let dest = inbox.join(format!("{}.json", msg.id));
+            let payload = if bounced {
+                let mut m = msg.clone();
+                m.subject = format!("[bounced] {}", m.subject);
+                m.needs_human = true;
+                serde_json::to_string_pretty(&m)?
+            } else {
+                raw.to_string()
+            };
+            self.atomic_write(&dest, payload.as_bytes())?;
+            out.push(Delivery {
+                from: msg.from.clone(),
+                to: target_id,
+                msg_id: msg.id.clone(),
+                bounced,
+            });
+        }
+        if !out.is_empty() {
+            self.log(&serde_json::json!({
+                "event": "deliver", "from": msg.from, "to": msg.to,
+                "msg_id": msg.id, "act": msg.act
+            }))?;
+        }
+        Ok(out)
+    }
+
     /// One router pass: drain every outbox into recipient inboxes.
     /// Returns the deliveries made (for frontend events).
     pub fn router_tick(&self) -> Result<Vec<Delivery>> {
-        let known: HashSet<String> = self.registry().iter().map(|a| a.id.clone()).collect();
-        let god = self.god_id();
         let mut delivered = Vec::new();
         let agents_dir = self.root.join("agents");
 
@@ -405,9 +551,6 @@ impl Hive {
         };
 
         for sender_dir in senders {
-            let Some(sender_id) = sender_dir.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
             let outbox = sender_dir.join("outbox");
             let Ok(rd) = fs::read_dir(&outbox) else { continue };
             let mut files: Vec<PathBuf> = rd
@@ -429,33 +572,8 @@ impl Hive {
                     }
                     continue;
                 };
-
-                let targets = self.resolve_targets(&msg, &known, &god, sender_id);
-                for (target_id, bounced) in targets {
-                    let inbox = self.agent_dir(&target_id).join("inbox");
-                    let _ = fs::create_dir_all(&inbox);
-                    let dest = inbox.join(format!("{}.json", msg.id));
-                    let payload = if bounced {
-                        let mut m = msg.clone();
-                        m.subject = format!("[bounced] {}", m.subject);
-                        m.needs_human = true;
-                        serde_json::to_string_pretty(&m)?
-                    } else {
-                        text.clone()
-                    };
-                    self.atomic_write(&dest, payload.as_bytes())?;
-                    delivered.push(Delivery {
-                        from: msg.from.clone(),
-                        to: target_id,
-                        msg_id: msg.id.clone(),
-                        bounced,
-                    });
-                }
+                delivered.extend(self.deliver(&msg, &text)?);
                 let _ = fs::remove_file(&file);
-                self.log(&serde_json::json!({
-                    "event": "deliver", "from": msg.from, "to": msg.to,
-                    "msg_id": msg.id, "act": msg.act
-                }))?;
             }
         }
 

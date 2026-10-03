@@ -1,5 +1,7 @@
+mod breaker;
 mod commands;
 mod config;
+mod control;
 mod hive;
 mod hooks;
 mod pty;
@@ -52,6 +54,104 @@ pub fn run() {
                     }
                 }
             });
+
+            // Breaker beat — index.ts runBreakerBeat: ~30s interval, 300s
+            // progress window. Policy lives in breaker.rs; enforcement here:
+            // steer/constrain ride the hive mail channel, stop kills the PTY.
+            let handle2 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(30));
+                const PROGRESS_WINDOW_MS: u64 = 300_000;
+                loop {
+                    tick.tick().await;
+                    let st = handle2.state::<AppState>();
+                    let cfg = st.config.lock().unwrap().clone();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    // Only agents with a live PTY — dead entries steer into a
+                    // god-bounce flood (upstream startup-migration note).
+                    let live: std::collections::HashSet<String> =
+                        st.ptys.lock().unwrap().keys().cloned().collect();
+                    let inputs: Vec<breaker::BreakerInput> = st
+                        .hive
+                        .registry()
+                        .iter()
+                        .filter(|a| live.contains(&a.id))
+                        .map(|a| breaker::BreakerInput {
+                            agent_id: a.id.clone(),
+                            sample: st.hive.usage_sample(&a.id),
+                            progressing: now.saturating_sub(st.hive.last_coordination_at(&a.id))
+                                < PROGRESS_WINDOW_MS,
+                            last_work_at: hive::Hive::last_work_at(&a.cwd),
+                        })
+                        .collect();
+                    if inputs.is_empty() {
+                        continue;
+                    }
+                    let decisions = st.breaker.lock().unwrap().tick(
+                        &inputs,
+                        now,
+                        &cfg.circuit_breaker,
+                        cfg.cost_cap_usd,
+                        cfg.cost_cap_tokens,
+                        &cfg.agent_token_caps,
+                    );
+                    for d in decisions {
+                        let _ = handle2.emit("breaker-state", &d.state);
+                        let id = d.state.agent_id.clone();
+                        let name = st
+                            .hive
+                            .registry()
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| id.clone());
+                        match d.action {
+                            breaker::BreakerAction::Steer => {
+                                let _ = st.hive.send_virtual(
+                                    "breaker",
+                                    &id,
+                                    "request",
+                                    "Circuit breaker: steer",
+                                    &format!(
+                                        "Automated guardrail: {}. Re-check your approach — if you're looping or stuck, STOP repeating, summarize what you've tried, and ask god for direction.",
+                                        d.state.reason
+                                    ),
+                                );
+                            }
+                            breaker::BreakerAction::Constrain => {
+                                let _ = st.hive.send_virtual(
+                                    "breaker",
+                                    &id,
+                                    "request",
+                                    "Circuit breaker: constrain",
+                                    &format!(
+                                        "Automated guardrail escalated: {}. Stop active work now: switch to read-only/plan, write a short plan of your next step, and send it to god for sign-off BEFORE running more tools.",
+                                        d.state.reason
+                                    ),
+                                );
+                                let _ = handle2.emit(
+                                    "breaker-toast",
+                                    serde_json::json!({ "text": format!("{name} constrained"), "reason": d.state.reason }),
+                                );
+                            }
+                            breaker::BreakerAction::Stop => {
+                                if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
+                                    let _ = h.kill();
+                                }
+                                let _ = st.hive.set_status(&id, "stopped");
+                                let _ = handle2.emit(
+                                    "breaker-toast",
+                                    serde_json::json!({ "text": format!("{name} stopped by circuit breaker"), "reason": d.state.reason }),
+                                );
+                            }
+                            breaker::BreakerAction::None => {}
+                        }
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -69,6 +169,13 @@ pub fn run() {
             commands::append_memory,
             commands::get_config,
             commands::set_auto_mode,
+            commands::control_pause,
+            commands::control_resume,
+            commands::control_halt,
+            commands::control_steer,
+            commands::control_gate_tool,
+            commands::control_snapshot,
+            commands::breaker_level,
         ])
         .run(tauri::generate_context!())
         .expect("error while running office-agent");

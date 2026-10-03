@@ -4,8 +4,12 @@
 use std::fs;
 use std::path::PathBuf;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+use crate::breaker::BreakerConfig;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -14,6 +18,14 @@ pub struct Config {
     pub auto_mode: bool,
     /// Display name of the god/orchestrator agent ("Michael" upstream).
     pub god_name: String,
+    /// Circuit-breaker policy knobs (breaker.rs).
+    pub circuit_breaker: BreakerConfig,
+    /// Floor-wide $ cap — trips the single biggest spender when total exceeds.
+    pub cost_cap_usd: Option<f64>,
+    /// Floor-wide token cap (all kinds) — same top-spender logic.
+    pub cost_cap_tokens: Option<u64>,
+    /// Per-agent work-token caps (cache_read excluded, upstream #189).
+    pub agent_token_caps: HashMap<String, u64>,
 }
 
 impl Default for Config {
@@ -21,6 +33,10 @@ impl Default for Config {
         Self {
             auto_mode: false,
             god_name: "Michael".into(),
+            circuit_breaker: BreakerConfig::default(),
+            cost_cap_usd: None,
+            cost_cap_tokens: None,
+            agent_token_caps: HashMap::new(),
         }
     }
 }

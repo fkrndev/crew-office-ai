@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Multi-agent office harness — Tauri port"
 edition = "2021"
 rust-version = "1.90"
+default-run = "office-agent"
 
 [lib]
 name = "office_agent_lib"
