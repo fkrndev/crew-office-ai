@@ -84,6 +84,11 @@ retry+backoff on index.lock).
 
 ## Session log
 
-- 2026-10-04: scaffold + core loop. Rust: pty/ptyenv/hive/config/memory cmds.
+- 2026-10-04: scaffold + core loop. Rust: pty/ptyenv/hive/config cmds.
   Frontend: providers data, agent list, add-agent, xterm terminal, inbox.
-  Verified: cargo check + vite build.
+  Verified: cargo check clean, 2/2 unit tests, vite build clean, release-less
+  smoke run of target/debug binary (window alive 6s, no panic). Commit 6e89460.
+  Deviations found during build: @types/react-dom `^18.3.11` in the source
+  package.json never resolves (18.x max is 18.3.7) → pinned `^18.3.0`; Windows
+  needs icons/icon.ico for the resource file → generated from icon.png.
+  Next up: hooks socket (HIVE_SOCK) + provider shims, then Pixi floor port.
