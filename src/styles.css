@@ -134,6 +134,9 @@ label.row, .row { display: flex; flex-direction: row; align-items: center; gap: 
   width: 380px;
 }
 .modal h2 { margin-top: 0; font-size: 17px; }
+.mission-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.mission-row:last-of-type { border-bottom: none; }
+.row.end { justify-content: flex-end; margin-top: 10px; }
 
 .control-strip {
   display: flex;

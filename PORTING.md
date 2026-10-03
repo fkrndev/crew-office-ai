@@ -184,3 +184,8 @@ retry+backoff on index.lock).
   breaker's storm arm; wake watchdog's telemetry evidence wired; OTEL_* env
   injected for claude (same vars as hive.ts). 6/6 unit tests (2 new ingest
   tests with realistic OTLP bodies).
+- 2026-10-04 (10): hermes preset + missions UI. Hermes lands as a
+  'type-into-tui' peer (hermes --cli REPL, model via --model) — the original
+  goal realized at preset level; deeper lifecycle bridging stays TODO.
+  MissionsPanel gives the schedules a real toggle (the missing UI for
+  heartbeat/compact/standup). npm build clean.

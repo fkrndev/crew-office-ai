@@ -51,6 +51,7 @@ export type AgentProvider =
   | 'pi'
   | 'copilot'
   | 'cursor'
+  | 'hermes'
   | 'custom';
 
 export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
@@ -239,6 +240,24 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
       win32: 'irm https://cursor.com/install?win32=true | iex'
     },
     docsUrl: 'https://cursor.com/docs/cli/install'
+  },
+  {
+    // Hermes (NousResearch/hermes-agent) — a Python agent runtime, not a
+    // hook-bridge CLI: it lands as a 'type-into-tui' peer like crush/cursor,
+    // receiving the hive prompt as its typed first turn. `--cli` forces the
+    // REPL (the TUI would fight our PTY chrome); inbox rides the typed channel
+    // since Hermes has no hook protocol to bridge.
+    id: 'hermes',
+    label: 'Hermes · Nous',
+    defaultCommand: 'hermes --cli',
+    autoModeFlag: '',
+    supportsModel: true,
+    modelFlag: '--model',
+    hiveAware: false,
+    canReceiveInbox: true,
+    seedDelivery: 'type-into-tui',
+    installCommand: 'pip install hermes-agent',
+    docsUrl: 'https://github.com/NousResearch/hermes-agent'
   },
   {
     id: 'custom',
