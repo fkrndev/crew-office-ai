@@ -607,6 +607,47 @@ impl Hive {
         Ok(path)
     }
 
+    /// Grok lifecycle bridge — global hooks in `~/.grok/hooks/office-agent.json`
+    /// (upstream installGrokHooks, hive.ts:2515). Grok's global hook dir is
+    /// trusted, sessions stay in the user's GROK_HOME, and every entry is a
+    /// no-op outside hive workers because the shim exits when AGENT_ID/HIVE_SOCK
+    /// are absent — the same runtime-scoping the upstream .cjs relied on.
+    /// The shim's `--grok` mode normalizes grok's camelCase payload.
+    pub fn install_grok_hooks(&self, hook_bin: &Path) -> Result<()> {
+        let hook_dir = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".grok")
+            .join("hooks");
+        fs::create_dir_all(&hook_dir)?;
+        let cmd = format!("\"{}\" --grok", hook_bin.display());
+        let tool = |matcher: bool| {
+            let mut e = serde_json::json!({
+                "hooks": [{ "type": "command", "command": cmd }]
+            });
+            if matcher {
+                e["matcher"] = serde_json::json!(".*");
+            }
+            e
+        };
+        let hooks = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [tool(true)],
+                "PostToolUse": [tool(true)],
+                "Stop": [tool(false)],
+                "SubagentStop": [tool(true)],
+                "SessionStart": [tool(true)],
+                "UserPromptSubmit": [tool(false)],
+                "PreCompact": [tool(true)],
+                "PostCompact": [tool(true)]
+            }
+        });
+        fs::write(
+            hook_dir.join("office-agent.json"),
+            serde_json::to_string_pretty(&hooks)?,
+        )?;
+        Ok(())
+    }
+
     fn link_or_copy(src: &Path, dst: &Path) {
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_file(src, dst).is_ok();

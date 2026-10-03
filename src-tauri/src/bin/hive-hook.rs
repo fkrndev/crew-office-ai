@@ -40,8 +40,11 @@ fn main() {
     let mode = args.get(1).cloned().unwrap_or_default();
     let hermes_mode = mode == "--hermes";
     let gemini_mode = mode == "--gemini";
+    let grok_mode = mode == "--grok";
     let arg_event = if hermes_mode || gemini_mode {
         args.get(2).cloned().unwrap_or_default()
+    } else if grok_mode {
+        String::new() // event arrives via the normalized payload
     } else {
         args.get(1).cloned().unwrap_or_default()
     };
@@ -56,6 +59,9 @@ fn main() {
 
     let mut payload: serde_json::Value =
         serde_json::from_str(&input).unwrap_or(serde_json::json!({}));
+    if grok_mode {
+        normalize_grok(&mut payload);
+    }
     if payload.get("agent_id").is_none() {
         if let Ok(id) = env::var("AGENT_ID") {
             payload["agent_id"] = serde_json::json!(id);
@@ -109,7 +115,7 @@ fn main() {
         }
         if hermes_mode {
             println!("{}", to_hermes(trimmed));
-        } else if gemini_mode {
+        } else if gemini_mode || grok_mode {
             println!("{}", to_gemini(trimmed));
         } else {
             println!("{trimmed}");
@@ -154,6 +160,57 @@ fn to_hermes(resp: &str) -> String {
         return resp.to_string();
     }
     "{}".into()
+}
+
+/// Grok's wire payload is camelCase with snake_case event values — normalize
+/// to the Claude-shaped contract the HookServer owns (GROK_HOOK_SHIM's input
+/// translation, minus the JS).
+fn normalize_grok(p: &mut serde_json::Value) {
+    let names = [
+        ("pre_tool_use", "PreToolUse"),
+        ("post_tool_use", "PostToolUse"),
+        ("post_tool_use_failure", "PostToolUseFailure"),
+        ("permission_denied", "PermissionDenied"),
+        ("stop", "Stop"),
+        ("stop_failure", "StopFailure"),
+        ("session_start", "SessionStart"),
+        ("session_end", "SessionEnd"),
+        ("user_prompt_submit", "UserPromptSubmit"),
+        ("notification", "Notification"),
+        ("subagent_start", "SubagentStart"),
+        ("subagent_stop", "SubagentStop"),
+        ("pre_compact", "PreCompact"),
+        ("post_compact", "PostCompact"),
+    ];
+    let raw = p
+        .get("hookEventName")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let mapped = names
+        .iter()
+        .find(|(g, _)| *g == raw)
+        .map(|(_, c)| c.to_string())
+        .unwrap_or(if raw.is_empty() { "Unknown".into() } else { raw });
+    if let Some(obj) = p.as_object_mut() {
+        let mv = |o: &mut serde_json::Map<String, serde_json::Value>, from: &str, to: &str| {
+            if let Some(v) = o.remove(from) {
+                o.insert(to.to_string(), v);
+            }
+        };
+        mv(obj, "hookEventName", "hook_event_name");
+        obj["hook_event_name"] = serde_json::json!(mapped);
+        mv(obj, "sessionId", "session_id");
+        mv(obj, "toolName", "tool_name");
+        mv(obj, "toolInput", "tool_input");
+        mv(obj, "stopHookActive", "stop_hook_active");
+        mv(obj, "notificationType", "notification_type");
+        if !obj.contains_key("cwd") {
+            if let Some(v) = obj.remove("workspaceRoot") {
+                obj.insert("cwd".into(), v);
+            }
+        }
+    }
 }
 
 /// Claude-shaped answer → Gemini CLI hook directive (GEMINI_HOOK_SHIM's

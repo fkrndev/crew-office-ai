@@ -281,6 +281,13 @@ fn spawn_inner(
             }
         }
     }
+    // Grok bridge — GLOBAL hook file under ~/.grok/hooks (trusted dir; the
+    // shim no-ops outside hive workers via the AGENT_ID/HIVE_SOCK check).
+    if args.provider == "grok" {
+        if let Some(bin) = &st.hook_bin {
+            let _ = st.hive.install_grok_hooks(bin);
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());

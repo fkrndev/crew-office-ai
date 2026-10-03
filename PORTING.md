@@ -218,4 +218,9 @@ retry+backoff on index.lock).
   SessionStart/BeforeAgent→UserPromptSubmit/BeforeTool→PreToolUse/
   AfterTool→PostToolUse/AfterAgent→Stop, replies translated to
   {decision:"deny"}/{continue:false}/additionalContext. 9/9 tests.
-  Remaining bridges: agy + grok shims, qwen/crush proxies.
+- 2026-10-04 (15): grok hook bridge. install_grok_hooks writes the GLOBAL
+  ~/.grok/hooks/office-agent.json (trusted dir, shim no-ops outside hive
+  workers via AGENT_ID/HIVE_SOCK absence); --grok shim mode normalizes
+  grok's camelCase payload (hookEventName + names map + sessionId/toolName/
+  toolInput/stopHookActive/workspaceRoot). 9/9 tests, build clean.
+  Remaining bridges: agy shim, qwen/crush proxies.
