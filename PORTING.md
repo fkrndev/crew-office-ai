@@ -194,3 +194,10 @@ retry+backoff on index.lock).
   crate: env keys stored in Windows Credential Manager, injected into every
   spawned agent's env (config keeps only key NAMES — values never on disk).
   Deps added: keyring.
+- 2026-10-04 (12): codex hook bridge (installCodexHooks). Per-agent CODEX_HOME
+  under the agent dir: auth.json linked, packages junctioned, user's
+  config.toml seeded + [[hooks.<Event>]] tables for all 8 events pointing at
+  the SAME hive-hook shim (codex's payload is already claude-shaped —
+  status/inbox-drain/HITL-deny/wake all ride the existing pipeline). timeout
+  = 30 SECONDS — the 0→1s floor bug documented upstream is preserved as a
+  comment. 7/7 tests (new: config.toml shape). Rollout-dir exposure = TODO.

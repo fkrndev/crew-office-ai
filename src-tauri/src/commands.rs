@@ -243,6 +243,17 @@ fn spawn_inner(
             }
         }
     }
+    // Codex lifecycle bridge — a per-agent CODEX_HOME carrying our hook
+    // tables + the user's auth, so a codex worker gets the full hive pipeline
+    // (status, inbox drain, HITL deny, wake) without touching the user's
+    // global config. Same shim; codex's payload is already claude-shaped.
+    if args.provider == "codex" {
+        if let Some(bin) = &st.hook_bin {
+            if let Ok(home) = st.hive.install_codex_hooks(&agent_dir, bin) {
+                agent_env.insert("CODEX_HOME".into(), home.display().to_string());
+            }
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());

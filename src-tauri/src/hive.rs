@@ -429,6 +429,73 @@ impl Hive {
         })
     }
 
+    /// Codex lifecycle-hook bridge — the codex counterpart of the claude
+    /// settings block (upstream `installCodexHooks`, hive.ts:2193).
+    ///
+    /// Codex's hook contract is already Claude-shaped (snake_case stdin, same
+    /// response fields; `Stop` honoring {decision:'block',reason} = "continue
+    /// with reason as next prompt" — exactly our inbox drain), so the SAME
+    /// hive-hook shim serves it verbatim. Rather than mutate the user's
+    /// global ~/.codex (which also holds their login), each worker gets a
+    /// per-agent CODEX_HOME with: auth.json linked in, their config.toml
+    /// copied + our [[hooks.<Event>]] tables appended, and packages junctioned.
+    /// Returns the CODEX_HOME path for the worker's env.
+    pub fn install_codex_hooks(&self, dir: &Path, hook_bin: &Path) -> Result<PathBuf> {
+        let home = dir.join(".codex");
+        fs::create_dir_all(&home)?;
+        let user_home = dirs::home_dir().unwrap_or_default().join(".codex");
+
+        // auth.json — symlink where permitted, copy otherwise (login follows
+        // the user). Idempotent.
+        let (auth_src, auth_dst) = (user_home.join("auth.json"), home.join("auth.json"));
+        if auth_src.exists() && !auth_dst.exists() {
+            Self::link_or_copy(&auth_src, &auth_dst);
+        }
+        // packages — the managed app-server binaries; junction where possible.
+        let (pk_src, pk_dst) = (user_home.join("packages"), home.join("packages"));
+        if pk_src.exists() && !pk_dst.exists() {
+            #[cfg(windows)]
+            let _ = std::os::windows::fs::symlink_dir(&pk_src, &pk_dst);
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(&pk_src, &pk_dst);
+        }
+
+        // config.toml — seed the user's (model/provider/trust carry over) and
+        // append our hook group. `timeout` here is SECONDS — Codex floors a 0
+        // to ONE second, which timed every shim call out under concurrent
+        // spawns upstream (#v0.3.7 bug); 30s clears cold-start by two orders.
+        let mut config = fs::read_to_string(user_home.join("config.toml")).unwrap_or_default();
+        let command = hook_bin.display().to_string();
+        config.push_str("\n# --- office-agent lifecycle hooks (auto-generated; do not edit) ---\n");
+        for ev in [
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "SubagentStop",
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreCompact",
+            "PostCompact",
+        ] {
+            config.push_str(&format!(
+                "\n[[hooks.{ev}]]\n[[hooks.{ev}.hooks]]\ntype = \"command\"\ncommand = {}\ntimeout = 30\n",
+                serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".into())
+            ));
+        }
+        fs::write(home.join("config.toml"), config)?;
+        Ok(home)
+    }
+
+    fn link_or_copy(src: &Path, dst: &Path) {
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(src, dst).is_ok();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(src, dst).is_ok();
+        if !linked {
+            let _ = fs::copy(src, dst);
+        }
+    }
+
     /// The system-prompt prefix injected into every spawn. Port of
     /// hive.injectedPrompt — interpolates only lifetime-stable values so the
     /// prompt-cache invariant holds (no dates/UUIDs/volatile state).
@@ -753,5 +820,27 @@ impl Hive {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_hooks_write_config_with_all_events() {
+        let dir = std::env::temp_dir().join(format!("oa-codex-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let hook_bin = dir.join("hive-hook.exe");
+        let home = hive.install_codex_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        for ev in ["PreToolUse", "PostToolUse", "Stop", "SubagentStop",
+                   "SessionStart", "UserPromptSubmit", "PreCompact", "PostCompact"] {
+            assert!(cfg.contains(&format!("[[hooks.{ev}]]")), "missing {ev}");
+        }
+        assert!(cfg.contains("timeout = 30"), "codex floors timeout 0 to 1s - never emit it");
+        assert!(cfg.contains("hive-hook.exe"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
