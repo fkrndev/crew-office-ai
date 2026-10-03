@@ -6,6 +6,8 @@ pub mod config;
 pub mod cost_lifetime;
 mod control;
 mod db;
+pub mod fs_ops;
+mod git_ops;
 pub mod hive;
 mod hire;
 mod hooks;
@@ -587,6 +589,10 @@ pub fn run() {
             commands::command_history_add,
             commands::command_history_list,
             commands::command_history_search,
+            commands::fs_list,
+            commands::fs_read,
+            commands::git_snapshot,
+            commands::git_log,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,

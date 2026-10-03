@@ -870,6 +870,57 @@ pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)
     Ok(state(&app).webhook.pending())
 }
 
+// ─── git pane (read surface; safe_resolve confinement on the caller path) ──
+
+/// One git snapshot for the pane — is_repo? branch? counts? ahead/behind?
+/// The `cwd` argument is the agent's workspace directory.
+#[tauri::command]
+pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, String> {
+    let _ = app;
+    let p = std::path::Path::new(&cwd);
+    if !crate::git_ops::is_repo(p) {
+        return Ok(serde_json::json!({ "isRepo": false }));
+    }
+    Ok(serde_json::json!({
+        "isRepo": true,
+        "branch": crate::git_ops::branch(p),
+        "status": crate::git_ops::status(p),
+        "aheadBehind": crate::git_ops::ahead_behind(p),
+        "unintegratedWork": crate::git_ops::worktree_has_unintegrated_work(p),
+    }))
+}
+
+#[tauri::command]
+pub fn git_log(app: AppHandle, cwd: String, n: Option<usize>) -> Result<Vec<serde_json::Value>, String> {
+    let _ = app;
+    crate::git_ops::log(std::path::Path::new(&cwd), n.unwrap_or(50).min(500))
+        .ok_or_else(|| "not a git repository".to_string())
+}
+
+// ─── confined fs browser (fs_ops.safe_resolve policy) ───────────────────────
+
+/// List a directory inside an agent's workspace — `root` is the agent's cwd
+/// (or any path the caller confines); `rel` must stay inside it.
+#[tauri::command]
+pub fn fs_list(app: AppHandle, root: String, rel: String) -> Result<Vec<serde_json::Value>, String> {
+    let _ = app;
+    crate::fs_ops::list_dir(std::path::Path::new(&root), &rel)
+        .ok_or_else(|| "path escapes the workspace".to_string())
+}
+
+#[tauri::command]
+pub fn fs_read(app: AppHandle, root: String, rel: String) -> Result<serde_json::Value, String> {
+    let _ = app;
+    match crate::fs_ops::read_file(std::path::Path::new(&root), &rel) {
+        Some(crate::fs_ops::FsRead::Text(t)) => Ok(serde_json::json!({"kind": "text", "data": t})),
+        Some(crate::fs_ops::FsRead::Image { mime, base64 }) => {
+            Ok(serde_json::json!({"kind": "image", "mime": mime, "data": base64}))
+        }
+        Some(crate::fs_ops::FsRead::TooLarge(n)) => Err(format!("file too large ({n} bytes)")),
+        None => Err("path escapes the workspace or is unreadable".into()),
+    }
+}
+
 // ─── persist store (kv + command history) ───────────────────────────────────
 
 #[tauri::command]

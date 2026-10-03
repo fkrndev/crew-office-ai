@@ -320,3 +320,10 @@ retry+backoff on index.lock).
   migrations, kv table (JSON scalars, upsert), command_history (every
   submitted prompt, agent-scoped + substring search with LIKE escaping).
   Commands: kv_get/set, command_history_add/list/search. 60 tests green.
+- 2026-10-04 (30): fs_ops.rs — safeResolve port: canonicalize-through-
+  deepest-existing-ancestor, lexical escape rejection, dangling-symlink
+  lstat walk (the load-bearing case), Windows \\?\ prefix + 8.3-name
+  handling; fs_list/fs_read (2MB cap, image preview). git_ops.rs — the
+  git pane read surface via git2 (branch/status/ahead-behind/log/
+  unintegrated-work guard for worktree removal). Commands:
+  git_snapshot/git_log. 63 tests green.
