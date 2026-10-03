@@ -316,3 +316,7 @@ retry+backoff on index.lock).
   links, loopback-only http exception, and the SSRF-gated fetcher
   (resolved-IP blocklist incl. v4-mapped v6, CGNAT, 169.254.169.254).
   Commands: hire_validate/fetch/import_file. 59 tests green.
+- 2026-10-04 (29): db.rs — PersistStore (harness.db, WAL): versioned
+  migrations, kv table (JSON scalars, upsert), command_history (every
+  submitted prompt, agent-scoped + substring search with LIKE escaping).
+  Commands: kv_get/set, command_history_add/list/search. 60 tests green.

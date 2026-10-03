@@ -66,6 +66,8 @@ pub struct AppState {
     pub closing: crate::closing_time::ClosingTime,
     /// Slack Events-API adapter (slack.rs) — HMAC-gated inbound → god inbox.
     pub slack: std::sync::Arc<crate::slack::SlackServer>,
+    /// Durable harness state (db.rs) — kv + command history in SQLite/WAL.
+    pub persist: Mutex<crate::db::PersistStore>,
 }
 
 impl AppState {
@@ -106,6 +108,11 @@ impl AppState {
             roster: crate::roster::RosterStore::new(harness_home.clone()),
             closing: crate::closing_time::ClosingTime::default(),
             slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
+            persist: {
+                let mut s = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
+                let _ = s.open(); // best-effort — a DB failure can't crash startup
+                Mutex::new(s)
+            },
             sock_addr: None,
             hook_bin,
         })
@@ -861,6 +868,41 @@ pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
     Ok(state(&app).webhook.pending())
+}
+
+// ─── persist store (kv + command history) ───────────────────────────────────
+
+#[tauri::command]
+pub fn kv_get(app: AppHandle, key: String) -> Result<serde_json::Value, String> {
+    Ok(state(&app)
+        .persist
+        .lock()
+        .unwrap()
+        .get_kv(&key)
+        .unwrap_or(serde_json::Value::Null))
+}
+
+#[tauri::command]
+pub fn kv_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<bool, String> {
+    state(&app).persist.lock().unwrap().set_kv(&key, &value);
+    Ok(true)
+}
+
+/// Record one user-submitted prompt (db.ts addHistory).
+#[tauri::command]
+pub fn command_history_add(app: AppHandle, agent_id: String, cwd: Option<String>, text: String) -> Result<bool, String> {
+    state(&app).persist.lock().unwrap().add_history(&agent_id, cwd.as_deref(), &text);
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn command_history_list(app: AppHandle, agent_id: Option<String>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state(&app).persist.lock().unwrap().list_history(agent_id.as_deref(), limit.unwrap_or(100)))
+}
+
+#[tauri::command]
+pub fn command_history_search(app: AppHandle, query: String, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state(&app).persist.lock().unwrap().search_history(&query, limit.unwrap_or(50)))
 }
 
 // ─── hire manifests (munderdifflin://hire deep link + file import) ──────────

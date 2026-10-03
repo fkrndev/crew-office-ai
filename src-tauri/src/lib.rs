@@ -5,6 +5,7 @@ mod commands;
 pub mod config;
 pub mod cost_lifetime;
 mod control;
+mod db;
 pub mod hive;
 mod hire;
 mod hooks;
@@ -581,6 +582,11 @@ pub fn run() {
             commands::hire_validate,
             commands::hire_fetch,
             commands::hire_import_file,
+            commands::kv_get,
+            commands::kv_set,
+            commands::command_history_add,
+            commands::command_history_list,
+            commands::command_history_search,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,
