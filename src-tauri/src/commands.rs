@@ -234,6 +234,15 @@ fn spawn_inner(
     }
     // OTel wiring (hive.ts:983-989 — claude only): metrics/logs pushed as
     // OTLP/HTTP-JSON to the embedded collector, tagged by agent.id.
+    // Keychain secrets configured for injection (config.secret_env_keys) —
+    // values come out of the OS credential store at spawn, never from disk.
+    for key in &st.config.lock().unwrap().secret_env_keys {
+        if let Ok(entry) = keyring::Entry::new("office-agent", key) {
+            if let Ok(v) = entry.get_password() {
+                agent_env.insert(key.clone(), v);
+            }
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());
@@ -579,6 +588,48 @@ pub fn missions_save(
     // free (no re-arm plumbing; that's the poll design's payoff).
     let _ = app.emit("missions-updated", serde_json::json!({}));
     Ok(())
+}
+
+// ─── secrets (OS keychain → agent env) ──────────────────────────────────────
+
+const KEYRING_SERVICE: &str = "office-agent";
+
+/// Store a secret in the OS credential store and register its env key for
+/// injection. The value never touches config.json or log.jsonl.
+#[tauri::command]
+pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let key = key.trim().to_string();
+    if key.is_empty() || value.is_empty() {
+        return Err("key and value required".into());
+    }
+    keyring::Entry::new(KEYRING_SERVICE, &key)
+        .and_then(|e| e.set_password(&value))
+        .map_err(|e| format!("keychain: {e}"))?;
+    let st = state(&app);
+    let mut cfg = st.config.lock().unwrap();
+    if !cfg.secret_env_keys.contains(&key) {
+        cfg.secret_env_keys.push(key);
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    Ok(())
+}
+
+/// Remove a secret — from the keychain AND the injection list.
+#[tauri::command]
+pub fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
+    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &key) {
+        let _ = e.delete_credential();
+    }
+    let st = state(&app);
+    let mut cfg = st.config.lock().unwrap();
+    cfg.secret_env_keys.retain(|k| k != &key);
+    st.config_store.save(&cfg).map_err(err_str)
+}
+
+/// The injection-list key NAMES — values are never exposed to the frontend.
+#[tauri::command]
+pub fn secrets_list(app: AppHandle) -> Result<Vec<String>, String> {
+    Ok(state(&app).config.lock().unwrap().secret_env_keys.clone())
 }
 
 // ─── webhooks (inbound HTTP → god's inbox) ──────────────────────────────────

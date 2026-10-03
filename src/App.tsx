@@ -3,9 +3,11 @@ import { getConfig, onAgentStatus, onBreakerState, onPtyExit, setAutoMode } from
 import { AddAgent } from './components/AddAgent';
 import { AgentList } from './components/AgentList';
 import { ControlStrip } from './components/ControlStrip';
+import { BoardPanel } from './components/BoardPanel';
 import { InboxPanel } from './components/InboxPanel';
 import { MissionsPanel } from './components/MissionsPanel';
 import { OfficeFloorLite } from './components/OfficeFloorLite';
+import { SecretsPanel } from './components/SecretsPanel';
 import { TerminalPane } from './components/TerminalPane';
 import { useApp } from './store';
 
@@ -13,6 +15,8 @@ export default function App() {
   const { agents, selected, refreshAgents, setBreaker, select } = useApp();
   const [adding, setAdding] = useState(false);
   const [showMissions, setShowMissions] = useState(false);
+  const [showBoard, setShowBoard] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
   const [autoMode, setAuto] = useState(false);
 
   useEffect(() => {
@@ -46,8 +50,14 @@ export default function App() {
             )}{' '}
             {agent ? `${agent.name} — ${agent.provider}` : 'Office floor'}
           </span>
+          <button className="ghost" onClick={() => setShowBoard(true)}>
+            Board
+          </button>
           <button className="ghost" onClick={() => setShowMissions(true)}>
             Schedules
+          </button>
+          <button className="ghost" onClick={() => setShowSecrets(true)}>
+            Secrets
           </button>
           <label className="row">
             <input
@@ -73,7 +83,9 @@ export default function App() {
           <OfficeFloorLite />
         )}
       </main>
+      {showBoard && <BoardPanel onClose={() => setShowBoard(false)} />}
       {showMissions && <MissionsPanel onClose={() => setShowMissions(false)} />}
+      {showSecrets && <SecretsPanel onClose={() => setShowSecrets(false)} />}
       {adding && <AddAgent onClose={() => setAdding(false)} />}
     </div>
   );

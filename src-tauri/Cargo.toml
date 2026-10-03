@@ -29,6 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 tiny_http = "0.12"
 jsonschema = "0.30"
+keyring = "3"
 
 [profile.release]
 opt-level = 3

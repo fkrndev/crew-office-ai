@@ -137,6 +137,11 @@ label.row, .row { display: flex; flex-direction: row; align-items: center; gap: 
 .mission-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .mission-row:last-of-type { border-bottom: none; }
 .row.end { justify-content: flex-end; margin-top: 10px; }
+.modal.wide { max-width: 860px; width: 86vw; }
+.modal.wide .split { gap: 14px; }
+.board-md, .board-tasks { flex: 1; min-width: 0; }
+.board-md pre, .board-tasks pre { white-space: pre-wrap; font-size: 12px; line-height: 1.5; }
+.board-tasks h3 { margin: 0 0 8px; font-size: 13px; color: var(--dim); }
 
 .control-strip {
   display: flex;

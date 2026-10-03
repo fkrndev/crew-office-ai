@@ -38,6 +38,10 @@ pub struct Config {
     /// Secrets live here (harness-local file) and never leave the backend.
     pub webhooks: Vec<crate::webhook::WebhookEndpoint>,
     pub webhook_port: u16,
+    /// Names of OS-keychain secrets (Windows Credential Manager via the
+    /// keyring crate) injected into every spawned agent's env — e.g.
+    /// ANTHROPIC_API_KEY, OPENAI_API_KEY. Values never live in this file.
+    pub secret_env_keys: Vec<String>,
 }
 
 impl Default for Config {
@@ -55,6 +59,7 @@ impl Default for Config {
             compact_seeded: false,
             webhooks: Vec::new(),
             webhook_port: 8787,
+            secret_env_keys: Vec::new(),
         }
     }
 }

@@ -452,6 +452,9 @@ pub fn run() {
             commands::webhook_approve,
             commands::webhook_reject,
             commands::webhook_pending,
+            commands::secret_set,
+            commands::secret_delete,
+            commands::secrets_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running office-agent");

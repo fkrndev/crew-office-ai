@@ -189,3 +189,8 @@ retry+backoff on index.lock).
   goal realized at preset level; deeper lifecycle bridging stays TODO.
   MissionsPanel gives the schedules a real toggle (the missing UI for
   heartbeat/compact/standup). npm build clean.
+- 2026-10-04 (11): board/tasks view + secrets. BoardPanel reads god's
+  board.md + tasks.json (read-only, 5s refresh). SecretsPanel + keyring
+  crate: env keys stored in Windows Credential Manager, injected into every
+  spawned agent's env (config keeps only key NAMES — values never on disk).
+  Deps added: keyring.
