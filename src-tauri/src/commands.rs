@@ -269,6 +269,18 @@ fn spawn_inner(
             }
         }
     }
+    // Gemini lifecycle bridge — per-agent system-settings.json bound via
+    // GEMINI_CLI_SYSTEM_SETTINGS_PATH; the shim's --gemini mode translates.
+    if args.provider == "gemini" {
+        if let Some(bin) = &st.hook_bin {
+            if let Ok(p) = st.hive.install_gemini_hooks(&agent_dir, bin) {
+                agent_env.insert(
+                    "GEMINI_CLI_SYSTEM_SETTINGS_PATH".into(),
+                    p.display().to_string(),
+                );
+            }
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());

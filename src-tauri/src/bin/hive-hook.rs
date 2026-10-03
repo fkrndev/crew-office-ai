@@ -34,8 +34,13 @@ use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let hermes_mode = args.get(1).is_some_and(|a| a == "--hermes");
-    let arg_event = if hermes_mode {
+    // `--<provider> <CanonicalEvent>` — translator modes (Hermes/Gemini):
+    // their `hooks:` entries carry provider event names; the argv override
+    // supplies ours, and the response is re-shaped per provider contract.
+    let mode = args.get(1).cloned().unwrap_or_default();
+    let hermes_mode = mode == "--hermes";
+    let gemini_mode = mode == "--gemini";
+    let arg_event = if hermes_mode || gemini_mode {
         args.get(2).cloned().unwrap_or_default()
     } else {
         args.get(1).cloned().unwrap_or_default()
@@ -104,6 +109,8 @@ fn main() {
         }
         if hermes_mode {
             println!("{}", to_hermes(trimmed));
+        } else if gemini_mode {
+            println!("{}", to_gemini(trimmed));
         } else {
             println!("{trimmed}");
         }
@@ -145,6 +152,48 @@ fn to_hermes(resp: &str) -> String {
     // Already Hermes-shaped (decision/action keys pass through verbatim).
     if v.get("decision").is_some() || v.get("action").is_some() || v.get("context").is_some() {
         return resp.to_string();
+    }
+    "{}".into()
+}
+
+/// Claude-shaped answer → Gemini CLI hook directive (GEMINI_HOOK_SHIM's
+/// `done()`): deny→{"decision":"deny"}, {continue:false}→same shape,
+/// additionalContext passes through under hookSpecificOutput.
+fn to_gemini(resp: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(resp) else {
+        return "{}".into();
+    };
+    if v.get("continue").and_then(|c| c.as_bool()) == Some(false) {
+        return serde_json::json!({
+            "continue": false,
+            "stopReason": v.get("stopReason").and_then(|r| r.as_str()).unwrap_or("")
+        })
+        .to_string();
+    }
+    let deny_reason = v
+        .pointer("/hookSpecificOutput/permissionDecisionReason")
+        .and_then(|r| r.as_str())
+        .or_else(|| {
+            if v.get("decision").and_then(|d| d.as_str()) == Some("block") {
+                v.get("reason").and_then(|r| r.as_str())
+            } else {
+                None
+            }
+        });
+    if let Some(reason) = deny_reason {
+        return serde_json::json!({"decision": "deny", "reason": reason}).to_string();
+    }
+    if let Some(ctx) = v
+        .get("additionalContext")
+        .or_else(|| v.pointer("/hookSpecificOutput/additionalContext"))
+        .and_then(|c| c.as_str())
+    {
+        if !ctx.is_empty() {
+            return serde_json::json!({
+                "hookSpecificOutput": { "additionalContext": ctx }
+            })
+            .to_string();
+        }
     }
     "{}".into()
 }

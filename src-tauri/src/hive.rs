@@ -565,6 +565,48 @@ impl Hive {
         Ok(home)
     }
 
+    /// Gemini lifecycle bridge — per-agent `system-settings.json` under
+    /// `<dir>/.gemini-hive`, bound by GEMINI_CLI_SYSTEM_SETTINGS_PATH
+    /// (upstream installGeminiHooks, hive.ts:2140). Gemini's payload is
+    /// already snake_case; the shim's `--gemini` mode maps each event onto
+    /// our canonical name via argv and translates replies back to Gemini's
+    /// {decision:"deny"} / {continue:false} shapes. Auth and user settings
+    /// stay in the user's own GEMINI_CLI_HOME — only the trusted bridge is
+    /// isolated per worker.
+    pub fn install_gemini_hooks(&self, dir: &Path, hook_bin: &Path) -> Result<PathBuf> {
+        let home = dir.join(".gemini-hive");
+        fs::create_dir_all(&home)?;
+        let cmd = |ev: &str| format!("\"{}\" --gemini {ev}", hook_bin.display());
+        let entry = |name: &str, ev: &str, matcher: bool| {
+            let mut e = serde_json::json!({
+                "sequential": true,
+                "hooks": [{
+                    "name": format!("office-agent-{name}"),
+                    "type": "command",
+                    "command": cmd(ev),
+                    "timeout": 30000
+                }]
+            });
+            if matcher {
+                e["matcher"] = serde_json::json!(".*");
+            }
+            e
+        };
+        let settings = serde_json::json!({
+            "hooksConfig": { "enabled": true, "notifications": false },
+            "hooks": {
+                "SessionStart": [entry("session-start", "SessionStart", false)],
+                "BeforeAgent":  [entry("before-agent",  "UserPromptSubmit", false)],
+                "BeforeTool":   [entry("before-tool",   "PreToolUse", true)],
+                "AfterTool":    [entry("after-tool",    "PostToolUse", true)],
+                "AfterAgent":   [entry("after-agent",   "Stop", false)]
+            }
+        });
+        let path = home.join("system-settings.json");
+        fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
+        Ok(path)
+    }
+
     fn link_or_copy(src: &Path, dst: &Path) {
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_file(src, dst).is_ok();
@@ -942,6 +984,29 @@ mod tests {
         assert!(cfg.contains("--hermes PreToolUse"));
         assert!(cfg.contains("--hermes Stop"));
         assert!(cfg.contains("--hermes ApiError"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gemini_hooks_write_system_settings_with_event_map() {
+        let dir = std::env::temp_dir().join(format!("oa-gemini-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let hook_bin = dir.join("hive-hook.exe");
+        let path = hive.install_gemini_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["hooksConfig"]["enabled"], serde_json::json!(true));
+        for (ge, ce) in [
+            ("SessionStart", "SessionStart"),
+            ("BeforeAgent", "UserPromptSubmit"),
+            ("BeforeTool", "PreToolUse"),
+            ("AfterTool", "PostToolUse"),
+            ("AfterAgent", "Stop"),
+        ] {
+            let cmd = v["hooks"][ge][0]["hooks"][0]["command"].as_str().unwrap_or("");
+            assert!(cmd.contains(&format!("--gemini {ce}")), "{ge} → {ce}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

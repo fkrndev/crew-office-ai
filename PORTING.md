@@ -212,3 +212,10 @@ retry+backoff on index.lock).
   {"decision":"block"} and additionalContext→{"context"}. Hermes' own
   stdin contract was already Claude-shaped — no payload transform needed.
   8/8 tests.
+- 2026-10-04 (14): gemini hook bridge. install_gemini_hooks writes
+  per-agent system-settings.json (.gemini-hive/, bound via
+  GEMINI_CLI_SYSTEM_SETTINGS_PATH); shim gains --gemini mode mapping
+  SessionStart/BeforeAgent→UserPromptSubmit/BeforeTool→PreToolUse/
+  AfterTool→PostToolUse/AfterAgent→Stop, replies translated to
+  {decision:"deny"}/{continue:false}/additionalContext. 9/9 tests.
+  Remaining bridges: agy + grok shims, qwen/crush proxies.
