@@ -98,6 +98,10 @@ pub struct RegistryEntry {
     /// dedup, same as upstream's recordSession.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The spawn command line — kept so respawn/restart can rebuild the PTY
+    /// without asking the UI for the original invocation again.
+    #[serde(default)]
+    pub command: String,
     pub created_at: String,
 }
 

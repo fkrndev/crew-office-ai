@@ -8,6 +8,7 @@ mod missions;
 mod pty;
 mod ptyenv;
 mod usage;
+mod workerwake;
 
 use std::time::Duration;
 
@@ -212,6 +213,103 @@ pub fn run() {
                     }
                 }
             });
+            // Worker-wake watchdog beat (workerwake.rs, #151): the backstop
+            // for mail that lands on an ALREADY-idle worker — the Stop-time
+            // idle delivery can't see it. 10s cadence, edge-triggered nudges.
+            let handle4 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(10));
+                loop {
+                    tick.tick().await;
+                    let st = handle4.state::<AppState>();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let mut facts = Vec::new();
+                    for a in st.hive.registry() {
+                        let pty = st.ptys.lock().unwrap();
+                        let Some(h) = pty.get(&a.id) else { continue };
+                        let last_output_at =
+                            h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);
+                        drop(pty);
+                        let inbox = st.hive.inbox(&a.id).unwrap_or_default();
+                        let mut oldest = 0u64;
+                        let ids: Vec<String> = inbox
+                            .iter()
+                            .map(|m| {
+                                if let Ok(t) =
+                                    chrono::DateTime::parse_from_rfc3339(&m.created_at)
+                                {
+                                    let ms = t.timestamp_millis() as u64;
+                                    if oldest == 0 || ms < oldest {
+                                        oldest = ms;
+                                    }
+                                }
+                                m.id.clone()
+                            })
+                            .collect();
+                        let snap = st.control.lock().unwrap().snapshot(&a.id);
+                        let sample = st.usage.sample(&a.cwd, a.session_id.as_deref());
+                        facts.push(workerwake::WorkerWakeFacts {
+                            agent_id: a.id.clone(),
+                            is_god: a.is_god,
+                            pty_id: Some(a.id.clone()),
+                            last_output_at,
+                            inbox_ids: ids,
+                            auto_delivery_paused: snap.auto_delivery_paused,
+                            paused: snap.paused,
+                            halted: snap.halted,
+                            last_activity_at: sample.as_ref().map(|s| s.ts).unwrap_or(0),
+                            has_telemetry: sample.is_some(),
+                            oldest_mail_at: oldest,
+                        });
+                    }
+                    if facts.is_empty() {
+                        continue;
+                    }
+                    // Report held workers with genuinely old mail once per
+                    // cooldown — the watchdog's silence otherwise reads as
+                    // "nothing to do" (upstream shouldReportHold).
+                    {
+                        let mut wake = st.wake.lock().unwrap();
+                        for f in &facts {
+                            if f.oldest_mail_at > 0
+                                && now.saturating_sub(f.oldest_mail_at) > 60_000
+                            {
+                                if let Some(why) = wake.explain(f, now) {
+                                    if wake.should_report_hold(&f.agent_id, now) {
+                                        let _ = handle4.emit(
+                                            "hive-log",
+                                            serde_json::json!({
+                                                "event": "wake_hold",
+                                                "agent": f.agent_id,
+                                                "reason": why
+                                            }),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        let nudge = wake.decide(&facts, now);
+                        drop(wake);
+                        for id in nudge {
+                            // Same type pattern as the renderer: text first,
+                            // Enter as a separate keystroke.
+                            let mut ptys = st.ptys.lock().unwrap();
+                            if let Some(h) = ptys.get_mut(&id) {
+                                let _ = h.write(workerwake::WORKER_WAKE_NUDGE);
+                                let _ = h.write("\r");
+                            }
+                            let _ = handle4.emit(
+                                "hive-log",
+                                serde_json::json!({ "event": "wake_nudge", "agent": id }),
+                            );
+                        }
+                    }
+                }
+            });
+
             // Mission scheduler — syncMissions port as a 15s poll (no timer
             // re-arm; a missions:save takes effect on the next tick).
             let handle3 = app.handle().clone();
@@ -287,10 +385,12 @@ pub fn run() {
             commands::control_halt,
             commands::control_steer,
             commands::control_gate_tool,
+            commands::control_pause_delivery,
             commands::control_snapshot,
             commands::breaker_level,
             commands::missions_list,
             commands::missions_save,
+            commands::respawn_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running office-agent");

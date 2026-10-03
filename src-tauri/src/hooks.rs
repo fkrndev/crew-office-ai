@@ -128,8 +128,15 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
         return json!({ "continue": false, "stopReason": "Halted by the operator from the floor." });
     }
 
-    // Breaker inputs from the hook stream (breaker.ts event-driven inputs).
+    // Breaker inputs + the wake watchdog's hook channel (its only turn-proof
+    // evidence for engines without telemetry).
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    st.wake.lock().unwrap().note_hook(
+        &agent_id,
+        &event,
+        p.get("message").and_then(|v| v.as_str()).unwrap_or(""),
+        now_ms,
+    );
     match event.as_str() {
         "PostToolUse" => st.breaker.lock().unwrap().record_tool_use(
             &agent_id,

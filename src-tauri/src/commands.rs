@@ -35,6 +35,10 @@ pub struct AppState {
     /// mid-work, drained at the next idle boundary (upstream's renderer-side
     /// compact queue, moved backend-side where agent status lives).
     pub compact_queue: Mutex<std::collections::HashSet<String>>,
+    /// Inbox-wake watchdog backstop (workerwake.rs) — nudges idle workers
+    /// whose mail landed AFTER their last Stop (the stall the renderer-side
+    /// idle loop misses). Fed by hooks/spawn/kill.
+    pub wake: Mutex<crate::workerwake::WorkerWakeWatchdog>,
 }
 
 impl AppState {
@@ -64,6 +68,7 @@ impl AppState {
             control: Mutex::new(ControlRegistry::default()),
             usage: crate::usage::UsageReader::default(),
             compact_queue: Mutex::new(std::collections::HashSet::new()),
+            wake: Mutex::new(crate::workerwake::WorkerWakeWatchdog::default()),
             sock_addr: None,
             hook_bin,
         })
@@ -127,12 +132,57 @@ pub struct Spawned {
 
 #[tauri::command]
 pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
+    spawn_inner(app, args, None, None)
+}
+
+/// Respawn a registry agent — same id, same hive folder/memory, optionally
+/// resuming its recorded session (claude --resume <session_id>). This is the
+/// restart/restore-team path: the registry survives, only the PTY died.
+#[tauri::command]
+pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String> {
     let st = state(&app);
-    let id = format!(
-        "{}-{}",
-        args.name.to_lowercase().replace(' ', "-"),
-        &uuid::Uuid::new_v4().simple().to_string()[..4]
-    );
+    let entry = st
+        .hive
+        .registry()
+        .into_iter()
+        .find(|a| a.id == agent_id)
+        .ok_or_else(|| format!("no agent {agent_id}"))?;
+    if st.ptys.lock().unwrap().contains_key(&agent_id) {
+        return Err(format!("agent {agent_id} is already running"));
+    }
+    let args = SpawnArgs {
+        provider: entry.provider.clone(),
+        name: entry.name.clone(),
+        role: Some(entry.role.clone()),
+        cwd: entry.cwd.clone(),
+        command: entry.command.clone(),
+        seed_prompt: None,
+        is_god: entry.is_god,
+        cols: 120,
+        rows: 30,
+    };
+    // Claude resumes by session id; other providers start fresh (their resume
+    // flags differ — PORTING.md notes the preset fields for later).
+    let resume = (entry.provider == "claude")
+        .then(|| entry.session_id.clone())
+        .flatten();
+    spawn_inner(app, args, Some(agent_id), resume)
+}
+
+fn spawn_inner(
+    app: AppHandle,
+    args: SpawnArgs,
+    forced_id: Option<String>,
+    resume_session: Option<String>,
+) -> Result<Spawned, String> {
+    let st = state(&app);
+    let id = forced_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}-{}",
+            args.name.to_lowercase().replace(' ', "-"),
+            &uuid::Uuid::new_v4().simple().to_string()[..4]
+        )
+    });
 
     let entry = RegistryEntry {
         id: id.clone(),
@@ -143,9 +193,16 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
         is_god: args.is_god,
         status: "starting".into(),
         session_id: None,
+        command: args.command.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    st.hive.register_agent(&entry).map_err(err_str)?;
+    // New agents get the full folder+registry bootstrap; a respawn reuses the
+    // existing entry and just re-stamps its status.
+    if forced_id.is_none() {
+        st.hive.register_agent(&entry).map_err(err_str)?;
+    } else {
+        st.hive.set_status(&id, "starting").map_err(err_str)?;
+    }
 
     // Per-agent hive identity env (hive.ts:803) layered over the inherited env
     // minus parent-session markers (ptyEnv.ts).
@@ -219,6 +276,10 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
                 av.push("--append-system-prompt".into());
                 av.push(injected.clone());
             }
+            if let Some(sid) = &resume_session {
+                av.push("--resume".into());
+                av.push(sid.clone());
+            }
             pty::spawn_argv(&id, &prog, &av, &cwd, &env, args.cols, args.rows, app.clone())
         }
         Some(pty::Resolved::Script(prog)) => {
@@ -229,6 +290,10 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
             if is_claude {
                 parts.push("--append-system-prompt".into());
                 parts.push(pty::cmd_quote(&pty::cmd_sanitize(&injected)));
+            }
+            if let Some(sid) = &resume_session {
+                parts.push("--resume".into());
+                parts.push(pty::cmd_quote(sid));
             }
             command_line = parts.join(" ");
             pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
@@ -241,10 +306,20 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
                     pty::cmd_quote(&pty::cmd_sanitize(&injected))
                 );
             }
+            if let Some(sid) = &resume_session {
+                command_line = format!("{} --resume {}", command_line, pty::cmd_quote(sid));
+            }
             pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
         }
     }
     .map_err(err_str)?;
+    st.wake.lock().unwrap().note_spawn(
+        &id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    );
     st.ptys.lock().unwrap().insert(id.clone(), handle);
     st.hive.set_status(&id, "idle").map_err(err_str)?;
 
@@ -299,6 +374,7 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     }
     // Dead agents can't leak a tripped breaker level or a pending steer.
     st.breaker.lock().unwrap().forget(&id);
+    st.wake.lock().unwrap().forget(&id, Some(&id));
     st.hive.set_status(&id, "stopped").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",
@@ -433,6 +509,18 @@ pub fn control_gate_tool(
     let st = state(&app);
     let mut c = st.control.lock().unwrap();
     c.gate_tool(&agent_id, &tool, on);
+    Ok(c.snapshot(&agent_id))
+}
+
+#[tauri::command]
+pub fn control_pause_delivery(
+    app: AppHandle,
+    agent_id: String,
+    on: bool,
+) -> Result<ControlSnapshot, String> {
+    let st = state(&app);
+    let mut c = st.control.lock().unwrap();
+    c.pause_auto_delivery(&agent_id, on);
     Ok(c.snapshot(&agent_id))
 }
 

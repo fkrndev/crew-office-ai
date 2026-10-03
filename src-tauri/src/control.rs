@@ -98,6 +98,17 @@ impl ControlRegistry {
         self.map.get(id).is_some_and(|c| c.halted)
     }
 
+    pub fn pause_auto_delivery(&mut self, id: &str, on: bool) {
+        self.ensure(id).auto_delivery_paused = on;
+    }
+
+    /// Beat-side read (parity with upstream's public API — the snapshot
+    /// covers the same flag for UI consumers).
+    #[allow(dead_code)]
+    pub fn is_auto_delivery_paused(&self, id: &str) -> bool {
+        self.map.get(id).is_some_and(|c| c.auto_delivery_paused)
+    }
+
     pub fn tool_decision(&self, id: &str, tool: &str) -> Option<String> {
         let c = self.map.get(id)?;
         if c.paused {

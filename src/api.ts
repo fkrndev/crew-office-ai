@@ -67,6 +67,7 @@ export const ptyWrite = (id: string, data: string) => invoke('pty_write', { id, 
 export const ptyResize = (id: string, cols: number, rows: number) =>
   invoke('pty_resize', { id, cols, rows });
 export const killAgent = (id: string) => invoke('kill_agent', { id });
+export const respawnAgent = (agentId: string) => invoke<{ id: string }>('respawn_agent', { agentId });
 
 export const hiveRegistry = () => invoke<RegistryEntry[]>('hive_registry');
 export const hiveSend = (from: string, to: string, act: string, subject: string, body: string) =>

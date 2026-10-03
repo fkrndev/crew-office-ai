@@ -1,4 +1,4 @@
-import { killAgent } from '../api';
+import { killAgent, respawnAgent } from '../api';
 import { useApp } from '../store';
 
 export function AgentList({ onAdd }: { onAdd: () => void }) {
@@ -29,6 +29,19 @@ export function AgentList({ onAdd }: { onAdd: () => void }) {
                   {a.provider} · {a.status || 'unknown'}
                 </div>
               </div>
+              {a.status === 'stopped' && (
+                <button
+                  className="ghost"
+                  title="Respawn — same id, same hive folder (claude resumes its session)"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await respawnAgent(a.id).catch((err) => alert(String(err)));
+                    await refreshAgents();
+                  }}
+                >
+                  ↻
+                </button>
+              )}
               <button
                 className="ghost danger"
                 title="Stop agent"

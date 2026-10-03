@@ -31,7 +31,9 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `modelCatalog.ts`, `ossModels.ts` | `models.rs` | TODO |
 | `cliInstall.ts`, `nodeInstall.ts` (missing-CLI installer ladder) | `install.rs` | TODO |
 | `realtime.ts` (OpenAI realtime ephemeral secrets) | keep frontend-side via `@openai/agents-realtime`, mint secret via a Rust cmd | TODO |
+| `workerWake.ts` (inbox→wake watchdog, edge-triggered + stall rule) | `workerwake.rs` + 10s beat — all holds ported (booting/mid-turn/boot-grace/hitl/announced/cooldown), hold reporting | DONE |
 | `slack.ts` webhook server, `workerLaunch/hire/hiddenClaude` | later | TODO |
+| `useRestoreTeam` / respawn | `respawn_agent` command + ↻ button — registry keeps `command` per agent; claude resumes via `--resume <session_id>` | DONE |
 | `git.ts`, `worktreeDeps.ts` (worktrees, fs/git broker for IDE) | `git2` usage in `hive.rs` covers commit; IDE git rails = TODO | PARTIAL |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds or `tauri-plugin-fs` + explicit scope check | TODO |
 
@@ -161,3 +163,9 @@ retry+backoff on index.lock).
   spawn-point seating, status-colored glow, envelope arc animation on
   hive-deliver. Full Pixi pipeline (Character.ts 38KB, portraitArt 33KB,
   wander/paths/bubbles) intentionally deferred — documented in mapping table.
+- 2026-10-04 (7): wake watchdog + respawn. workerwake.rs ports the #151
+  watchdog (edge-triggered announce, stall rule, all holds, hold reporting)
+  closing the mail-arrives-after-Stop stall; respawn_agent reuses the
+  registry entry's saved command (new field) with claude --resume; control
+  gains pause_auto_delivery + is_auto_delivery_paused parity. Build clean,
+  zero warnings; npm build clean.
