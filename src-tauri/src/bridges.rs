@@ -108,7 +108,7 @@ pub fn install_pi_hooks(dir: &Path) -> Result<PathBuf> {
     fs::write(
         home.join("extensions.json"),
         serde_json::to_string_pretty(&serde_json::json!({
-            "name": "office-agent-hive-bridge",
+            "name": "agent-office-hive-bridge",
             "version": "0.3.2",
             "main": "extensions/hive-bridge.js",
             "auto": true

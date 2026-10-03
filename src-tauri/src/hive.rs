@@ -571,7 +571,7 @@ impl Hive {
         // spawns upstream (#v0.3.7 bug); 30s clears cold-start by two orders.
         let mut config = fs::read_to_string(user_home.join("config.toml")).unwrap_or_default();
         let command = hook_bin.display().to_string();
-        config.push_str("\n# --- office-agent lifecycle hooks (auto-generated; do not edit) ---\n");
+        config.push_str("\n# --- agent-office lifecycle hooks (auto-generated; do not edit) ---\n");
         for ev in [
             "PreToolUse",
             "PostToolUse",
@@ -625,7 +625,7 @@ impl Hive {
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
         if !cfg.lines().any(|l| l.starts_with("hooks_auto_accept:")) {
-            cfg.push_str("\n# --- office-agent hive bridge (auto-generated) ---\nhooks_auto_accept: true\n");
+            cfg.push_str("\n# --- agent-office hive bridge (auto-generated) ---\nhooks_auto_accept: true\n");
         }
         // A pre-existing user `hooks:` block wins — merging dict-keyed YAML
         // blocks safely needs a real YAML writer; log-shaped skip instead.
@@ -686,7 +686,7 @@ impl Hive {
             let mut e = serde_json::json!({
                 "sequential": true,
                 "hooks": [{
-                    "name": format!("office-agent-{name}"),
+                    "name": format!("agent-office-{name}"),
                     "type": "command",
                     "command": cmd(ev),
                     "timeout": 30000
@@ -712,7 +712,7 @@ impl Hive {
         Ok(path)
     }
 
-    /// Grok lifecycle bridge — global hooks in `~/.grok/hooks/office-agent.json`
+    /// Grok lifecycle bridge — global hooks in `~/.grok/hooks/agent-office.json`
     /// (upstream installGrokHooks, hive.ts:2515). Grok's global hook dir is
     /// trusted, sessions stay in the user's GROK_HOME, and every entry is a
     /// no-op outside hive workers because the shim exits when AGENT_ID/HIVE_SOCK
@@ -747,7 +747,7 @@ impl Hive {
             }
         });
         fs::write(
-            hook_dir.join("office-agent.json"),
+            hook_dir.join("agent-office.json"),
             serde_json::to_string_pretty(&hooks)?,
         )?;
         Ok(())
@@ -755,7 +755,7 @@ impl Hive {
 
     /// Codex rollout-dir exposure (exposeCodexDataDirs, hive.ts:2273) — moves
     /// the worker's `<dir>/.codex/{sessions,archived_sessions}` under the
-    /// user's standard Codex scan root `~/.codex/<kind>/office-agent/<hiveId>/
+    /// user's standard Codex scan root `~/.codex/<kind>/agent-office/<hiveId>/
     /// <agentId>` and links the source back, so `codex resume` pickers can
     /// see hive workers' rollouts. Junction on Windows (no admin needed).
     /// Best-effort: any failure is a skip, never a spawn blocker.
@@ -769,7 +769,7 @@ impl Hive {
         let user_home = dirs::home_dir().unwrap_or_default().join(".codex");
         for kind in ["sessions", "archived_sessions"] {
             let source = agent_dir.join(".codex").join(kind);
-            let target = user_home.join(kind).join("office-agent").join(hive_id).join(agent_id);
+            let target = user_home.join(kind).join("agent-office").join(hive_id).join(agent_id);
             let _ = fs::create_dir_all(target.parent().unwrap());
             let source_is_dir = source.is_dir() && !source.is_symlink();
             if source_is_dir && target.exists() {
@@ -790,7 +790,7 @@ impl Hive {
         }
     }
 
-    /// Antigravity (`agy`) bridge — merges an `office-agent` group into BOTH
+    /// Antigravity (`agy`) bridge — merges an `agent-office` group into BOTH
     /// global hooks.json surfaces (antigravity-cli#49: agy LOADS from
     /// ~/.gemini/antigravity-cli/hooks.json but TRIGGERS from
     /// ~/.gemini/config/hooks.json — upstream writes both, so do we).
@@ -829,7 +829,7 @@ impl Hive {
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(serde_json::json!({}));
-            existing["office-agent"] = group.clone();
+            existing["agent-office"] = group.clone();
             fs::write(&p, serde_json::to_string_pretty(&existing)?)?;
         }
         Ok(())

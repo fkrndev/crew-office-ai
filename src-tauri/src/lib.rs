@@ -606,5 +606,5 @@ pub fn run() {
             commands::secrets_list,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running office-agent");
+        .expect("error while running agent-office");
 }

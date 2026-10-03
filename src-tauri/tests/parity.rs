@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use office_agent_lib::hive::{Hive, Message, RegistryEntry};
-use office_agent_lib::pricing;
-use office_agent_lib::skills;
-use office_agent_lib::trigger_history::{classify_inbound_kind, TriggerHistory, TriggerHistoryEntry};
+use agent_office_lib::hive::{Hive, Message, RegistryEntry};
+use agent_office_lib::pricing;
+use agent_office_lib::skills;
+use agent_office_lib::trigger_history::{classify_inbound_kind, TriggerHistory, TriggerHistoryEntry};
 use serde_json::{json, Value};
 
 fn tmp(tag: &str) -> PathBuf {

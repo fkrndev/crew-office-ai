@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "office-agent",
+  "productName": "Agent Office",
   "version": "0.1.0",
-  "identifier": "dev.fkrn.officeagent",
+  "identifier": "dev.fkrn.agentoffice",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Office Agent",
+        "title": "Agent Office",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

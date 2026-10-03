@@ -1,13 +1,13 @@
 [package]
-name = "office-agent"
+name = "agent-office"
 version = "0.1.0"
-description = "Multi-agent office harness — Tauri port"
+description = "Multi-agent office harness"
 edition = "2021"
 rust-version = "1.90"
-default-run = "office-agent"
+default-run = "agent-office"
 
 [lib]
-name = "office_agent_lib"
+name = "agent_office_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

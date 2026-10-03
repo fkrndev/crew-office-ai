@@ -9,6 +9,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-office"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 6.0.0",
+ "git2",
+ "hmac",
+ "jsonschema",
+ "junction",
+ "keyring",
+ "portable-pty",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-shell",
+ "thiserror 2.0.21",
+ "tiny_http",
+ "tokio",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2533,35 +2562,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
-]
-
-[[package]]
-name = "office-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "dirs 6.0.0",
- "git2",
- "hmac",
- "jsonschema",
- "junction",
- "keyring",
- "portable-pty",
- "rusqlite",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-shell",
- "thiserror 2.0.21",
- "tiny_http",
- "tokio",
- "ureq",
- "uuid",
 ]
 
 [[package]]

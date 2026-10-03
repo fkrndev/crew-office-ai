@@ -270,7 +270,7 @@ fn spawn_inner(
     // Keychain secrets configured for injection (config.secret_env_keys) —
     // values come out of the OS credential store at spawn, never from disk.
     for key in &st.config.lock().unwrap().secret_env_keys {
-        if let Ok(entry) = keyring::Entry::new("office-agent", key) {
+        if let Ok(entry) = keyring::Entry::new("agent-office", key) {
             if let Ok(v) = entry.get_password() {
                 agent_env.insert(key.clone(), v);
             }
@@ -733,7 +733,7 @@ pub fn missions_save(
 
 // ─── secrets (OS keychain → agent env) ──────────────────────────────────────
 
-const KEYRING_SERVICE: &str = "office-agent";
+const KEYRING_SERVICE: &str = "agent-office";
 
 /// Read a credential — the caller's only path to a value (slack secrets and
 /// spawn-time env injection both go through here).

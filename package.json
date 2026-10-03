@@ -1,5 +1,5 @@
 {
-  "name": "office-agent-tauri",
+  "name": "agent-office",
   "version": "0.1.0",
   "private": true,
   "description": "Multi-agent office harness — Tauri (Rust) port of the Electron app",
