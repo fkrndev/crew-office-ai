@@ -24,6 +24,37 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+
+/// Junction (Windows, no admin) / dir-symlink (unix) for the codex rollout
+/// exposure. Copy fallback when linking fails.
+fn link_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        junction::create(src, dst)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no dir link"))
+    }
+}
+
+pub(crate) fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for e in fs::read_dir(src)? {
+        let e = e?;
+        let to = dst.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &to)?;
+        } else {
+            let _ = fs::copy(e.path(), &to);
+        }
+    }
+    Ok(())
+}
 use uuid::Uuid;
 
 /// FIPA-lite message schema (HIVE.md §4) — field-for-field port.
@@ -646,6 +677,43 @@ impl Hive {
             serde_json::to_string_pretty(&hooks)?,
         )?;
         Ok(())
+    }
+
+    /// Codex rollout-dir exposure (exposeCodexDataDirs, hive.ts:2273) — moves
+    /// the worker's `<dir>/.codex/{sessions,archived_sessions}` under the
+    /// user's standard Codex scan root `~/.codex/<kind>/office-agent/<hiveId>/
+    /// <agentId>` and links the source back, so `codex resume` pickers can
+    /// see hive workers' rollouts. Junction on Windows (no admin needed).
+    /// Best-effort: any failure is a skip, never a spawn blocker.
+    pub fn expose_codex_data(&self, agent_dir: &Path, agent_id: &str) {
+        if agent_id.is_empty() || agent_id.contains(['/', '\\', '.']) {
+            return;
+        }
+        use sha1::{Digest, Sha1};
+        let hive_id = format!("{:x}", Sha1::digest(self.root.display().to_string().as_bytes()));
+        let hive_id = &hive_id[..12.min(hive_id.len())];
+        let user_home = dirs::home_dir().unwrap_or_default().join(".codex");
+        for kind in ["sessions", "archived_sessions"] {
+            let source = agent_dir.join(".codex").join(kind);
+            let target = user_home.join(kind).join("office-agent").join(hive_id).join(agent_id);
+            let _ = fs::create_dir_all(target.parent().unwrap());
+            let source_is_dir = source.is_dir() && !source.is_symlink();
+            if source_is_dir && target.exists() {
+                continue; // both sides have data — never clobber (upstream throws)
+            }
+            if source_is_dir && !target.exists() {
+                let _ = fs::rename(&source, &target)
+                    .or_else(|_| {
+                        copy_dir(&source, &target)?;
+                        fs::remove_dir_all(&source)
+                    });
+            } else if !target.exists() {
+                let _ = fs::create_dir_all(&target);
+            }
+            if !source.exists() && target.exists() {
+                let _ = link_dir(&target, &source);
+            }
+        }
     }
 
     /// Antigravity (`agy`) bridge — merges an `office-agent` group into BOTH

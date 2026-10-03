@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const RATE_LIMIT: u32 = 120;
@@ -62,8 +62,9 @@ impl Default for WebhookEndpoint {
 }
 
 /// A parked review-mode message + the resolution state a GET reports.
+/// `hist_id` ties the token to its trigger-ledger row for approve/reject.
 enum TokenRec {
-    Pending { body: Value, endpoint_name: String },
+    Pending { body: Value, endpoint_name: String, hist_id: Option<String> },
     Delivered { target: String, msg_id: String },
 }
 
@@ -140,7 +141,7 @@ impl WebhookServer {
     /// Uses the endpoint name the message arrived under (survives a rename).
     pub fn approve(&self, token: &str, hive: &crate::hive::Hive, endpoint_id: &str) -> Option<String> {
         let (body, name) = match self.tokens.lock().unwrap().remove(token)? {
-            TokenRec::Pending { body, endpoint_name } => (body, endpoint_name),
+            TokenRec::Pending { body, endpoint_name, .. } => (body, endpoint_name),
             rec => {
                 self.tokens.lock().unwrap().insert(token.to_string(), rec);
                 return None;
@@ -173,13 +174,22 @@ impl WebhookServer {
     }
 
     /// Park a verified message as pending (returns its capability token).
-    fn park(&self, body: Value, endpoint_name: String) -> String {
+    fn park(&self, body: Value, endpoint_name: String, hist_id: Option<String>) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.tokens
             .lock()
             .unwrap()
-            .insert(token.clone(), TokenRec::Pending { body, endpoint_name });
+            .insert(token.clone(), TokenRec::Pending { body, endpoint_name, hist_id });
         token
+    }
+
+    /// The trigger-ledger row id behind a pending token — the command layer
+    /// flips that row's `pending` decision on approve/reject.
+    pub fn pending_hist(&self, token: &str) -> Option<String> {
+        match self.tokens.lock().unwrap().get(token) {
+            Some(TokenRec::Pending { hist_id, .. }) => hist_id.clone(),
+            _ => None,
+        }
     }
 
     /// Mark a routed message's token for the status endpoint.
@@ -341,8 +351,40 @@ impl WebhookServer {
             "mode": ep.mode, "from": v.get("from")
         }));
 
+        // Trigger ledger — record the inbound FIRST so a review park can tie
+        // the token to its row. Fields built one by one (never the endpoint —
+        // it carries `secret`).
+        let from = v.get("from").and_then(|f| f.as_str()).unwrap_or("").to_string();
+        let kind = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .filter(|k| *k == "communication" || *k == "directive")
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| {
+                crate::trigger_history::classify_inbound_kind(msg).to_string()
+            });
+        let mk_entry = |decision: &str| crate::trigger_history::TriggerHistoryEntry {
+            id: String::new(),
+            source: "webhook".into(),
+            source_id: endpoint_id.to_string(),
+            source_name: name.to_string(),
+            direction: "inbound".into(),
+            peer: from.clone(),
+            title: v.get("title").and_then(|t| t.as_str()).map(|t| t.to_string()),
+            body: msg.to_string(),
+            kind: kind.clone(),
+            decision: Some(decision.into()),
+            correlation_id: None,
+            task_id: None,
+            at: 0,
+        };
+        let hist = app
+            .try_state::<crate::commands::AppState>()
+            .map(|st| st.trigger_history.clone());
+
         if ep.mode == "review" {
-            let token = self.park(v.clone(), name.to_string());
+            let e = hist.as_ref().map(|h| h.append(mk_entry("pending")));
+            let token = self.park(v.clone(), name.to_string(), e.map(|e| e.id));
             let _ = app.emit(
                 "webhook-pending",
                 json!({ "endpoint": name, "token": token }),
@@ -355,6 +397,11 @@ impl WebhookServer {
         match dispatch_to_hive(hive, endpoint_id, name, &v) {
             Some(msg_id) => {
                 self.mark_delivered(token.clone(), "god".into(), msg_id.clone());
+                let mut e = mk_entry("auto-allowed");
+                e.task_id = Some(msg_id.clone());
+                if let Some(h) = &hist {
+                    h.append(e);
+                }
                 (
                     200,
                     json!({ "token": token, "pending": false, "taskId": msg_id }),

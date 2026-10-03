@@ -31,6 +31,9 @@ tiny_http = "0.12"
 jsonschema = "0.30"
 keyring = "3"
 ureq = { version = "3", features = ["json"] }
+sha1 = "0.10"
+[target.'cfg(windows)'.dependencies]
+junction = "1"
 
 [profile.release]
 opt-level = 3

@@ -20,38 +20,12 @@ use std::sync::Mutex;
 
 use crate::breaker::UsageSample;
 
-// ─── pricing.rs ─────────────────────────────────────────────────────────────
-
-struct ModelPrice {
-    input: f64,
-    output: f64,
-    cache_read: f64,
-    cache_write: f64,
-}
-const OPUS: ModelPrice = ModelPrice { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 };
-const SONNET: ModelPrice = ModelPrice { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 };
-const HAIKU: ModelPrice = ModelPrice { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 };
+// ─── pricing.rs (crate::pricing — the ONE place per-model pricing lives) ────
 
 /// Strip Claude Code's variant suffix: `claude-opus-4-8[1m]` → `claude-opus-4-8`.
 /// pub(crate): the telemetry collector normalizes model ids the same way.
 pub(crate) fn normalize_model(model: &str) -> String {
-    let t = model.trim();
-    match t.rfind('[') {
-        Some(i) if t.ends_with(']') => t[..i].trim().to_string(),
-        _ => t.to_string(),
-    }
-}
-
-fn price_for(model: &str) -> &'static ModelPrice {
-    let m = normalize_model(model).to_lowercase();
-    if m.contains("opus") {
-        &OPUS
-    } else if m.contains("haiku") {
-        &HAIKU
-    } else {
-        // Unknown → Sonnet (the historical default), incl. bare "sonnet".
-        &SONNET
-    }
+    crate::pricing::normalize_model(model).to_string()
 }
 
 // ─── transcript.ts ──────────────────────────────────────────────────────────
@@ -248,11 +222,11 @@ fn parse_usage_lines(text: &str, entry: &mut FileEntry) {
             .and_then(|m| m.get("model"))
             .and_then(|v| v.as_str())
             .map(normalize_model);
-        let p = price_for(model.as_deref().unwrap_or(""));
-        let cost = (r_in as f64 / 1e6) * p.input
-            + (r_out as f64 / 1e6) * p.output
-            + (r_cr as f64 / 1e6) * p.cache_read
-            + (r_cw as f64 / 1e6) * p.cache_write;
+        let p = crate::pricing::price_for(model.as_deref().unwrap_or(""));
+        let cost = (r_in as f64 / 1e6) * p.input_per_m
+            + (r_out as f64 / 1e6) * p.output_per_m
+            + (r_cr as f64 / 1e6) * p.cache_read_per_m
+            + (r_cw as f64 / 1e6) * p.cache_write_per_m;
         // Record timestamp (ISO) → ms, for the velocity diff's clock.
         let ts = rec
             .get("timestamp")

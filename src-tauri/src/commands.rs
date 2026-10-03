@@ -47,6 +47,9 @@ pub struct AppState {
     pub telemetry: std::sync::Arc<crate::telemetry::TelemetryCollector>,
     /// Bound collector URL set at boot (spawn reads it for OTEL_* env).
     pub otel_endpoint: std::sync::OnceLock<String>,
+    /// The trigger ledger (trigger_history.rs) — every inbound webhook + the
+    /// operator's verdict on it. Own file, disposable, never a secret.
+    pub trigger_history: crate::trigger_history::TriggerHistory,
 }
 
 impl AppState {
@@ -80,6 +83,7 @@ impl AppState {
             webhook: std::sync::Arc::new(crate::webhook::WebhookServer::new()),
             telemetry: std::sync::Arc::new(crate::telemetry::TelemetryCollector::new()),
             otel_endpoint: std::sync::OnceLock::new(),
+            trigger_history: crate::trigger_history::TriggerHistory::new(harness_home.clone()),
             sock_addr: None,
             hook_bin,
         })
@@ -247,12 +251,28 @@ fn spawn_inner(
     // tables + the user's auth, so a codex worker gets the full hive pipeline
     // (status, inbox drain, HITL deny, wake) without touching the user's
     // global config. Same shim; codex's payload is already claude-shaped.
+    // W3 bundled read-only skills → <dir>/.claude/skills/ on every spawn
+    // (same policy as identity.md — overwritten so the shipped set tracks
+    // the app; missing/empty source is a no-op, never a spawn blocker).
+    {
+        let bundled = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
+        if let Some(src) = bundled {
+            if src.is_dir() {
+                let _ = crate::hive::copy_dir(&src, &agent_dir.join(".claude").join("skills"));
+            }
+        }
+    }
     if args.provider == "codex" {
         if let Some(bin) = &st.hook_bin {
             if let Ok(home) = st.hive.install_codex_hooks(&agent_dir, bin) {
                 agent_env.insert("CODEX_HOME".into(), home.display().to_string());
             }
         }
+        // Rollout-dir exposure: sessions/archived_sessions surface under the
+        // user's ~/.codex scan root (junction back to the worker home).
+        st.hive.expose_codex_data(&agent_dir, &id);
     }
     // Hermes lifecycle bridge — per-agent HERMES_HOME + config.yaml `hooks:`
     // block on the same shim (--hermes mode). Runtime dir is isolated too so
@@ -780,19 +800,77 @@ fn ensure_webhook_server(
 #[tauri::command]
 pub fn webhook_approve(app: AppHandle, token: String, endpoint_id: String) -> Result<String, String> {
     let st = state(&app);
-    st.webhook
+    let hist_id = st.webhook.pending_hist(&token);
+    let msg_id = st
+        .webhook
         .approve(&token, &st.hive, &endpoint_id)
-        .ok_or_else(|| "unknown or non-pending token".to_string())
+        .ok_or_else(|| "unknown or non-pending token".to_string())?;
+    // Flip the ledger row: pending → approved, + the spawned task id.
+    if let Some(id) = hist_id {
+        st.trigger_history
+            .update(&id, Some("approved".into()), Some(msg_id.clone()), None, None);
+    }
+    Ok(msg_id)
 }
 
 #[tauri::command]
 pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
-    Ok(state(&app).webhook.reject(&token))
+    let st = state(&app);
+    let hist_id = st.webhook.pending_hist(&token);
+    let ok = st.webhook.reject(&token);
+    if ok {
+        if let Some(id) = hist_id {
+            st.trigger_history
+                .update(&id, Some("rejected".into()), None, None, None);
+        }
+    }
+    Ok(ok)
 }
 
 #[tauri::command]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
     Ok(state(&app).webhook.pending())
+}
+
+// ─── skills (local discovery + catalog + hardened install) ─────────────────
+
+#[tauri::command]
+pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>, String> {
+    // Bundled skills staged next to the running exe (app resources/skills/).
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
+    Ok(crate::skills::list_local_skills(&cwds, bundled.as_deref()))
+}
+
+#[tauri::command]
+pub fn skills_catalog(app: AppHandle, force: Option<bool>) -> Result<crate::skills::CatalogResult, String> {
+    let cache = state(&app).hive.root.join("skills-catalog.json");
+    Ok(crate::skills::load_catalog(&cache, force.unwrap_or(false)))
+}
+
+#[tauri::command]
+pub fn skills_install(url: String, name: String) -> Result<String, String> {
+    crate::skills::install_skill(&url, &name)
+}
+
+#[tauri::command]
+pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Result<bool, String> {
+    crate::skills::uninstall_skill(&path, &cwds)?;
+    Ok(true)
+}
+
+// ─── trigger ledger (inbound webhook history + verdicts) ────────────────────
+
+#[tauri::command]
+pub fn triggers_list(app: AppHandle) -> Result<Vec<crate::trigger_history::TriggerHistoryEntry>, String> {
+    Ok(state(&app).trigger_history.list())
+}
+
+#[tauri::command]
+pub fn triggers_clear(app: AppHandle, source: Option<String>) -> Result<bool, String> {
+    state(&app).trigger_history.clear(source.as_deref());
+    Ok(true)
 }
 
 // ─── breaker (the beat's data seam + level read) ────────────────────────────

@@ -248,3 +248,19 @@ retry+backoff on index.lock).
   CRUSH_GLOBAL_CONFIG (openai wire only — wrong-wire providers stay on
   their real upstream). Anthropic-wire parse path implemented for future
   crush anthropic upstreams. 11/11 tests (SSE emit + idle-stop debounce).
+- 2026-10-04 (19): trigger ledger (trigger_history.rs) — append-only
+  trigger-history.json, newest-first, cap 500, field-by-field entries
+  (never secrets). Webhook auto→'auto-allowed'+taskId, review park→
+  'pending' tied to token (hist_id), approve/reject flip the row.
+  classify_inbound_kind ported. commands: triggers_list/clear.
+- 2026-10-04 (20): skills manager (skills.rs — full port): local
+  discovery (claude SKILL.md frontmatter incl. block scalars; opencode/
+  codex as plugins; project>user>bundled dedup), catalog README parse
+  +24h cache + stale fallback, hardened install (url resolve incl
+  officialskills.sh, repo-root SKILL.md locate, 60-file/2MB/depth-5
+  caps, post-resolution containment, write-after-resolve-all) +
+  root+SKILL.md-proofed uninstall. commands: skills_local/catalog/
+  install/uninstall. Bundled skills copied to .claude/skills per spawn.
+- 2026-10-04 (21): pricing module separated (the ONE per-model table)
+  + codex rollout-dir exposure (sessions/archived_sessions moved under
+  ~/.codex/<kind>/office-agent/<hiveId12>/<agentId>, junction back).

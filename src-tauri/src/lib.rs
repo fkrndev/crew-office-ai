@@ -6,10 +6,13 @@ mod control;
 mod hive;
 mod hooks;
 mod missions;
+mod pricing;
 mod pty;
 mod proxy;
 mod ptyenv;
+mod skills;
 mod telemetry;
+mod trigger_history;
 mod usage;
 mod webhook;
 mod workerwake;
@@ -454,6 +457,12 @@ pub fn run() {
             commands::webhook_approve,
             commands::webhook_reject,
             commands::webhook_pending,
+            commands::triggers_list,
+            commands::triggers_clear,
+            commands::skills_local,
+            commands::skills_catalog,
+            commands::skills_install,
+            commands::skills_uninstall,
             commands::secret_set,
             commands::secret_delete,
             commands::secrets_list,
