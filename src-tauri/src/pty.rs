@@ -7,11 +7,77 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+/// How a program resolved on PATH must be launched.
+pub enum Resolved {
+    /// Native binary — spawn argv directly (newlines/quotes in args are safe).
+    Exe(PathBuf),
+    /// .bat/.cmd shim — must go through `cmd /d /s /c` (npm-installed CLIs).
+    Script(PathBuf),
+}
+
+/// PATH + PATHEXT lookup, so `claude` resolves to `claude.exe`/`claude.cmd`
+/// exactly like typing it in a terminal. The Electron version got this for
+/// free from node-pty.
+pub fn resolve_program(prog: &str, path_env: &str) -> Option<Resolved> {
+    let prog = prog.trim().trim_matches('"');
+    if prog.is_empty() {
+        return None;
+    }
+    // An explicit path (contains a separator or drive) is used as-is.
+    if prog.contains(['/', '\\']) || prog.contains(':') {
+        let p = PathBuf::from(prog);
+        return p.exists().then(|| classify(p));
+    }
+    let exts: Vec<&str> = if cfg!(windows) {
+        vec![".com", ".exe", ".bat", ".cmd"]
+    } else {
+        vec![""]
+    };
+    for dir in path_env.split(if cfg!(windows) { ';' } else { ':' }) {
+        for ext in &exts {
+            let cand = PathBuf::from(dir).join(format!("{prog}{ext}"));
+            if cand.is_file() {
+                return Some(classify(cand));
+            }
+        }
+    }
+    None
+}
+
+fn classify(p: PathBuf) -> Resolved {
+    let script = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "bat" | "cmd"));
+    if script {
+        Resolved::Script(p)
+    } else {
+        Resolved::Exe(p)
+    }
+}
+
+/// Quote one argument for a `cmd /d /s /c` line: wrap in quotes when it has
+/// spaces/quotes, doubling inner quotes (cmd's escaping).
+pub fn cmd_quote(arg: &str) -> String {
+    if arg.contains(' ') || arg.contains('"') || arg.is_empty() {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    } else {
+        arg.to_string()
+    }
+}
+
+/// Make a value safe inside a double-quoted cmd arg: single line, no double
+/// quotes (an --append-system-prompt payload travels this way on script spawns).
+pub fn cmd_sanitize(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'")
+}
 
 pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
@@ -73,12 +139,48 @@ pub fn spawn(
         .spawn_command(cmd)
         .with_context(|| format!("spawn {command_line}"))?;
     drop(pair.slave); // keep only the master; the slave side belongs to the child
+    finish(id, pair.master, child, app)
+}
 
-    let mut reader = pair.master.try_clone_reader().context("clone reader")?;
-    let writer = pair.master.take_writer().context("take writer")?;
+/// Direct argv spawn (resolved .exe) — the node-pty equivalent: no shell
+/// between us and the child, so args like `--append-system-prompt <multiline
+/// text>` arrive byte-exact.
+pub fn spawn_argv(
+    id: &str,
+    program: &std::path::Path,
+    args: &[String],
+    cwd: &str,
+    env: &HashMap<String, String>,
+    cols: u16,
+    rows: u16,
+    app: AppHandle,
+) -> Result<PtyHandle> {
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(args);
+    cmd.cwd(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let child = pair.slave.spawn_command(cmd)?;
+    drop(pair.slave);
+    finish(id, pair.master, child, app)
+}
 
-    // Reader thread → frontend event stream. Lossy UTF-8 matches node-pty's
-    // string output; xterm.js tolerates the occasional split sequence.
+fn finish(
+    id: &str,
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
+    app: AppHandle,
+) -> Result<PtyHandle> {
+    let mut reader = master.try_clone_reader().context("clone reader")?;
+    let writer = master.take_writer().context("take writer")?;
     let event_id = id.to_string();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
@@ -86,12 +188,11 @@ pub fn spawn(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     let _ = app.emit(
                         "pty-output",
                         PtyOutputPayload {
                             id: event_id.clone(),
-                            data,
+                            data: String::from_utf8_lossy(&buf[..n]).to_string(),
                         },
                     );
                 }
@@ -106,11 +207,10 @@ pub fn spawn(
             },
         );
     });
-
     Ok(PtyHandle {
         writer,
         child,
-        master: pair.master,
+        master,
     })
 }
 

@@ -89,3 +89,10 @@ export const onPtyExit = (cb: (p: PtyExitPayload) => void): Promise<UnlistenFn> 
   listen<PtyExitPayload>('pty-exit', (e) => cb(e.payload));
 export const onDeliver = (cb: (d: Delivery) => void): Promise<UnlistenFn> =>
   listen<Delivery>('hive-deliver', (e) => cb(e.payload));
+export interface AgentStatusPayload {
+  id: string;
+  status: string;
+  detail?: string;
+}
+export const onAgentStatus = (cb: (p: AgentStatusPayload) => void): Promise<UnlistenFn> =>
+  listen<AgentStatusPayload>('agent-status', (e) => cb(e.payload));

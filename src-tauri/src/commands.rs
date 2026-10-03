@@ -19,6 +19,11 @@ pub struct AppState {
     pub config_store: ConfigStore,
     pub config: Mutex<Config>,
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
+    /// TCP loopback addr of the HookServer (`127.0.0.1:port`) → env HIVE_SOCK.
+    pub sock_addr: Option<String>,
+    /// The native hook-shim binary copied into `<harness>/bin/` — the analogue
+    /// of upstream writing cth-hook.cjs into the hive's bin dir.
+    pub hook_bin: Option<PathBuf>,
 }
 
 impl AppState {
@@ -27,13 +32,35 @@ impl AppState {
         let hive = Hive::ensure(&harness_home.join("hive"))?;
         let config_store = ConfigStore::new(harness_home.clone());
         let config = config_store.load();
+        // Stage the hive-hook binary next to the hive, like upstream's
+        // bin/cth-hook.cjs. Resolved from beside the running exe (dev:
+        // target/debug/, bundle: install dir). Missing → hooks degrade off.
+        let hook_bin = stage_hook_bin(&harness_home);
         Ok(Self {
             hive,
             config_store,
             config: Mutex::new(config),
             ptys: Mutex::new(HashMap::new()),
+            sock_addr: None,
+            hook_bin,
         })
     }
+}
+
+fn stage_hook_bin(harness_home: &PathBuf) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "hive-hook.exe" } else { "hive-hook" };
+    let src = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .join(name);
+    if !src.is_file() {
+        return None;
+    }
+    let dest = harness_home.join("bin").join(name);
+    if let Some(p) = dest.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    std::fs::copy(&src, &dest).ok().map(|_| dest)
 }
 
 pub fn state(app: &AppHandle) -> State<'_, AppState> {
@@ -51,6 +78,10 @@ pub struct SpawnArgs {
     /// Full command line (preset default + flags assembled by the frontend, or
     /// a raw custom command). Kept as one string — see pty::spawn's shell wrap.
     pub command: String,
+    /// Typed-into-the-TUI seed prompt ('type-into-tui' delivery). When unset,
+    /// non-hiveAware providers still get the hive prompt typed automatically.
+    #[serde(default)]
+    pub seed_prompt: Option<String>,
     #[serde(default)]
     pub is_god: bool,
     #[serde(default = "default_cols")]
@@ -88,6 +119,7 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
         cwd: args.cwd.clone(),
         is_god: args.is_god,
         status: "starting".into(),
+        session_id: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
     st.hive.register_agent(&entry).map_err(err_str)?;
@@ -105,6 +137,9 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
     if auto {
         agent_env.insert("HIVE_AUTO_APPROVE".into(), "1".into());
     }
+    if let Some(sock) = &st.sock_addr {
+        agent_env.insert("HIVE_SOCK".into(), sock.clone());
+    }
 
     let parent: HashMap<String, String> = std::env::vars().collect();
     let path = parent.get("PATH").cloned().unwrap_or_default();
@@ -116,10 +151,95 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
         args.cwd.clone()
     };
 
-    let handle = pty::spawn(&id, &args.command, &cwd, &env, args.cols, args.rows, app.clone())
-        .map_err(err_str)?;
+    // ── hive wiring per provider class (hive.ts spawnAgentCore, condensed) ──
+    // hiveAware (claude): per-session settings.json + --append-system-prompt.
+    // Others: the same prompt rides in as the typed first turn — the uniform
+    // 'type-into-tui' delivery, which also covers flag/positional providers.
+    let is_claude = args.provider == "claude";
+    let injected = st.hive.injected_prompt(&entry);
+    let mut command_line = args.command.clone();
+    let mut seed = args.seed_prompt.clone();
+
+    if is_claude {
+        if let (Some(_sock), Some(bin)) = (&st.sock_addr, &st.hook_bin) {
+            let shim_cmd = format!("\"{}\"", bin.display());
+            let settings = st.hive.hook_settings(&shim_cmd);
+            let settings_path = agent_dir.join("settings.json");
+            let _ = std::fs::write(
+                &settings_path,
+                serde_json::to_string_pretty(&settings).unwrap_or_default(),
+            );
+            command_line = format!(
+                "{} --settings {}",
+                command_line,
+                pty::cmd_quote(&settings_path.display().to_string())
+            );
+        }
+    } else if seed.is_none() {
+        seed = Some(injected.clone());
+    }
+
+    // Resolve the program for a direct-argv spawn (exe) vs cmd-wrap (scripts).
+    let first_tok = command_line
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let handle = match pty::resolve_program(&first_tok, &path) {
+        Some(pty::Resolved::Exe(prog)) => {
+            let mut av: Vec<String> = command_line
+                .split_whitespace()
+                .skip(1)
+                .map(String::from)
+                .collect();
+            if is_claude {
+                av.push("--append-system-prompt".into());
+                av.push(injected.clone());
+            }
+            pty::spawn_argv(&id, &prog, &av, &cwd, &env, args.cols, args.rows, app.clone())
+        }
+        Some(pty::Resolved::Script(prog)) => {
+            let mut parts = vec![pty::cmd_quote(&prog.display().to_string())];
+            for a in command_line.split_whitespace().skip(1) {
+                parts.push(pty::cmd_quote(a));
+            }
+            if is_claude {
+                parts.push("--append-system-prompt".into());
+                parts.push(pty::cmd_quote(&pty::cmd_sanitize(&injected)));
+            }
+            command_line = parts.join(" ");
+            pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
+        }
+        None => {
+            if is_claude {
+                command_line = format!(
+                    "{} --append-system-prompt {}",
+                    command_line,
+                    pty::cmd_quote(&pty::cmd_sanitize(&injected))
+                );
+            }
+            pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
+        }
+    }
+    .map_err(err_str)?;
     st.ptys.lock().unwrap().insert(id.clone(), handle);
     st.hive.set_status(&id, "idle").map_err(err_str)?;
+
+    // 'type-into-tui' seed delivery: the injected hive prompt (or an explicit
+    // seed) typed into the session once the TUI has booted — upstream's
+    // seedPrompt path for crush/cursor, used here for every non-claude agent.
+    if let Some(text) = seed {
+        let app2 = app.clone();
+        let id2 = id.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let Some(st) = app2.try_state::<AppState>() else { return };
+            let mut ptys = st.ptys.lock().unwrap();
+            if let Some(h) = ptys.get_mut(&id2) {
+                let _ = h.write(&format!("{}\r", text.split_whitespace().collect::<Vec<_>>().join(" ")));
+            }
+        });
+    }
 
     let _ = app.emit(
         "agent-status",

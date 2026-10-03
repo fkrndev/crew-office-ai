@@ -16,7 +16,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `pty.ts`, `ptyEnv.ts` (node-pty) | `pty.rs` (`portable-pty` 0.9) | DONE |
 | `ptyEnv.ts` env layering (strip `CLAUDE*` markers, keep CLAUDE_CONFIG_* allowlist, TERM/COLORTERM/FORCE_COLOR, LANG/LC_CTYPE posix) | `ptyenv.rs` | DONE |
 | `hive.ts` (~3.4k lines: dirs, router, log, git single-committer, hooks socket, hook shims, proxy sidecar, god prompt) | `hive.rs` (dirs+router+log+git2 commit) — hooks socket & shims = PHASE 2 | PARTIAL |
-| `hooks.ts` (unix-socket/named-pipe HookServer, Stop→drain, PreToolUse/PostToolUse/Notification status) | `hooks.rs` — not started; needs per-provider shims (cth-hook equivalent, likely a small Rust sidecar binary or inline hook script) | TODO |
+| `hooks.ts` (HookServer, status, roster context, idle-wake) | `hooks.rs` (TCP loopback) + `src/bin/hive-hook.rs` (native shim — no node dep, replaces cth-hook.cjs + ELECTRON_RUN_AS_NODE wrapper) | DONE (core) |
 | `config.ts` (config.json + ScheduledMission) | `config.rs` (JSON in app_data_dir) | DONE |
 | `memory.ts`, `palaceReap.ts`, `reflect.ts` (memory.md + mempalace CLI) | `memory.rs` (memory.md read/append only; mempalace/condense = TODO) | PARTIAL |
 | `knowledge.ts`, `kg-core.cjs`, `resources/kg.cjs` (KG sidecar) | — decide: Rust port or drop | TODO |
@@ -70,6 +70,28 @@ retry+backoff on index.lock).
 
 - Router = poll loop (tokio interval 250ms) instead of fs watcher — simpler,
   no `notify` dep, same atomic-rename contract.
+- HIVE_SOCK = TCP loopback `127.0.0.1:<dynamic>` (upstream: unix socket /
+  named pipe + TCP for proxies). Uniform across OSes; shim is our own binary
+  so no third-party client needs the socket path semantics.
+- hive-hook = native bin target in the same crate, staged to
+  `<harness>/bin/` at startup (upstream staged cth-hook.cjs + hive-node
+  wrapper because `node` is absent on the hooks' stripped PATH — a native
+  binary removes the dependency entirely). Bundle packaging must ship it
+  beside the exe (sidecar/resource — TODO at dist time).
+- Spawn: resolve program on PATH (+PATHEXT). `.exe` → direct argv spawn
+  (node-pty parity; `--append-system-prompt` text arrives byte-exact).
+  `.cmd/.bat` → `cmd /d /s /c` wrap with cmd-quoted args and a sanitized
+  single-line prompt (cmd can't carry newlines in argv).
+- Claude hiveAware wiring: `settings.json` in AGENT_DIR passed via
+  `--settings` (theme:auto, statusLine→hive-hook --status, 9 hook events) +
+  `--append-system-prompt`. Non-claude: same injected prompt typed as the
+  first turn (uniform 'type-into-tui' — upstream's flag/positional seed
+  variants collapse into this; copilot -p print mode excluded anyway).
+- Stop→drain: upstream REMOVED forced `{decision:'block'}` at Stop (bypassed
+  HITL safety). Ported as guarded idle-wake: on Stop → 1.2s later, if still
+  idle AND inbox non-empty → work-order typed into the PTY.
+- Not yet ported inside hooks: breaker tool-loop detection, control/HITL
+  deny gate, steer injection, goal injection, transcript cost/OTel.
 - `git2` (0.21) for single-committer commits; degraded to no-op if repo
   can't init (matching electron's best-effort commit).
 - Hook shims (`cth-hook.cjs`, agy/codex/grok/gemini/pi/opencode translators,
@@ -91,4 +113,12 @@ retry+backoff on index.lock).
   Deviations found during build: @types/react-dom `^18.3.11` in the source
   package.json never resolves (18.x max is 18.3.7) → pinned `^18.3.0`; Windows
   needs icons/icon.ico for the resource file → generated from icon.png.
-  Next up: hooks socket (HIVE_SOCK) + provider shims, then Pixi floor port.
+- 2026-10-04 (2): phase 2 hooks. `src/bin/hive-hook.rs` native shim +
+  `hooks.rs` TCP server (Status/CostSample early-return, record_session,
+  statuses working/idle/waiting/compacting, god roster additionalContext,
+  guarded idle-wake inbox nudge). Spawn: resolve_program + argv/script/none
+  paths, settings.json + --append-system-prompt for claude, typed seed for
+  others, HIVE_SOCK + HIVE_AUTO_APPROVE env. Verified: contract e2e via python
+  socket harness (envelope in, decision out, no-sock noop), cargo build clean,
+  app smoke — hive-hook.exe staged to harness/bin, hive tree created.
+  Next up: Pixi floor port OR breaker/control (steer→constrain→stop).

@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod hive;
+mod hooks;
 mod pty;
 mod ptyenv;
 
@@ -19,7 +20,13 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app_data_dir")
                 .join("harness");
-            let state = AppState::new(harness_home).expect("init app state");
+            // HookServer first: its TCP addr is injected as HIVE_SOCK into every
+            // agent spawn. Connections arriving before state is managed harmlessly
+            // answer {} (none can — no agents exist yet).
+            let server = hooks::HookServer::start(&app.handle())
+                .expect("hook server bind");
+            let mut state = AppState::new(harness_home).expect("init app state");
+            state.sock_addr = Some(server.addr.clone());
             app.manage(state);
 
             // Router loop — the Electron version watched outboxes via chokidar;

@@ -94,6 +94,10 @@ pub struct RegistryEntry {
     pub is_god: bool,
     #[serde(default)]
     pub status: String,
+    /// The CLI's own session id (from hook payloads) — for --resume + cost
+    /// dedup, same as upstream's recordSession.
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub created_at: String,
 }
 
@@ -213,6 +217,116 @@ impl Hive {
             .into_iter()
             .find(|a| a.is_god)
             .map(|a| a.id)
+    }
+
+    pub fn is_god(&self, id: &str) -> bool {
+        self.god_id().is_some_and(|g| g == id)
+    }
+
+    /// Store the CLI's own session id (Claude `session_id` from every hook
+    /// payload) on the registry entry — cheap write-only-on-change, used for
+    /// --resume and cost dedup. Port of hive.recordSession.
+    pub fn record_session(&self, id: &str, session_id: &str) -> Result<()> {
+        let mut agents = self.registry();
+        if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
+            if a.session_id.as_deref() != Some(session_id) {
+                a.session_id = Some(session_id.into());
+                self.write_registry(&agents)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist a proxy-bridge usage sample to the cost ledger — a separate
+    /// append-only file so log.jsonl stays the event feed. Rows keep the
+    /// upstream accounting schema (input/output/cache/usd estimate).
+    pub fn append_cost_sample(&self, agent_id: &str, p: &serde_json::Value) -> Result<()> {
+        use std::io::Write;
+        let row = serde_json::json!({
+            "agent": agent_id,
+            "session": p.get("session_id"),
+            "ts": Utc::now().to_rfc3339(),
+            "input": p.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
+            "output": p.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
+            "cache_read": p.get("cache_read").and_then(|v| v.as_u64()).unwrap_or(0),
+            "cache_creation": p.get("cache_creation").and_then(|v| v.as_u64()).unwrap_or(0),
+            "model": p.get("model").and_then(|v| v.as_str()).unwrap_or(""),
+        });
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("cost.jsonl"))?;
+        writeln!(f, "{}", serde_json::to_string(&row)?)?;
+        Ok(())
+    }
+
+    /// Port of hive.hookSettings — the per-session settings.json given to
+    /// Claude via `--settings`. Every hook entry invokes the native hive-hook
+    /// binary (quoted for paths with spaces); the event name arrives inside
+    /// the stdin payload, so one command serves all events. `statusLine`
+    /// forwards the session's context-window accounting via `--status`.
+    ///
+    /// Omitted vs upstream: mcpServers (catalog not ported) and the
+    /// sandbox/permissions block (writableDirs — add when the sandbox story
+    /// is designed for this backend).
+    pub fn hook_settings(&self, shim_command: &str) -> serde_json::Value {
+        let entry = |matcher: Option<&str>| {
+            let mut e = serde_json::json!({
+                "hooks": [{ "type": "command", "command": shim_command }]
+            });
+            if let Some(m) = matcher {
+                e["matcher"] = serde_json::json!(m);
+            }
+            e
+        };
+        let plain = entry(None);
+        let tool = entry(Some("*"));
+        serde_json::json!({
+            // 'auto', not a pinned theme — DEC 2031 notifications let the CLI
+            // re-derive the palette when the harness theme flips.
+            "theme": "auto",
+            "statusLine": {
+                "type": "command",
+                "command": format!("{shim_command} --status"),
+                "padding": 0
+            },
+            "hooks": {
+                "Stop": [plain],
+                "SubagentStop": [plain],
+                "PreToolUse": [tool],
+                "PostToolUse": [tool],
+                "UserPromptSubmit": [plain],
+                "Notification": [plain],
+                "SessionStart": [plain],
+                "PreCompact": [plain],
+                "PostCompact": [plain]
+            }
+        })
+    }
+
+    /// The system-prompt prefix injected into every spawn. Port of
+    /// hive.injectedPrompt — interpolates only lifetime-stable values so the
+    /// prompt-cache invariant holds (no dates/UUIDs/volatile state).
+    pub fn injected_prompt(&self, entry: &RegistryEntry) -> String {
+        let dir = self.agent_dir(&entry.id);
+        let god_line = if entry.is_god {
+            " You are the ORCHESTRATOR: read every routed request, resolve routine ones yourself, keep the floor autonomous, escalate only spend/destructive/scope items to the human via messages to \"human\"."
+        } else {
+            ""
+        };
+        format!(
+            "You are {name} (id `{id}`), an agent inside an office hive. \
+             Your folder is {dir}; the hive root is {root}. Coordination is file-based: \
+             read {dir}/identity.md and {dir}/memory.md at start, check {dir}/inbox/ for \
+             messages, drop reply files into {dir}/outbox/ — the router delivers them. \
+             The full contract is in {root}/PROTOCOL.md.{god} \
+             Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.",
+            name = entry.name,
+            id = entry.id,
+            dir = dir.display(),
+            root = self.root.display(),
+            god = god_line
+        )
     }
 
     /// Create the agent's hive folder + identity/memory files and record it in

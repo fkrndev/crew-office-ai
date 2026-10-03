@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getConfig, onPtyExit, setAutoMode } from './api';
+import { getConfig, onAgentStatus, onPtyExit, setAutoMode } from './api';
 import { AddAgent } from './components/AddAgent';
 import { AgentList } from './components/AgentList';
 import { InboxPanel } from './components/InboxPanel';
@@ -15,9 +15,11 @@ export default function App() {
     refreshAgents();
     getConfig().then((c) => setAuto(c.auto_mode));
     const un = onPtyExit(() => refreshAgents());
+    const unStatus = onAgentStatus(() => refreshAgents());
     const poll = setInterval(refreshAgents, 5000);
     return () => {
       un.then((f) => f());
+      unStatus.then((f) => f());
       clearInterval(poll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
