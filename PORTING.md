@@ -24,7 +24,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `breaker.ts` (circuit breaker: loop/error-storm/velocity/caps/no-progress) | `breaker.rs` + 30s beat in lib.rs (steer/constrain mail, stop kills PTY; hardStop off caps at constrained) | DONE (api_error source pending telemetry) |
 | `control.ts` (ControlRegistry: pause/halt/steer/tool gates) | `control.rs` + commands + ControlStrip UI; wired into hooks (halt→continue:false, PreToolUse deny, steer→additionalContext) | DONE |
 | `transcript.ts` + `pricing.ts` (Claude transcript usage reconciler, per-model pricing) | `usage.rs` — incremental per-file cache, per-session buckets, per-record pricing | DONE (offline path) |
-| `telemetry.ts` (OTel collector, api_error spans), `costLifetime.ts`, `usage.ts` seams | not started — ledger + transcript cover the beat for now | TODO |
+| `telemetry.ts` (OTLP/HTTP-JSON collector: token/cost metrics, tool_result spans, api_error) | `telemetry.rs` — per-session accum → per-agent sample (LIVE source #1), 200-span ring, tool_decision, api_error→breaker, OTEL_* env on claude spawn | DONE (waterfall UI + grok/costLifetime fallbacks = TODO) |
 | `index.ts` syncMissions + `config.ts` mission constants | `missions.rs` + 15s scheduler poll in lib.rs; seed-once flags; quiet-gated heartbeat; compact mission → per-agent idle-boundary `/compact` queue | DONE (weekly schedules = TODO) |
 | `updater.ts` (electron-updater) | `tauri-plugin-updater` | TODO |
 | `integrations.ts` (Electron safeStorage secrets) | `keyring` crate or `tauri-plugin-stronghold` | TODO |
@@ -177,3 +177,10 @@ retry+backoff on index.lock).
   200+token → delivered to god inbox → /status 'delivered'; wrong secret and
   unknown id both 401. Tunnel (tunnelmole) + Slack adapter + review UI =
   TODO. Deps added: tiny_http, jsonschema.
+- 2026-10-04 (9): OTel telemetry. telemetry.rs — embedded OTLP/HTTP-JSON
+  collector (tiny_http, dynamic port); token.usage + cost.usage → per-agent
+  live sample now FIRST in the beat's source order (otlp→ledger→transcript);
+  tool_result spans ring + tool_decision; api_error drained into the
+  breaker's storm arm; wake watchdog's telemetry evidence wired; OTEL_* env
+  injected for claude (same vars as hive.ts). 6/6 unit tests (2 new ingest
+  tests with realistic OTLP bodies).

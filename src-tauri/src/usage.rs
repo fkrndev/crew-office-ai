@@ -33,7 +33,8 @@ const SONNET: ModelPrice = ModelPrice { input: 3.0, output: 15.0, cache_read: 0.
 const HAIKU: ModelPrice = ModelPrice { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 };
 
 /// Strip Claude Code's variant suffix: `claude-opus-4-8[1m]` → `claude-opus-4-8`.
-fn normalize_model(model: &str) -> String {
+/// pub(crate): the telemetry collector normalizes model ids the same way.
+pub(crate) fn normalize_model(model: &str) -> String {
     let t = model.trim();
     match t.rfind('[') {
         Some(i) if t.ends_with(']') => t[..i].trim().to_string(),

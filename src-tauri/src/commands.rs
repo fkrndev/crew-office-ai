@@ -23,8 +23,8 @@ pub struct AppState {
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
     pub breaker: Mutex<CircuitBreaker>,
     pub control: Mutex<ControlRegistry>,
-    /// Transcript-based usage reader (usage.rs) — the breaker's token/cost
-    /// sample source for claude agents until the OTel collector lands.
+    /// Transcript-based usage reader (usage.rs) — the breaker's fallback
+    /// sample source when live OTel has nothing yet.
     pub usage: crate::usage::UsageReader,
     /// TCP loopback addr of the HookServer (`127.0.0.1:port`) → env HIVE_SOCK.
     pub sock_addr: Option<String>,
@@ -42,6 +42,11 @@ pub struct AppState {
     /// Inbound webhook gateway (webhook.rs) — loopback HTTP, secret-gated,
     /// routes verified posts into god's inbox.
     pub webhook: std::sync::Arc<crate::webhook::WebhookServer>,
+    /// OTLP/HTTP-JSON collector (telemetry.rs) — live usage, tool spans,
+    /// api_error feed for claude agents.
+    pub telemetry: std::sync::Arc<crate::telemetry::TelemetryCollector>,
+    /// Bound collector URL set at boot (spawn reads it for OTEL_* env).
+    pub otel_endpoint: std::sync::OnceLock<String>,
 }
 
 impl AppState {
@@ -73,6 +78,8 @@ impl AppState {
             compact_queue: Mutex::new(std::collections::HashSet::new()),
             wake: Mutex::new(crate::workerwake::WorkerWakeWatchdog::default()),
             webhook: std::sync::Arc::new(crate::webhook::WebhookServer::new()),
+            telemetry: std::sync::Arc::new(crate::telemetry::TelemetryCollector::new()),
+            otel_endpoint: std::sync::OnceLock::new(),
             sock_addr: None,
             hook_bin,
         })
@@ -212,6 +219,7 @@ fn spawn_inner(
     // minus parent-session markers (ptyEnv.ts).
     let auto = st.config.lock().unwrap().auto_mode;
     let agent_dir = st.hive.agent_dir(&id);
+    let is_claude = args.provider == "claude";
     let mut agent_env = HashMap::from([
         ("AGENT_ID".to_string(), id.clone()),
         ("AGENT_NAME".to_string(), args.name.clone()),
@@ -223,6 +231,22 @@ fn spawn_inner(
     }
     if let Some(sock) = &st.sock_addr {
         agent_env.insert("HIVE_SOCK".into(), sock.clone());
+    }
+    // OTel wiring (hive.ts:983-989 — claude only): metrics/logs pushed as
+    // OTLP/HTTP-JSON to the embedded collector, tagged by agent.id.
+    if is_claude {
+        if let Some(ep) = st.otel_endpoint.get() {
+            agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());
+            agent_env.insert("OTEL_LOGS_EXPORTER".into(), "otlp".into());
+            agent_env.insert("OTEL_EXPORTER_OTLP_PROTOCOL".into(), "http/json".into());
+            agent_env.insert("OTEL_EXPORTER_OTLP_ENDPOINT".into(), ep.clone());
+            agent_env.insert("OTEL_METRIC_EXPORT_INTERVAL".into(), "5000".into());
+            agent_env.insert("OTEL_LOGS_EXPORT_INTERVAL".into(), "2000".into());
+            agent_env.insert(
+                "OTEL_RESOURCE_ATTRIBUTES".into(),
+                format!("agent.id={},agent.name={}", entry.id, entry.name),
+            );
+        }
     }
 
     let parent: HashMap<String, String> = std::env::vars().collect();
@@ -239,7 +263,6 @@ fn spawn_inner(
     // hiveAware (claude): per-session settings.json + --append-system-prompt.
     // Others: the same prompt rides in as the typed first turn — the uniform
     // 'type-into-tui' delivery, which also covers flag/positional providers.
-    let is_claude = args.provider == "claude";
     let injected = st.hive.injected_prompt(&entry);
     let mut command_line = args.command.clone();
     let mut seed = args.seed_prompt.clone();
@@ -379,6 +402,7 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     // Dead agents can't leak a tripped breaker level or a pending steer.
     st.breaker.lock().unwrap().forget(&id);
     st.wake.lock().unwrap().forget(&id, Some(&id));
+    st.telemetry.forget(&id);
     st.hive.set_status(&id, "stopped").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",

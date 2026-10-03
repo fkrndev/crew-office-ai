@@ -47,7 +47,8 @@ pub struct BreakerDecision {
 
 /// Cumulative usage snapshot — fed from our cost ledger accumulation
 /// (upstream: Oscar's UsageProvider; same pull seam).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageSample {
     pub input: u64,
     pub output: u64,

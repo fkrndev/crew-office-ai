@@ -7,6 +7,7 @@ mod hooks;
 mod missions;
 mod pty;
 mod ptyenv;
+mod telemetry;
 mod usage;
 mod webhook;
 mod workerwake;
@@ -137,12 +138,13 @@ pub fn run() {
                         .filter(|a| live.contains(&a.id))
                         .map(|a| breaker::BreakerInput {
                             agent_id: a.id.clone(),
-                            // Live ledger first (proxy CostSamples); Claude
-                            // Code falls back to its transcript JSONL — the
-                            // same OTel→transcript fallback order as upstream.
+                            // Live OTel first, then the proxy-sample ledger,
+                            // then the transcript reconciler — upstream's
+                            // exact preference order.
                             sample: st
-                                .hive
-                                .usage_sample(&a.id)
+                                .telemetry
+                                .sample(&a.id)
+                                .or_else(|| st.hive.usage_sample(&a.id))
                                 .or_else(|| st.usage.sample(&a.cwd, a.session_id.as_deref())),
                             progressing: now.saturating_sub(st.hive.last_coordination_at(&a.id))
                                 < PROGRESS_WINDOW_MS,
@@ -151,6 +153,17 @@ pub fn run() {
                         .collect();
                     if inputs.is_empty() {
                         continue;
+                    }
+                    // Drain each agent's api_error stamps into the breaker's
+                    // storm window before the tick (telemetry push → pull).
+                    {
+                        let mut b = st.breaker.lock().unwrap();
+                        for i in &inputs {
+                            for _ in st.telemetry.take_api_errors(&i.agent_id) {
+                                b.record_error(&i.agent_id);
+                            }
+                        }
+                        drop(b);
                     }
                     let decisions = st.breaker.lock().unwrap().tick(
                         &inputs,
@@ -251,7 +264,13 @@ pub fn run() {
                             })
                             .collect();
                         let snap = st.control.lock().unwrap().snapshot(&a.id);
-                        let sample = st.usage.sample(&a.cwd, a.session_id.as_deref());
+                        // Telemetry is the watchdog's primary turn-proof; the
+                        // transcript read is the same signal at rest.
+                        let tel_activity = st.telemetry.last_activity_at(&a.id);
+                        let sample = st
+                            .telemetry
+                            .sample(&a.id)
+                            .or_else(|| st.usage.sample(&a.cwd, a.session_id.as_deref()));
                         facts.push(workerwake::WorkerWakeFacts {
                             agent_id: a.id.clone(),
                             is_god: a.is_god,
@@ -261,8 +280,9 @@ pub fn run() {
                             auto_delivery_paused: snap.auto_delivery_paused,
                             paused: snap.paused,
                             halted: snap.halted,
-                            last_activity_at: sample.as_ref().map(|s| s.ts).unwrap_or(0),
-                            has_telemetry: sample.is_some(),
+                            last_activity_at: tel_activity
+                                .max(sample.as_ref().map(|s| s.ts).unwrap_or(0)),
+                            has_telemetry: st.telemetry.has_telemetry(&a.id) || sample.is_some(),
                             oldest_mail_at: oldest,
                         });
                     }
@@ -310,6 +330,20 @@ pub fn run() {
                     }
                 }
             });
+
+            // OTLP/HTTP-JSON telemetry collector — dynamic loopback port;
+            // claude spawns get the URL via OTEL_EXPORTER_OTLP_ENDPOINT.
+            {
+                let st = app.state::<AppState>();
+                match st.telemetry.clone().run(app.handle().clone()) {
+                    Ok(port) => {
+                        let _ = st
+                            .otel_endpoint
+                            .set(format!("http://127.0.0.1:{port}"));
+                    }
+                    Err(e) => eprintln!("[telemetry] collector not started: {e:#}"),
+                }
+            }
 
             // Inbound webhook gateway — binds once endpoints exist (a
             // webhooks_save can also start it later; the port never rebinds,
