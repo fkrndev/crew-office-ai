@@ -1,4 +1,5 @@
 mod breaker;
+mod bridges;
 mod commands;
 mod config;
 mod control;

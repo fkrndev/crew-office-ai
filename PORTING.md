@@ -232,3 +232,8 @@ retry+backoff on index.lock).
   {decision:deny}, context→{systemMessage}). Build clean. Every upstream
   hook-bridge provider now has a port except pi/opencode extensions and
   qwen/crush proxies.
+- 2026-10-04 (17): pi + opencode bundled-file bridges (bridges.rs —
+  PI_EXTENSION/OPENCODE_PLUGIN JS ported verbatim; per-agent .pi-agent/ +
+  .opencode/ dirs, PI_CODING_AGENT_DIR / OPENCODE_CONFIG_DIR env; plugin
+  written to both plugin/ and plugins/). Only qwen/crush proxy sidecars
+  remain of the upstream bridge family.

@@ -295,6 +295,18 @@ fn spawn_inner(
             let _ = st.hive.install_agy_hooks(bin);
         }
     }
+    // Pi / OpenCode — bundled-file bridges (extensions + plugins posting to
+    // HIVE_SOCK directly); per-agent dirs isolate from the user's globals.
+    if args.provider == "pi" {
+        if let Ok(home) = crate::bridges::install_pi_hooks(&agent_dir) {
+            agent_env.insert("PI_CODING_AGENT_DIR".into(), home.display().to_string());
+        }
+    }
+    if args.provider == "opencode" {
+        if let Ok(home) = crate::bridges::install_opencode_plugin(&agent_dir) {
+            agent_env.insert("OPENCODE_CONFIG_DIR".into(), home.display().to_string());
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());
