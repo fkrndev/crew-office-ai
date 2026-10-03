@@ -358,3 +358,46 @@ retry+backoff on index.lock).
 - shellEnv.ts — N/A: ptyenv.rs handles env sanitization natively.
 - Monaco/CodeEditor/Pixi multi-window renderer surfaces — frontend
   scope; Tauri single-window + OfficeFloorLite covers the floor.
+  (window:newFloor now opens extra webview windows.)
+
+## 2026-10-04 (32): full IPC-surface completion sweep
+
+The upstream `ipcMain.handle` registry (~140 channels) is now fully
+mirrored by tauri commands. New this pass:
+
+- hive_admin.rs + cmd_hive.rs — hive:addTask/deleteTask/patchAgentRole/
+  renameAgent/setArchived/setAgentHold/agentDirectory/agentUsage/
+  agentContext/log/messages/textSearch; session:resolveCwd; pty:list/
+  redraw; workers:list/stop. Archived/hold flags live in a sidecar
+  registry-extra.json (typed RegistryEntry would drop them).
+- git_ops.rs completed + cmd_git.rs — the whole git:* surface: diff,
+  branches, checkout (dirty + worktree-occupancy guards), worktrees
+  add/remove (unintegrated-work guard), logGraph, commitFiles,
+  compareRefs, showFile, mainRepo, isSafeRev. git2 0.21.
+- misc.rs + cmd_misc.rs — 42 commands: clipboard, openExternal, reset,
+  login item (winreg Run key), notifications, terminal open, tools
+  status, fs stat/binary/write/reveal, dialogs (plugin), model catalog
+  (embedded), hero payload, provider keys, webhook lifecycle +
+  generateSecret + delete, slack config + reply script, telemetry
+  snapshot/spans/usage, window:newFloor, config home management +
+  token caps, breaker/autoDelivery toggles, triggers/org context.
+- kg.rs — knowledge base (BM25-style local index) port of kg-core.cjs,
+  byte-identical storage format.
+- memory_palace.rs — MemPalace mine/search/wake shell-out, degrades
+  cleanly when the CLI is absent; MEMPALACE_* env injected at spawn.
+- integrations.rs — integration records + keyring secrets + loopback
+  token-gated broker (MD_BROKER_URL/MD_BROKER_TOKEN injected at spawn,
+  revoked at teardown).
+- freeflow.rs — Groq Whisper STT (hand-rolled multipart).
+- github.rs — ciRuns/issues via REST (token from keyring).
+- analytics.rs — PostHog capture adapter (event/prop allowlists,
+  opt-out, DNT); no-op without a compiled key.
+- realtime.rs — completion watcher (card-done + inbox-reply +
+  agent-idle predicates) + drain queue + tool catalog; the OpenAI
+  Realtime voice transport itself is not portable (websocket session),
+  everything it drives is.
+- lib.rs — deep-link plugin (agent-office: scheme), close-gating
+  (close-requested → confirm → closing-time), analytics init, watcher
+  poll on the router tick.
+- api.ts — frontend invoke wrappers for the full surface.
+- 102 tests green (83 lib + 11 parity + 8 shim); cargo build + tsc clean.

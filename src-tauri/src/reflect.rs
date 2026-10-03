@@ -11,7 +11,7 @@
 //! A failed verify leaves the original untouched.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};

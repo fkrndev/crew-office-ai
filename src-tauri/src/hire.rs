@@ -322,9 +322,12 @@ pub fn validate_hire_manifest(raw: &Value) -> (Option<Value>, Vec<String>, Vec<S
     (Some(Value::Object(m)), vec![], consent_required)
 }
 
-/// Parse a `munderdifflin://hire?src=<https-url>` deep link.
+/// Parse a `munderdifflin://hire?src=<https-url>` deep link — the app's own
+/// `agent-office:` scheme is accepted identically.
 pub fn parse_hire_deep_link(link: &str) -> Option<String> {
-    let rest = link.strip_prefix("munderdifflin:")?;
+    let rest = link
+        .strip_prefix("munderdifflin:")
+        .or_else(|| link.strip_prefix("agent-office:"))?;
     // Accept both munderdifflin://hire?src= and munderdifflin:hire?src=
     let (action, query) = {
         let body = rest.trim_start_matches('/');

@@ -220,6 +220,50 @@ impl TelemetryCollector {
             .unwrap_or_default()
     }
 
+    /// The freshest session's (id, model) for one agent — fills the
+    /// `sessionId`/`model` fields upstream's AgentUsageSample carries that
+    /// our breaker-facing UsageSample does not.
+    fn freshest_session(&self, agent_id: &str) -> Option<(String, String)> {
+        let sids = self.agent_sessions.lock().unwrap().get(agent_id).cloned()?;
+        let sessions = self.sessions.lock().unwrap();
+        let mut best: Option<(String, u64, String)> = None;
+        for sid in sids {
+            if let Some(a) = sessions.get(&sid) {
+                if best.as_ref().map(|(_, ts, _)| a.ts >= *ts).unwrap_or(true) {
+                    best = Some((sid.clone(), a.ts, a.model.clone()));
+                }
+            }
+        }
+        best.map(|(sid, _, model)| (sid, model))
+    }
+
+    /// Cold-start backfill — port of upstream telemetry:snapshot: one usage row
+    /// per agent with live telemetry + the full span rings, so a renderer that
+    /// missed the live pushes can hydrate in one call.
+    pub fn snapshot(&self) -> serde_json::Value {
+        let agent_ids: Vec<String> = self.agent_sessions.lock().unwrap().keys().cloned().collect();
+        let mut usage = Vec::new();
+        for id in &agent_ids {
+            if let Some(s) = self.sample(id) {
+                let mut v = serde_json::to_value(&s).unwrap_or_else(|_| serde_json::json!({}));
+                v["agentId"] = serde_json::json!(id);
+                if let Some((sid, model)) = self.freshest_session(id) {
+                    v["sessionId"] = serde_json::json!(sid);
+                    v["model"] = serde_json::json!(model);
+                }
+                usage.push(v);
+            }
+        }
+        let spans: serde_json::Map<String, serde_json::Value> = self
+            .spans
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!([]))))
+            .collect();
+        serde_json::json!({ "usage": usage, "spans": spans })
+    }
+
     /// Drain the agent's api_error stamps — the beat feeds each one to
     /// breaker.record_error (push vs pull is equivalent here: the breaker
     /// just timestamps each stamp again at feed time).

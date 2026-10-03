@@ -265,6 +265,24 @@ fn spawn_inner(
     if let Some(sock) = &st.sock_addr {
         agent_env.insert("HIVE_SOCK".into(), sock.clone());
     }
+    // Integration broker token (integrationBroker.ts grant(workerId,
+    // enabledIds)) — MD_BROKER_URL/MD_BROKER_TOKEN env for worker spawn;
+    // no token is granted when no integrations are enabled.
+    {
+        let home = st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf();
+        let ids = crate::integrations::enabled_ids(&home);
+        if !ids.is_empty() {
+            // grant mints (or rotates) the worker's capability token.
+            let token = crate::integrations::BROKER.grant(&id, ids);
+            agent_env.insert("MD_BROKER_URL".into(), crate::integrations::BROKER.url());
+            agent_env.insert("MD_BROKER_TOKEN".into(), token);
+        }
+        // MemPalace env (memory.ts) — the worker sees the shared palace
+        // path so `mempalace` calls inside the agent land in the same store.
+        for (k, v) in crate::memory_palace::instance(&home).env() {
+            agent_env.insert(k, v);
+        }
+    }
     // OTel wiring (hive.ts:983-989 — claude only): metrics/logs pushed as
     // OTLP/HTTP-JSON to the embedded collector, tagged by agent.id.
     // Keychain secrets configured for injection (config.secret_env_keys) —
@@ -553,6 +571,9 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     st.breaker.lock().unwrap().forget(&id);
     st.wake.lock().unwrap().forget(&id, Some(&id));
     st.telemetry.forget(&id);
+    // A dead worker's broker capability token dies with it
+    // (integrationBroker.ts revoke-on-teardown).
+    crate::integrations::BROKER.revoke(&id);
     st.hive.set_status(&id, "stopped").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",
@@ -870,6 +891,151 @@ pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)
     Ok(state(&app).webhook.pending())
 }
 
+// ─── hire deep-link queue (agent-office://hire?src=...) ─────────────────────
+
+/// Where a deep-link hire request is parked until the UI drains it —
+/// upstream's hire:drainPending contract.
+pub fn pending_hire_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("pending-hire.json")
+}
+
+/// Park a pending hire source (called by the deep-link handler + tests).
+pub fn park_pending_hire(home: &std::path::Path, src: &str) {
+    let _ = std::fs::write(
+        pending_hire_path(home),
+        serde_json::json!({ "src": src }).to_string(),
+    );
+}
+
+/// hire:drainPending — read + clear the queued deep-link source.
+#[tauri::command]
+pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
+    let st = state(&app);
+    let home = st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf();
+    let p = pending_hire_path(&home);
+    if !p.exists() {
+        return Ok(None);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| e.to_string())?).unwrap_or_default();
+    let _ = std::fs::remove_file(&p);
+    Ok(v.get("src").and_then(|s| s.as_str()).map(String::from))
+}
+
+// ─── config:update (generic patch — upstream's settings write path) ─────────
+
+/// config:update — merge a partial JSON patch into config.json. Only keys
+/// that exist on Config survive (serde drops the rest, same as upstream's
+/// typed settings write); one level of object merge for nested knobs.
+#[tauri::command]
+pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<Config, String> {
+    let st = state(&app);
+    let mut cfg = st.config.lock().unwrap();
+    let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), patch.as_object()) {
+        for (k, val) in src {
+            match (dst.get_mut(k), val) {
+                (Some(d @ serde_json::Value::Object(_)), serde_json::Value::Object(s)) => {
+                    for (k2, v2) in s {
+                        d[k2] = v2.clone();
+                    }
+                }
+                _ => {
+                    dst.insert(k.clone(), val.clone());
+                }
+            }
+        }
+    }
+    *cfg = serde_json::from_value(v).map_err(|e| e.to_string())?;
+    st.config_store.save(&cfg).map_err(err_str)?;
+    Ok(cfg.clone())
+}
+
+/// webhook:setConfig — port + enable toggle; the port applies on next boot.
+#[tauri::command]
+pub fn webhook_set_config(app: AppHandle, port: Option<u16>, enabled: Option<bool>) -> Result<bool, String> {
+    let st = state(&app);
+    if let Some(p) = port {
+        let mut cfg = st.config.lock().unwrap();
+        cfg.webhook_port = p;
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    if let Some(on) = enabled {
+        st.persist.lock().unwrap().set_kv("webhook_enabled", &serde_json::Value::Bool(on));
+    }
+    Ok(true)
+}
+
+/// hire:openFile — pick a .json manifest then run the same validation the
+/// deep link uses (upstream: dialog → validate → prefill).
+#[tauri::command]
+pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Hire manifest", &["json"])
+        .blocking_pick_file();
+    let Some(p) = picked else {
+        return Ok(serde_json::json!({ "ok": false, "error": "cancelled" }));
+    };
+    let path = p.as_path().ok_or("no path")?;
+    let raw = crate::hire::read_manifest_file(path)?;
+    let (manifest, errors, warns) = crate::hire::validate_hire_manifest(&raw);
+    if let Some(m) = manifest {
+        Ok(serde_json::json!({ "ok": true, "manifest": m, "warnings": warns, "path": path.display().to_string() }))
+    } else {
+        Ok(serde_json::json!({ "ok": false, "errors": errors }))
+    }
+}
+
+// ─── app lifecycle (close gating + info) ────────────────────────────────────
+
+/// app:confirmClose — kick the closing-time protocol (same rail as
+/// closing_time_start; frontend shows "Confirm close" → this).
+#[tauri::command]
+pub fn app_confirm_close(app: AppHandle) -> Result<usize, String> {
+    closing_time_start(app)
+}
+
+/// app:cancelClose — abort the in-flight closing-time protocol.
+#[tauri::command]
+pub fn app_cancel_close(app: AppHandle) -> Result<bool, String> {
+    closing_time_cancel(app)
+}
+
+/// app:info — version + home path for the About surface.
+#[tauri::command]
+pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    Ok(serde_json::json!({
+        "name": "Agent Office",
+        "version": env!("CARGO_PKG_VERSION"),
+        "home": st.hive.root.parent().unwrap_or(&st.hive.root).display().to_string(),
+        "liveAgents": st.ptys.lock().unwrap().len(),
+    }))
+}
+
+/// skills:reveal — open a skill's directory in the OS file manager.
+#[tauri::command]
+pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
+    let st = state(&app);
+    let cwds: Vec<String> = st.hive.registry().iter().map(|a| a.cwd.clone()).collect();
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
+    let dir = crate::skills::list_local_skills(&cwds, bundled.as_deref())
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| s.path)
+        .ok_or_else(|| "unknown skill".to_string())?;
+    #[cfg(windows)]
+    std::process::Command::new("explorer").arg(&dir).spawn().ok();
+    #[cfg(not(windows))]
+    std::process::Command::new("open").arg(&dir).spawn().ok();
+    Ok(true)
+}
+
 // ─── memory reflector (condense oversized memory.md via headless claude) ────
 
 /// Manually condense one agent's memory.md — skips the trigger (on-demand);
@@ -908,13 +1074,6 @@ pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, St
         "aheadBehind": crate::git_ops::ahead_behind(p),
         "unintegratedWork": crate::git_ops::worktree_has_unintegrated_work(p),
     }))
-}
-
-#[tauri::command]
-pub fn git_log(app: AppHandle, cwd: String, n: Option<usize>) -> Result<Vec<serde_json::Value>, String> {
-    let _ = app;
-    crate::git_ops::log(std::path::Path::new(&cwd), n.unwrap_or(50).min(500))
-        .ok_or_else(|| "not a git repository".to_string())
 }
 
 // ─── confined fs browser (fs_ops.safe_resolve policy) ───────────────────────

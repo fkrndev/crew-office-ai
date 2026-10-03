@@ -1,14 +1,33 @@
 pub mod breaker;
 mod bridges;
 mod closing_time;
-mod commands;
+mod cmd_git;
+mod cmd_hive;
+mod cmd_integrations;
+mod cmd_kg;
+mod cmd_memory;
+mod analytics;
+mod cmd_analytics;
+mod freeflow;
+mod cmd_freeflow;
+mod github;
+mod cmd_github;
+mod realtime;
+mod cmd_realtime;
+mod cmd_misc;
+mod misc;
+pub mod commands;
 pub mod config;
 pub mod cost_lifetime;
 mod control;
 mod db;
 pub mod fs_ops;
 mod git_ops;
+mod hive_admin;
 pub mod hive;
+pub mod kg;
+pub mod integrations;
+pub mod memory_palace;
 mod hire;
 mod hooks;
 pub mod missions;
@@ -87,6 +106,9 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let harness_home = app
                 .path()
@@ -98,9 +120,61 @@ pub fn run() {
             // answer {} (none can — no agents exist yet).
             let server = hooks::HookServer::start(&app.handle())
                 .expect("hook server bind");
-            let mut state = AppState::new(harness_home).expect("init app state");
+            let mut state = AppState::new(harness_home.clone()).expect("init app state");
             state.sock_addr = Some(server.addr.clone());
             app.manage(state);
+
+            // bootstrapHiveServices equivalents: the integration broker +
+            // the memory palace mine loop start implicitly with the app.
+            let _ = crate::integrations::BROKER.start(&harness_home, 0);
+            crate::memory_palace::instance(&harness_home).start();
+            // analytics.ts init — first_run / app_launched / update_applied
+            // (no-op when the PostHog key isn't compiled in or opted out).
+            crate::analytics::global().init(
+                &app.handle(),
+                &harness_home,
+                env!("CARGO_PKG_VERSION"),
+            );
+
+            // Close gating (app:cancelClose/app:confirmClose) — a close with
+            // live workers is held at the gate until the user confirms the
+            // closing-time protocol; an empty floor exits normally.
+            if let Some(win) = app.get_webview_window("main") {
+                let win2 = win.clone();
+                win.on_window_event(move |ev| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                        let st = win2.state::<AppState>();
+                        let live = !st.ptys.lock().unwrap().is_empty();
+                        if live && !st.closing.is_active() {
+                            api.prevent_close();
+                            let _ = win2.emit("close-requested", true);
+                        }
+                    }
+                });
+            }
+
+            // agent-office://hire?src=... deep links (upstream's
+            // munderdifflin://hire flow): park the source for the UI to
+            // drain through hire:drainPending.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle3 = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Some(src) = crate::hire::parse_hire_deep_link(url.as_str()) {
+                            let home = handle3
+                                .state::<AppState>()
+                                .hive
+                                .root
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            commands::park_pending_hire(&home, &src);
+                            let _ = handle3.emit("hire-pending", &src);
+                        }
+                    }
+                });
+            }
 
             // Router loop — the Electron version watched outboxes via chokidar;
             // a 250ms poll keeps the same deliver contract with no watcher dep.
@@ -110,6 +184,12 @@ pub fn run() {
                 loop {
                     tick.tick().await;
                     let st = handle.state::<AppState>();
+                    // realtimeCompletionWatcher — poll once per tick so
+                    // dispatch completions surface even without a waiter.
+                    crate::realtime::WATCHER
+                        .lock()
+                        .unwrap()
+                        .poll(&st.hive, Some(&handle));
                     match st.hive.router_tick() {
                         Ok(deliveries) => {
                             // Closing-time observer: routed subjects carry
@@ -585,6 +665,123 @@ pub fn run() {
             commands::hire_validate,
             commands::hire_fetch,
             commands::hire_import_file,
+            commands::hire_drain_pending,
+            commands::app_confirm_close,
+            commands::app_cancel_close,
+            commands::app_info,
+            commands::skills_reveal,
+            cmd_hive::hive_add_task,
+            cmd_hive::hive_delete_task,
+            cmd_hive::hive_patch_agent_role,
+            cmd_hive::hive_rename_agent,
+            cmd_hive::hive_set_archived,
+            cmd_hive::hive_set_agent_hold,
+            cmd_hive::hive_agent_directory,
+            cmd_hive::hive_agent_usage,
+            cmd_hive::hive_agent_context,
+            cmd_hive::hive_log,
+            cmd_hive::hive_messages,
+            cmd_hive::hive_text_search,
+            cmd_hive::session_resolve_cwd,
+            cmd_hive::pty_list,
+            cmd_hive::pty_redraw,
+            cmd_hive::workers_list,
+            cmd_hive::workers_stop,
+            cmd_git::git_is_repo,
+            cmd_git::git_branch,
+            cmd_git::git_status,
+            cmd_git::git_log_graph,
+            cmd_git::git_branches,
+            cmd_git::git_ahead_behind,
+            cmd_git::git_main_repo,
+            cmd_git::git_diff,
+            cmd_git::git_checkout,
+            cmd_git::git_worktrees,
+            cmd_git::git_worktree_add,
+            cmd_git::git_worktree_remove,
+            cmd_git::git_commit_files,
+            cmd_git::git_compare_refs,
+            cmd_git::git_show_file,
+            cmd_kg::kg_status,
+            cmd_kg::kg_list,
+            cmd_kg::kg_search,
+            cmd_kg::kg_get,
+            cmd_kg::kg_remove,
+            cmd_kg::kg_ingest_files,
+            cmd_kg::kg_add_files,
+            cmd_memory::memory_status,
+            cmd_memory::search_memory,
+            cmd_memory::memory_wake_up,
+            cmd_memory::mine_now,
+            cmd_integrations::integrations_list,
+            cmd_integrations::integrations_templates,
+            cmd_integrations::integrations_upsert,
+            cmd_integrations::integrations_remove,
+            cmd_integrations::integrations_set_secret,
+            cmd_integrations::integrations_test,
+            cmd_integrations::integrations_broker_start,
+            cmd_integrations::integrations_broker_stop,
+            cmd_integrations::integrations_broker_status,
+            cmd_integrations::integrations_broker_token,
+            cmd_freeflow::freeflow_set_config,
+            cmd_freeflow::freeflow_transcribe,
+            cmd_freeflow::freeflow_status,
+            cmd_github::github_ci_runs,
+            cmd_github::github_issues,
+            cmd_github::github_set_repo,
+            cmd_analytics::analytics_message_sent,
+            cmd_analytics::analytics_set_opt_in,
+            cmd_analytics::analytics_status,
+            cmd_realtime::realtime_set_session_live,
+            cmd_realtime::realtime_wait_for,
+            cmd_realtime::realtime_drain_completions,
+            cmd_realtime::realtime_track_dispatch,
+            cmd_realtime::realtime_actions_status,
+            cmd_misc::app_open_external,
+            cmd_misc::app_clipboard_write,
+            cmd_misc::app_clipboard_read,
+            cmd_misc::clipboard_save_image,
+            cmd_misc::app_reset_all,
+            cmd_misc::app_set_login_item,
+            cmd_misc::app_set_notifications,
+            cmd_misc::terminal_open_at_folder,
+            cmd_misc::tools_status,
+            cmd_misc::fs_stat_abs,
+            cmd_misc::fs_read_binary,
+            cmd_misc::fs_write_file,
+            cmd_misc::fs_reveal_path,
+            cmd_misc::dialog_choose_folder,
+            cmd_misc::dialog_attach_files,
+            cmd_misc::models_catalog,
+            cmd_misc::hero_payload,
+            cmd_misc::roster_read_sync,
+            cmd_misc::provider_key_set,
+            cmd_misc::provider_key_has,
+            cmd_misc::provider_key_clear,
+            cmd_misc::webhook_start,
+            cmd_misc::webhook_stop,
+            cmd_misc::webhook_status,
+            cmd_misc::webhook_generate_secret,
+            cmd_misc::webhooks_delete,
+            cmd_misc::slack_set_config,
+            cmd_misc::slack_reply_script_path,
+            cmd_misc::telemetry_snapshot,
+            cmd_misc::telemetry_spans,
+            cmd_misc::telemetry_usage,
+            cmd_misc::window_new_floor,
+            cmd_misc::config_change_home,
+            cmd_misc::config_ensure_home,
+            cmd_misc::config_home_sync,
+            cmd_misc::config_set_agent_token_cap,
+            cmd_misc::control_set_breaker_state,
+            cmd_misc::control_auto_delivery,
+            cmd_misc::triggers_get_context,
+            cmd_misc::triggers_set_context,
+            cmd_misc::org_get_trigger,
+            cmd_misc::org_set_trigger,
+            commands::config_update,
+            commands::webhook_set_config,
+            commands::hire_open_file,
             commands::kv_get,
             commands::kv_set,
             commands::command_history_add,
@@ -593,7 +790,7 @@ pub fn run() {
             commands::fs_list,
             commands::fs_read,
             commands::git_snapshot,
-            commands::git_log,
+            cmd_git::git_log,
             commands::reflect_now,
             commands::task_update,
             commands::task_answer,
