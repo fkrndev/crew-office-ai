@@ -82,8 +82,8 @@ pub struct WebhookServer {
 }
 
 /// Constant-time compare — OR-accumulate, length-guarded first (mirroring
-/// upstream's timingSafeEqual shape).
-fn secret_eq(a: &str, b: &str) -> bool {
+/// upstream's timingSafeEqual shape). Shared with the Slack signature gate.
+pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         // Still burn a comparison so length timing doesn't leak.

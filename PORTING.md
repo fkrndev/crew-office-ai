@@ -293,3 +293,18 @@ retry+backoff on index.lock).
   open peak; counter decrease = app restart) + roster.rs: roster.json
   mirror with append-only backups + empty-first-write guard + archive.
   commands: cost_lifetime, roster_read/write/archive. 52 tests green.
+- 2026-10-04 (26): closing_time.rs — the graceful shutdown protocol:
+  god brief mail, steer rail for busy agents, router-observer worker
+  ACKs, verified COMPLETE (premature conclusion refused, dead workers
+  excused), 6min timeout + 2.5s teardown grace → app.exit. Commands:
+  closing_time_start/cancel/status; the router loop emits 'closing-time'
+  phases.
+- 2026-10-04 (27): slack.rs — the Events-API adapter: HMAC-SHA256
+  verify over the raw body + 5min replay guard, url_verification
+  handshake, bot-user learning, mention/activated-thread trigger gate,
+  channel:ts dedup (dual app_mention+message deliveries), subtype/
+  self-loop filters, 1MB body cap, post_slack_reply (chat.postMessage,
+  CLAUSE-1 explicit-thread guard), keychain-held SLACK_SIGNING_SECRET /
+  SLACK_BOT_TOKEN. Not ported: the tunnelmole public tunnel — the local
+  listener is the security boundary; point any tunnel at it. Commands:
+  slack_start/stop/status/reply. 55 tests green.

@@ -1,5 +1,6 @@
 pub mod breaker;
 mod bridges;
+mod closing_time;
 mod commands;
 pub mod config;
 pub mod cost_lifetime;
@@ -13,6 +14,7 @@ pub mod proxy;
 mod ptyenv;
 pub mod roster;
 pub mod skills;
+mod slack;
 mod telemetry;
 pub mod trigger_history;
 mod usage;
@@ -105,6 +107,44 @@ pub fn run() {
                     let st = handle.state::<AppState>();
                     match st.hive.router_tick() {
                         Ok(deliveries) => {
+                            // Closing-time observer: routed subjects carry
+                            // the worker ACKs + god's COMPLETE verdict.
+                            if st.closing.is_active() {
+                                let live: std::collections::HashSet<String> =
+                                    st.ptys.lock().unwrap().keys().cloned().collect();
+                                for d in &deliveries {
+                                    let msg = st
+                                        .hive
+                                        .inbox(&d.to)
+                                        .ok()
+                                        .and_then(|inb| inb.into_iter().find(|m| m.id == d.msg_id));
+                                    if let Some(m) = msg {
+                                        if let Some(phase) = st.closing.on_routed(
+                                            &st.hive,
+                                            &live,
+                                            &m.from,
+                                            &m.subject,
+                                            &[d.to.clone()],
+                                        ) {
+                                            commands::emit_closing(&handle, phase);
+                                        }
+                                    }
+                                }
+                                if st.closing.concluded() {
+                                    commands::emit_closing(&handle, "complete");
+                                    let h2 = handle.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        tokio::time::sleep(Duration::from_millis(
+                                            closing_time::TEARDOWN_GRACE_MS,
+                                        ))
+                                        .await;
+                                        h2.exit(0);
+                                    });
+                                }
+                            }
+                            if let Some(phase) = st.closing.poll_timeout() {
+                                commands::emit_closing(&handle, phase);
+                            }
                             for d in deliveries {
                                 let _ = handle.emit("hive-deliver", &d);
                             }
@@ -530,6 +570,13 @@ pub fn run() {
             commands::roster_read,
             commands::roster_write,
             commands::roster_archive,
+            commands::closing_time_start,
+            commands::closing_time_cancel,
+            commands::closing_time_status,
+            commands::slack_start,
+            commands::slack_stop,
+            commands::slack_status,
+            commands::slack_reply,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,

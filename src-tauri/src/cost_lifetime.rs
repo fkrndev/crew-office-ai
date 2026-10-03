@@ -9,7 +9,7 @@
 //! (agent,session) the counter only climbs, so a DECREASE is the reset
 //! signature and nothing else. Lifetime per agent:
 //!
-//!     sum(peak of each closed segment) + peak of the open segment
+//!   `sum(peak of each closed segment) + peak of the open segment`
 //!
 //! Incremental fold: each pass reads only bytes appended since the last one;
 //! a truncated/rotated file resets the fold. Read-only — never writes.

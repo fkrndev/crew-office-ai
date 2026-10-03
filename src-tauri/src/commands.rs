@@ -61,6 +61,11 @@ pub struct AppState {
     /// The roster mirror (roster.rs) — UI floor state on disk with
     /// append-only backups + the empty-first-write guard.
     pub roster: crate::roster::RosterStore,
+    /// Closing-time protocol (closing_time.rs) — graceful shutdown via the
+    /// hive rails: god brief + worker ACKs + verified COMPLETE.
+    pub closing: crate::closing_time::ClosingTime,
+    /// Slack Events-API adapter (slack.rs) — HMAC-gated inbound → god inbox.
+    pub slack: std::sync::Arc<crate::slack::SlackServer>,
 }
 
 impl AppState {
@@ -99,6 +104,8 @@ impl AppState {
             context_last_compact: Mutex::new(HashMap::new()),
             cost_moved: Mutex::new(HashMap::new()),
             roster: crate::roster::RosterStore::new(harness_home.clone()),
+            closing: crate::closing_time::ClosingTime::default(),
+            slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
             sock_addr: None,
             hook_bin,
         })
@@ -721,6 +728,15 @@ pub fn missions_save(
 
 const KEYRING_SERVICE: &str = "office-agent";
 
+/// Read a credential — the caller's only path to a value (slack secrets and
+/// spawn-time env injection both go through here).
+fn secret_get(app: &AppHandle, key: &str) -> Option<String> {
+    let _ = app;
+    keyring::Entry::new(KEYRING_SERVICE, key)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+}
+
 /// Store a secret in the OS credential store and register its env key for
 /// injection. The value never touches config.json or log.jsonl.
 #[tauri::command]
@@ -845,6 +861,118 @@ pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
     Ok(state(&app).webhook.pending())
+}
+
+// ─── slack adapter (Events API → god inbox; reply rail) ─────────────────────
+
+/// Start the Slack listener. The signing secret comes from the credential
+/// store (SLACK_SIGNING_SECRET) — never from disk or args.
+#[tauri::command]
+pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Result<bool, String> {
+    let st = state(&app);
+    let secret = secret_get(&app, "SLACK_SIGNING_SECRET")
+        .ok_or_else(|| "SLACK_SIGNING_SECRET not in credential store".to_string())?;
+    let hive = st.hive.clone();
+    let trigger_history = st.trigger_history.clone();
+    let app2 = app.clone();
+    st.slack
+        .start(port, secret, channel_id, move |text, channel, _ts, thread_ts, files| {
+            let body = if files.is_empty() {
+                text.clone()
+            } else {
+                format!("{text}\n\n({} file(s) attached)", files.len())
+            };
+            // Verified inbound → god's inbox, same as a webhook message.
+            let msg = format!("{body}\n\n(from: slack #{channel}, ts: {thread_ts})");
+            if let Ok(_d) = hive.send_virtual("slack", "god", "request", "Slack", &msg) {
+                trigger_history.append(crate::trigger_history::TriggerHistoryEntry {
+                    id: String::new(),
+                    source: "webhook".into(),
+                    source_id: "slack".into(),
+                    source_name: "slack".into(),
+                    direction: "inbound".into(),
+                    peer: format!("#{channel}"),
+                    title: Some("slack message".into()),
+                    body,
+                    kind: crate::trigger_history::classify_inbound_kind(&msg).into(),
+                    decision: Some("auto-allowed".into()),
+                    correlation_id: Some(format!("{channel}:{thread_ts}")),
+                    task_id: None,
+                    at: 0,
+                });
+                let _ = app2.emit("hive-deliver", serde_json::json!({"to": "god"}));
+            }
+        })
+        ?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
+    state(&app).slack.stop();
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    Ok(serde_json::json!({
+        "running": st.slack.is_running(),
+        "port": *st.slack.url_port.lock().unwrap(),
+    }))
+}
+
+/// Reply rail — agents post back into the Slack thread WITHOUT the bot
+/// token (it comes from the credential store at send time). The
+/// channel+thread are explicit (CLAUSE-1 — no channel-root posts).
+#[tauri::command]
+pub fn slack_reply(app: AppHandle, channel: String, thread_ts: String, text: String) -> Result<bool, String> {
+    let token = secret_get(&app, "SLACK_BOT_TOKEN")
+        .ok_or_else(|| "SLACK_BOT_TOKEN not in credential store".to_string())?;
+    crate::slack::post_slack_reply(&token, &channel, &thread_ts, &text)?;
+    Ok(true)
+}
+
+// ─── closing time (graceful shutdown protocol) ──────────────────────────────
+
+/// Press "closing time": brief god + steer every live agent, then the router
+/// observer tracks worker ACKs and the verified COMPLETE.
+#[tauri::command]
+pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
+    let st = state(&app);
+    let live: std::collections::HashSet<String> = st.ptys.lock().unwrap().keys().cloned().collect();
+    let mut control = st.control.lock().unwrap();
+    let n = st.closing.start(&st.hive, &mut control, &live)?;
+    emit_closing(&app, "started");
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
+    let st = state(&app);
+    let mut control = st.control.lock().unwrap();
+    st.closing.cancel(&st.hive, &mut control);
+    emit_closing(&app, "cancelled");
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn closing_time_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    let (acked, total) = st.closing.progress();
+    Ok(serde_json::json!({
+        "active": st.closing.is_active(), "acked": acked, "total": total
+    }))
+}
+
+/// Emit the protocol state to the floor UI (upstream 'app:closingTime').
+pub(crate) fn emit_closing(app: &AppHandle, phase: &str) {
+    let st = state(app);
+    let (acked, total) = st.closing.progress();
+    let _ = app.emit(
+        "closing-time",
+        serde_json::json!({ "phase": phase, "acked": acked, "total": total }),
+    );
 }
 
 // ─── roster mirror (UI floor state on disk) ─────────────────────────────────
