@@ -237,3 +237,14 @@ retry+backoff on index.lock).
   .opencode/ dirs, PI_CODING_AGENT_DIR / OPENCODE_CONFIG_DIR env; plugin
   written to both plugin/ and plugins/). Only qwen/crush proxy sidecars
   remain of the upstream bridge family.
+- 2026-10-04 (18): proxy sidecar (proxy.rs + ureq) — the loopback reverse
+  proxy that makes hookless CLIs hive citizens. Forwards every request
+  unchanged (headers minus accept-encoding/host, streaming bodies), tees
+  the response into a <=4MB capture, and synthesizes Status (ctx gauge
+  via per-model window table), CostSample, per-tool-call PostToolUse and
+  the 800ms-debounced Stop — generation-counter cancellation on new
+  requests/tool calls, exactly like the JS shim. qwen rides
+  OPENAI_BASE_URL→loopback; crush rides install_crush_config's
+  CRUSH_GLOBAL_CONFIG (openai wire only — wrong-wire providers stay on
+  their real upstream). Anthropic-wire parse path implemented for future
+  crush anthropic upstreams. 11/11 tests (SSE emit + idle-stop debounce).

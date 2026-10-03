@@ -307,6 +307,34 @@ fn spawn_inner(
             agent_env.insert("OPENCODE_CONFIG_DIR".into(), home.display().to_string());
         }
     }
+    // Proxy-tier bridges (qwen, crush): a loopback ProxyBridge tees the
+    // agent's LLM traffic into the same hook payloads — Status/CostSample/
+    // PostToolUse/Stop without any hook surface at all. The upstream is the
+    // user's REAL base URL (read from the parent env before we rewrite it).
+    if args.provider == "qwen" || args.provider == "crush" {
+        if let Some(sock) = &st.sock_addr {
+            let upstream = std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".into());
+            let bridge = std::sync::Arc::new(crate::proxy::ProxyBridge::new(
+                id.clone(),
+                crate::proxy::ProxyApi::OpenAi,
+                upstream,
+                sock.clone(),
+                None,
+            ));
+            if let Ok(port) = bridge.clone().start() {
+                let loopback = format!("http://127.0.0.1:{port}");
+                if args.provider == "qwen" {
+                    agent_env.insert("OPENAI_BASE_URL".into(), loopback);
+                } else if let Ok((cfg, data)) =
+                    crate::bridges::install_crush_config(&agent_dir, &loopback, true)
+                {
+                    agent_env.insert("CRUSH_GLOBAL_CONFIG".into(), cfg.display().to_string());
+                    agent_env.insert("CRUSH_GLOBAL_DATA".into(), data.display().to_string());
+                }
+            }
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());

@@ -7,6 +7,7 @@ mod hive;
 mod hooks;
 mod missions;
 mod pty;
+mod proxy;
 mod ptyenv;
 mod telemetry;
 mod usage;

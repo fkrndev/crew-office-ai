@@ -125,6 +125,27 @@ pub fn install_pi_hooks(dir: &Path) -> Result<PathBuf> {
     Ok(home)
 }
 
+/// installCrushConfig — Crush has NO base-URL env override, so its global
+/// config is pointed at the loopback proxy instead: per-agent CRUSH_GLOBAL_CONFIG
+/// (crush.json) rewrites ONLY the matching wire provider's base_url (a
+/// different-wire provider would hit the wrong endpoint — left to its real
+/// upstream, mail still drains via the nudge path). CRUSH_GLOBAL_DATA isolates
+/// session state from ~/.config/crush.
+pub fn install_crush_config(dir: &Path, loopback_url: &str, api_openai: bool) -> Result<(PathBuf, PathBuf)> {
+    let config = dir.join("crush.json");
+    let data = dir.join(".crush-data");
+    fs::create_dir_all(&data)?;
+    let wire = if api_openai { "openai" } else { "anthropic" };
+    fs::write(
+        &config,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "providers": { wire: { "base_url": loopback_url } },
+            "options": { "tui": { "transparent": true } }
+        }))?,
+    )?;
+    Ok((config, data))
+}
+
 /// installOpenCodePlugin — per-agent `.opencode/` config dir with the plugin
 /// written to BOTH `plugin/` and `plugins/` (docs vs older builds — the
 /// losing guess is silently-never-loads, so cover both). Returns
