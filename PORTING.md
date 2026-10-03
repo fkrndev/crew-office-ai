@@ -39,7 +39,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 |---|---|
 | `PtyTerminalView`/`TerminalView` (xterm.js) | port now — xterm works in webview |
 | `agentProvider.ts` presets | ported → `src/providers.ts` (data only; bridge shims deferred) |
-| Office floor (Pixi.js scene/*) | PHASE 2 — pure frontend, reusable as-is once IPC shape matches |
+| Office floor (Pixi.js scene/*) | `OfficeFloorLite.tsx` — canvas2d render of the SAME office.tmj + tilesets (copied w/ ATTRIBUTION.md); spawn-point seating, status glow, envelope flights. Full Pixi pipeline (walk paths, wander, thought bubbles, Character/portraitArt) = TODO | PARTIAL |
 | CommandCenter (tasks/triggers/memory/threads) | PHASE 2 |
 | Monaco IDE (`src/ide`, FileTree, git rails) | PHASE 3 — needs `fs.rs`/`git.rs` broker cmds |
 | Slack/webhooks/settings/onboarding/updater UI | PHASE 3 |
