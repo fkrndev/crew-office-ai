@@ -34,6 +34,10 @@ pub struct Config {
     pub ops_standup_seeded: bool,
     pub heartbeat_seeded: bool,
     pub compact_seeded: bool,
+    /// Inbound webhook endpoints (webhook.rs) + the loopback port it binds.
+    /// Secrets live here (harness-local file) and never leave the backend.
+    pub webhooks: Vec<crate::webhook::WebhookEndpoint>,
+    pub webhook_port: u16,
 }
 
 impl Default for Config {
@@ -49,6 +53,8 @@ impl Default for Config {
             ops_standup_seeded: false,
             heartbeat_seeded: false,
             compact_seeded: false,
+            webhooks: Vec::new(),
+            webhook_port: 8787,
         }
     }
 }

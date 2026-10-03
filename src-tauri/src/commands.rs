@@ -17,7 +17,7 @@ use crate::pty::{self, PtyHandle};
 use crate::ptyenv::build_pty_env;
 
 pub struct AppState {
-    pub hive: Hive,
+    pub hive: std::sync::Arc<Hive>,
     pub config_store: ConfigStore,
     pub config: Mutex<Config>,
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
@@ -39,6 +39,9 @@ pub struct AppState {
     /// whose mail landed AFTER their last Stop (the stall the renderer-side
     /// idle loop misses). Fed by hooks/spawn/kill.
     pub wake: Mutex<crate::workerwake::WorkerWakeWatchdog>,
+    /// Inbound webhook gateway (webhook.rs) — loopback HTTP, secret-gated,
+    /// routes verified posts into god's inbox.
+    pub webhook: std::sync::Arc<crate::webhook::WebhookServer>,
 }
 
 impl AppState {
@@ -60,7 +63,7 @@ impl AppState {
             let _ = config_store.save(&config);
         }
         Ok(Self {
-            hive,
+            hive: std::sync::Arc::new(hive),
             config_store,
             config: Mutex::new(config),
             ptys: Mutex::new(HashMap::new()),
@@ -69,6 +72,7 @@ impl AppState {
             usage: crate::usage::UsageReader::default(),
             compact_queue: Mutex::new(std::collections::HashSet::new()),
             wake: Mutex::new(crate::workerwake::WorkerWakeWatchdog::default()),
+            webhook: std::sync::Arc::new(crate::webhook::WebhookServer::new()),
             sock_addr: None,
             hook_bin,
         })
@@ -551,6 +555,77 @@ pub fn missions_save(
     // free (no re-arm plumbing; that's the poll design's payoff).
     let _ = app.emit("missions-updated", serde_json::json!({}));
     Ok(())
+}
+
+// ─── webhooks (inbound HTTP → god's inbox) ──────────────────────────────────
+
+#[tauri::command]
+pub fn webhooks_list(app: AppHandle) -> Result<Vec<crate::webhook::WebhookEndpoint>, String> {
+    Ok(state(&app).config.lock().unwrap().webhooks.clone())
+}
+
+/// Persist the endpoint list and hot-swap it on the running server — a
+/// removed id stops resolving on the very next request (upstream
+/// setEndpoints semantics; the port never rebinds).
+#[tauri::command]
+pub fn webhooks_save(
+    app: AppHandle,
+    webhooks: Vec<crate::webhook::WebhookEndpoint>,
+) -> Result<u16, String> {
+    let st = state(&app);
+    {
+        let mut cfg = st.config.lock().unwrap();
+        cfg.webhooks = webhooks.clone();
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    let port = st.config.lock().unwrap().webhook_port;
+    ensure_webhook_server(&app, &webhooks, port);
+    Ok(port)
+}
+
+/// Start the loopback server if endpoints exist and it isn't bound yet.
+/// Returns the port actually serving (None = nothing to serve).
+fn ensure_webhook_server(
+    app: &AppHandle,
+    endpoints: &[crate::webhook::WebhookEndpoint],
+    port: u16,
+) -> Option<u16> {
+    let st = state(app);
+    if st.webhook.set_endpoints(endpoints) == 0 {
+        return None;
+    }
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Some(port); // already bound; set_endpoints already applied
+    }
+    let wh = st.webhook.clone();
+    let hive = st.hive.clone();
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = wh.run(port, hive, app2) {
+            eprintln!("[webhook] server stopped: {e:#}");
+            STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    Some(port)
+}
+
+#[tauri::command]
+pub fn webhook_approve(app: AppHandle, token: String, endpoint_id: String) -> Result<String, String> {
+    let st = state(&app);
+    st.webhook
+        .approve(&token, &st.hive, &endpoint_id)
+        .ok_or_else(|| "unknown or non-pending token".to_string())
+}
+
+#[tauri::command]
+pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
+    Ok(state(&app).webhook.reject(&token))
+}
+
+#[tauri::command]
+pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
+    Ok(state(&app).webhook.pending())
 }
 
 // ─── breaker (the beat's data seam + level read) ────────────────────────────

@@ -706,7 +706,9 @@ impl Hive {
         Ok(())
     }
 
-    fn log(&self, event: &serde_json::Value) -> Result<()> {
+    /// Append an event line to log.jsonl — pub so the webhook gateway can
+    /// record inbound traffic on the same ledger every routed message uses.
+    pub fn log(&self, event: &serde_json::Value) -> Result<()> {
         use std::io::Write;
         let mut v = serde_json::json!({ "ts": Utc::now().to_rfc3339() });
         if let (Some(a), Some(b)) = (v.as_object_mut(), event.as_object()) {

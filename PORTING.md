@@ -32,6 +32,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `cliInstall.ts`, `nodeInstall.ts` (missing-CLI installer ladder) | `install.rs` | TODO |
 | `realtime.ts` (OpenAI realtime ephemeral secrets) | keep frontend-side via `@openai/agents-realtime`, mint secret via a Rust cmd | TODO |
 | `workerWake.ts` (inbox→wake watchdog, edge-triggered + stall rule) | `workerwake.rs` + 10s beat — all holds ported (booting/mid-turn/boot-grace/hitl/announced/cooldown), hold reporting | DONE |
+| `webhook.ts` (secret-gated inbound HTTP → hive) | `webhook.rs` — loopback tiny_http server, constant-time secret + decoy compare (no id enumeration), global/per-endpoint/shared-unknown rate limits, 1MB cap, JSON-Schema validation, auto→god / review→pending-token, GET /status/<token>, hot endpoint swap | DONE (public tunnel = TODO; Slack adapter = TODO) |
 | `slack.ts` webhook server, `workerLaunch/hire/hiddenClaude` | later | TODO |
 | `useRestoreTeam` / respawn | `respawn_agent` command + ↻ button — registry keeps `command` per agent; claude resumes via `--resume <session_id>` | DONE |
 | `git.ts`, `worktreeDeps.ts` (worktrees, fs/git broker for IDE) | `git2` usage in `hive.rs` covers commit; IDE git rails = TODO | PARTIAL |
@@ -169,3 +170,10 @@ retry+backoff on index.lock).
   registry entry's saved command (new field) with claude --resume; control
   gains pause_auto_delivery + is_auto_delivery_paused parity. Build clean,
   zero warnings; npm build clean.
+- 2026-10-04 (8): webhook ingress. webhook.rs on tiny_http — POST /<id> +
+  x-md-webhook-secret → god inbox (auto) or pending-token (review);
+  GET /status/<token>; constant-time + decoy secret compare, rate limits,
+  1MB cap, JSON-Schema check, hot set_endpoints swap. E2E verified: POST
+  200+token → delivered to god inbox → /status 'delivered'; wrong secret and
+  unknown id both 401. Tunnel (tunnelmole) + Slack adapter + review UI =
+  TODO. Deps added: tiny_http, jsonschema.

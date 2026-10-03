@@ -8,6 +8,7 @@ mod missions;
 mod pty;
 mod ptyenv;
 mod usage;
+mod webhook;
 mod workerwake;
 
 use std::time::Duration;
@@ -310,6 +311,27 @@ pub fn run() {
                 }
             });
 
+            // Inbound webhook gateway — binds once endpoints exist (a
+            // webhooks_save can also start it later; the port never rebinds,
+            // endpoint swaps are hot).
+            {
+                let st = app.state::<AppState>();
+                let (eps, port) = {
+                    let cfg = st.config.lock().unwrap();
+                    (cfg.webhooks.clone(), cfg.webhook_port)
+                };
+                if st.webhook.set_endpoints(&eps) > 0 {
+                    let wh = st.webhook.clone();
+                    let hive = st.hive.clone();
+                    let app2 = app.handle().clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = wh.run(port, hive, app2) {
+                            eprintln!("[webhook] server stopped: {e:#}");
+                        }
+                    });
+                }
+            }
+
             // Mission scheduler — syncMissions port as a 15s poll (no timer
             // re-arm; a missions:save takes effect on the next tick).
             let handle3 = app.handle().clone();
@@ -391,6 +413,11 @@ pub fn run() {
             commands::missions_list,
             commands::missions_save,
             commands::respawn_agent,
+            commands::webhooks_list,
+            commands::webhooks_save,
+            commands::webhook_approve,
+            commands::webhook_reject,
+            commands::webhook_pending,
         ])
         .run(tauri::generate_context!())
         .expect("error while running office-agent");
