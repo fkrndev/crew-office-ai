@@ -648,6 +648,51 @@ impl Hive {
         Ok(())
     }
 
+    /// Antigravity (`agy`) bridge — merges an `office-agent` group into BOTH
+    /// global hooks.json surfaces (antigravity-cli#49: agy LOADS from
+    /// ~/.gemini/antigravity-cli/hooks.json but TRIGGERS from
+    /// ~/.gemini/config/hooks.json — upstream writes both, so do we).
+    /// Runtime-scoped by AGENT_ID: the shim exits for non-hive agy sessions,
+    /// so the global config never disturbs the user's own usage. Only OUR
+    /// group key is overwritten; other groups are preserved verbatim.
+    pub fn install_agy_hooks(&self, hook_bin: &Path) -> Result<()> {
+        let cmd = |ev: &str| format!("\"{}\" --agy {ev}", hook_bin.display());
+        let tool = |ev: &str| {
+            serde_json::json!({
+                "matcher": "*",
+                "hooks": [{ "type": "command", "command": cmd(ev), "timeout": 0 }]
+            })
+        };
+        let plain = |ev: &str| {
+            serde_json::json!({
+                "hooks": [{ "type": "command", "command": cmd(ev), "timeout": 0 }]
+            })
+        };
+        let group = serde_json::json!({
+            "PreToolUse": [tool("PreToolUse")],
+            "PostToolUse": [tool("PostToolUse")],
+            "PreInvocation": [plain("PreInvocation")],
+            "PostInvocation": [plain("PostInvocation")],
+            "Stop": [plain("Stop")]
+        });
+        let gem = dirs::home_dir().unwrap_or_default().join(".gemini");
+        for p in [
+            gem.join("config").join("hooks.json"),
+            gem.join("antigravity-cli").join("hooks.json"),
+        ] {
+            if let Some(parent) = p.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let mut existing: serde_json::Value = fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}));
+            existing["office-agent"] = group.clone();
+            fs::write(&p, serde_json::to_string_pretty(&existing)?)?;
+        }
+        Ok(())
+    }
+
     fn link_or_copy(src: &Path, dst: &Path) {
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_file(src, dst).is_ok();

@@ -224,3 +224,11 @@ retry+backoff on index.lock).
   grok's camelCase payload (hookEventName + names map + sessionId/toolName/
   toolInput/stopHookActive/workspaceRoot). 9/9 tests, build clean.
   Remaining bridges: agy shim, qwen/crush proxies.
+- 2026-10-04 (16): agy hook bridge. install_agy_hooks merges the
+  'office-agent' group into BOTH ~/.gemini hook surfaces (#49 dual-path);
+  --agy shim mode normalizes toolCall/conversationId/workspacePaths input
+  and emits ONLY real directives (agy fail-closes on decision-less JSON —
+  silence = allow; block→{decision:block,systemMessage}, deny→
+  {decision:deny}, context→{systemMessage}). Build clean. Every upstream
+  hook-bridge provider now has a port except pi/opencode extensions and
+  qwen/crush proxies.

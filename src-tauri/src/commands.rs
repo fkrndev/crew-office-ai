@@ -288,6 +288,13 @@ fn spawn_inner(
             let _ = st.hive.install_grok_hooks(bin);
         }
     }
+    // Antigravity (`agy`) bridge — global hook groups under ~/.gemini,
+    // runtime-scoped to hive workers by the shim's AGENT_ID check.
+    if args.provider == "antigravity" {
+        if let Some(bin) = &st.hook_bin {
+            let _ = st.hive.install_agy_hooks(bin);
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());

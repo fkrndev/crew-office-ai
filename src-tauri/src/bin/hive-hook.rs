@@ -41,7 +41,8 @@ fn main() {
     let hermes_mode = mode == "--hermes";
     let gemini_mode = mode == "--gemini";
     let grok_mode = mode == "--grok";
-    let arg_event = if hermes_mode || gemini_mode {
+    let agy_mode = mode == "--agy";
+    let arg_event = if hermes_mode || gemini_mode || agy_mode {
         args.get(2).cloned().unwrap_or_default()
     } else if grok_mode {
         String::new() // event arrives via the normalized payload
@@ -61,6 +62,8 @@ fn main() {
         serde_json::from_str(&input).unwrap_or(serde_json::json!({}));
     if grok_mode {
         normalize_grok(&mut payload);
+    } else if agy_mode {
+        normalize_agy(&mut payload);
     }
     if payload.get("agent_id").is_none() {
         if let Ok(id) = env::var("AGENT_ID") {
@@ -117,6 +120,14 @@ fn main() {
             println!("{}", to_hermes(trimmed));
         } else if gemini_mode || grok_mode {
             println!("{}", to_gemini(trimmed));
+        } else if agy_mode {
+            // CRITICAL (AGY_HOOK_SHIM): agy treats ANY stdout object as a
+            // decision and FAIL-CLOSES on a decision-less one — emit only a
+            // real directive; silence means allow.
+            let out = to_agy(trimmed);
+            if !out.is_empty() {
+                println!("{out}");
+            }
         } else {
             println!("{trimmed}");
         }
@@ -211,6 +222,68 @@ fn normalize_grok(p: &mut serde_json::Value) {
             }
         }
     }
+}
+
+/// Antigravity (`agy`) input normalization (AGY_HOOK_SHIM): its payload nests
+/// tool context and renames fields; the event name arrives via argv.
+fn normalize_agy(p: &mut serde_json::Value) {
+    let Some(obj) = p.as_object_mut() else { return };
+    let tc = obj.remove("toolCall").unwrap_or(serde_json::Value::Null);
+    if let Some(v) = tc.get("name") {
+        obj.insert("tool_name".into(), v.clone());
+    }
+    if let Some(v) = tc.get("args") {
+        obj.insert("tool_input".into(), v.clone());
+    }
+    let mv = |o: &mut serde_json::Map<String, serde_json::Value>, from: &str, to: &str| {
+        if let Some(v) = o.remove(from) {
+            o.insert(to.to_string(), v);
+        }
+    };
+    mv(obj, "conversationId", "session_id");
+    mv(obj, "transcriptPath", "transcript_path");
+    if let Some(serde_json::Value::Array(paths)) = obj.get("workspacePaths").cloned() {
+        if let Some(first) = paths.into_iter().next() {
+            obj.insert("cwd".into(), first);
+        }
+        obj.remove("workspacePaths");
+    }
+}
+
+/// Claude-shaped answer → agy directive. EMPTY STRING unless a real
+/// directive exists — agy fail-closes on any decision-less JSON.
+fn to_agy(resp: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(resp) else {
+        return String::new();
+    };
+    if v.get("decision").and_then(|d| d.as_str()) == Some("block") {
+        let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        return serde_json::json!({
+            "decision": "block", "reason": reason,
+            "stopReason": reason, "systemMessage": reason
+        })
+        .to_string();
+    }
+    if v.get("continue").and_then(|c| c.as_bool()) == Some(false) {
+        let reason = v.get("stopReason").and_then(|r| r.as_str()).unwrap_or("");
+        return serde_json::json!({"decision": "block", "stopReason": reason}).to_string();
+    }
+    if let Some(reason) = v
+        .pointer("/hookSpecificOutput/permissionDecisionReason")
+        .and_then(|r| r.as_str())
+    {
+        return serde_json::json!({"decision": "deny", "reason": reason}).to_string();
+    }
+    if let Some(ctx) = v
+        .get("additionalContext")
+        .or_else(|| v.pointer("/hookSpecificOutput/additionalContext"))
+        .and_then(|c| c.as_str())
+    {
+        if !ctx.is_empty() {
+            return serde_json::json!({"systemMessage": ctx}).to_string();
+        }
+    }
+    String::new()
 }
 
 /// Claude-shaped answer → Gemini CLI hook directive (GEMINI_HOOK_SHIM's
