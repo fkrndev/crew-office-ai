@@ -230,6 +230,50 @@ pub fn run() {
                             breaker::BreakerAction::None => {}
                         }
                     }
+                    // Context-pressure trigger (ContextRule): a live agent
+                    // whose context fill crosses min_context_pct and whose
+                    // every_ms gap elapsed gets /compact + the focus text —
+                    // typed now if idle, else parked for the idle boundary.
+                    let ct = &cfg.context_trigger;
+                    if ct.enabled && ct.min_context_pct <= 100 {
+                        let usage = st.context_usage.lock().unwrap().clone();
+                        let mut last = st.context_last_compact.lock().unwrap();
+                        let mut ptys = st.ptys.lock().unwrap();
+                        for (id, (tokens, limit)) in usage {
+                            if !live.contains(&id) || limit == 0 {
+                                continue;
+                            }
+                            if tokens * 100 < ct.min_context_pct * limit {
+                                continue;
+                            }
+                            let fired = last.get(&id).copied().unwrap_or(0);
+                            if now.saturating_sub(fired) < ct.every_ms {
+                                continue;
+                            }
+                            last.insert(id.clone(), now);
+                            let cmd = if ct.message.is_empty() {
+                                "/compact".to_string()
+                            } else {
+                                format!("/compact {}", ct.message)
+                            };
+                            let idle = st
+                                .hive
+                                .registry()
+                                .iter()
+                                .any(|a| a.id == id && a.status == "idle");
+                            if idle {
+                                if let Some(h) = ptys.get_mut(&id) {
+                                    let _ = h.write(&format!("{cmd}\r"));
+                                }
+                            } else {
+                                st.compact_queue.lock().unwrap().insert(id.clone());
+                            }
+                            let _ = handle2.emit(
+                                "hive-log",
+                                serde_json::json!({ "event": "context_trigger_compact", "agentId": id }),
+                            );
+                        }
+                    }
                 }
             });
             // Worker-wake watchdog beat (workerwake.rs, #151): the backstop

@@ -100,6 +100,12 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             cw.and_then(|c| c.get("total_input_tokens")).and_then(|v| v.as_u64()),
             cw.and_then(|c| c.get("context_window_size")).and_then(|v| v.as_u64()),
         ) {
+            if !agent_id.is_empty() {
+                st.context_usage
+                    .lock()
+                    .unwrap()
+                    .insert(agent_id.clone(), (t, l));
+            }
             let _ = app.emit(
                 "hive-context",
                 json!({ "agentId": agent_id, "tokens": t, "limit": l }),

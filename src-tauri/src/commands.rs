@@ -50,6 +50,11 @@ pub struct AppState {
     /// The trigger ledger (trigger_history.rs) — every inbound webhook + the
     /// operator's verdict on it. Own file, disposable, never a secret.
     pub trigger_history: crate::trigger_history::TriggerHistory,
+    /// Latest context fill per live agent (tokens, limit) — fed by the Status
+    /// hook/telemetry, read by the context-pressure trigger.
+    pub context_usage: Mutex<HashMap<String, (u64, u64)>>,
+    /// Per-agent last context-trigger compact (runtime state, not config).
+    pub context_last_compact: Mutex<HashMap<String, u64>>,
 }
 
 impl AppState {
@@ -84,6 +89,8 @@ impl AppState {
             telemetry: std::sync::Arc::new(crate::telemetry::TelemetryCollector::new()),
             otel_endpoint: std::sync::OnceLock::new(),
             trigger_history: crate::trigger_history::TriggerHistory::new(harness_home.clone()),
+            context_usage: Mutex::new(HashMap::new()),
+            context_last_compact: Mutex::new(HashMap::new()),
             sock_addr: None,
             hook_bin,
         })
@@ -798,12 +805,12 @@ fn ensure_webhook_server(
 }
 
 #[tauri::command]
-pub fn webhook_approve(app: AppHandle, token: String, endpoint_id: String) -> Result<String, String> {
+pub fn webhook_approve(app: AppHandle, token: String) -> Result<String, String> {
     let st = state(&app);
     let hist_id = st.webhook.pending_hist(&token);
     let msg_id = st
         .webhook
-        .approve(&token, &st.hive, &endpoint_id)
+        .approve(&token, &st.hive)
         .ok_or_else(|| "unknown or non-pending token".to_string())?;
     // Flip the ledger row: pending → approved, + the spawned task id.
     if let Some(id) = hist_id {

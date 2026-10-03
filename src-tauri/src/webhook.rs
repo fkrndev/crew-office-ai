@@ -64,7 +64,12 @@ impl Default for WebhookEndpoint {
 /// A parked review-mode message + the resolution state a GET reports.
 /// `hist_id` ties the token to its trigger-ledger row for approve/reject.
 enum TokenRec {
-    Pending { body: Value, endpoint_name: String, hist_id: Option<String> },
+    Pending {
+        body: Value,
+        endpoint_id: String,
+        endpoint_name: String,
+        hist_id: Option<String>,
+    },
     Delivered { target: String, msg_id: String },
 }
 
@@ -139,15 +144,19 @@ impl WebhookServer {
     /// Release a held review-mode message into the hive (operator approve) —
     /// routes it exactly like an auto-mode POST and returns its message id.
     /// Uses the endpoint name the message arrived under (survives a rename).
-    pub fn approve(&self, token: &str, hive: &crate::hive::Hive, endpoint_id: &str) -> Option<String> {
-        let (body, name) = match self.tokens.lock().unwrap().remove(token)? {
-            TokenRec::Pending { body, endpoint_name, .. } => (body, endpoint_name),
+    /// Approve — routes exactly like an auto-mode POST using the endpoint id
+    /// the message arrived under.
+    pub fn approve(&self, token: &str, hive: &crate::hive::Hive) -> Option<String> {
+        let (body, name, eid) = match self.tokens.lock().unwrap().remove(token)? {
+            TokenRec::Pending { body, endpoint_id, endpoint_name, .. } => {
+                (body, endpoint_name, endpoint_id)
+            }
             rec => {
                 self.tokens.lock().unwrap().insert(token.to_string(), rec);
                 return None;
             }
         };
-        let msg_id = dispatch_to_hive(hive, endpoint_id, &name, &body)?;
+        let msg_id = dispatch_to_hive(hive, &eid, &name, &body)?;
         self.mark_delivered(token.to_string(), "god".into(), msg_id.clone());
         Some(msg_id)
     }
@@ -174,12 +183,18 @@ impl WebhookServer {
     }
 
     /// Park a verified message as pending (returns its capability token).
-    fn park(&self, body: Value, endpoint_name: String, hist_id: Option<String>) -> String {
+    fn park(
+        &self,
+        body: Value,
+        endpoint_id: String,
+        endpoint_name: String,
+        hist_id: Option<String>,
+    ) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.tokens
             .lock()
             .unwrap()
-            .insert(token.clone(), TokenRec::Pending { body, endpoint_name, hist_id });
+            .insert(token.clone(), TokenRec::Pending { body, endpoint_id, endpoint_name, hist_id });
         token
     }
 
@@ -384,7 +399,12 @@ impl WebhookServer {
 
         if ep.mode == "review" {
             let e = hist.as_ref().map(|h| h.append(mk_entry("pending")));
-            let token = self.park(v.clone(), name.to_string(), e.map(|e| e.id));
+            let token = self.park(
+                v.clone(),
+                endpoint_id.to_string(),
+                name.to_string(),
+                e.map(|e| e.id),
+            );
             let _ = app.emit(
                 "webhook-pending",
                 json!({ "endpoint": name, "token": token }),

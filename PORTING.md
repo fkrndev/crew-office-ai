@@ -264,3 +264,9 @@ retry+backoff on index.lock).
 - 2026-10-04 (21): pricing module separated (the ONE per-model table)
   + codex rollout-dir exposure (sessions/archived_sessions moved under
   ~/.codex/<kind>/office-agent/<hiveId12>/<agentId>, junction back).
+- 2026-10-04 (22): TriggersPanel + SkillsPanel UI (upstream TriggersTab /
+  SkillsTab in miniature — pending queue approve/reject, ledger browse,
+  skills local+catalog+install/uninstall). Context-pressure trigger:
+  config.context_trigger (enabled/every_ms/min_context_pct/message) fed
+  by the Status hook's context_usage → /compact typed idle-or-queued,
+  DEFAULT_COMPACTION_FOCUS as the default focus text.

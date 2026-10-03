@@ -8,6 +8,8 @@ import { InboxPanel } from './components/InboxPanel';
 import { MissionsPanel } from './components/MissionsPanel';
 import { OfficeFloorLite } from './components/OfficeFloorLite';
 import { SecretsPanel } from './components/SecretsPanel';
+import { SkillsPanel } from './components/SkillsPanel';
+import { TriggersPanel } from './components/TriggersPanel';
 import { TerminalPane } from './components/TerminalPane';
 import { useApp } from './store';
 
@@ -17,6 +19,8 @@ export default function App() {
   const [showMissions, setShowMissions] = useState(false);
   const [showBoard, setShowBoard] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
+  const [showTriggers, setShowTriggers] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
   const [autoMode, setAuto] = useState(false);
 
   useEffect(() => {
@@ -56,6 +60,12 @@ export default function App() {
           <button className="ghost" onClick={() => setShowMissions(true)}>
             Schedules
           </button>
+          <button className="ghost" onClick={() => setShowTriggers(true)}>
+            Triggers
+          </button>
+          <button className="ghost" onClick={() => setShowSkills(true)}>
+            Skills
+          </button>
           <button className="ghost" onClick={() => setShowSecrets(true)}>
             Secrets
           </button>
@@ -86,6 +96,8 @@ export default function App() {
       {showBoard && <BoardPanel onClose={() => setShowBoard(false)} />}
       {showMissions && <MissionsPanel onClose={() => setShowMissions(false)} />}
       {showSecrets && <SecretsPanel onClose={() => setShowSecrets(false)} />}
+      {showTriggers && <TriggersPanel onClose={() => setShowTriggers(false)} />}
+      {showSkills && <SkillsPanel onClose={() => setShowSkills(false)} />}
       {adding && <AddAgent onClose={() => setAdding(false)} />}
     </div>
   );

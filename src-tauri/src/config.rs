@@ -42,6 +42,37 @@ pub struct Config {
     /// keyring crate) injected into every spawned agent's env — e.g.
     /// ANTHROPIC_API_KEY, OPENAI_API_KEY. Values never live in this file.
     pub secret_env_keys: Vec<String>,
+    /// Context-pressure trigger (shared/triggers.ts ContextRule) — when a
+    /// live agent's context window fill crosses `min_context_pct` AND
+    /// `every_ms` has passed since its last compaction, the agent gets a
+    /// `/compact` with `message` appended (dropped for providers that read
+    /// no trailing text, same as upstream).
+    pub context_trigger: ContextTriggerCfg,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextTriggerCfg {
+    pub enabled: bool,
+    /// Min wall-clock gap between compacts of one agent.
+    pub every_ms: u64,
+    /// Percent (0-100) of the context window that must be used.
+    pub min_context_pct: u64,
+    /// Focus text appended to /compact.
+    pub message: String,
+}
+
+impl Default for ContextTriggerCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            every_ms: 15 * 60_000,
+            min_context_pct: 70,
+            message:
+                "Keep the current task, recent decisions, open questions, and file paths in play. Drop resolved tangents."
+                    .into(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -60,6 +91,7 @@ impl Default for Config {
             webhooks: Vec::new(),
             webhook_port: 8787,
             secret_env_keys: Vec::new(),
+            context_trigger: ContextTriggerCfg::default(),
         }
     }
 }
