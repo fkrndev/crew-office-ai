@@ -343,14 +343,14 @@ impl Hive {
     /// Cumulative usage for one agent, folded from cost.jsonl each beat —
     /// the same pull seam upstream's UsageProvider feeds the breaker.
     pub fn usage_sample(&self, agent_id: &str) -> Option<crate::breaker::UsageSample> {
-        let text = fs::read_to_string(self.root.join("cost.jsonl")).ok()?;
+        let text = fs::read_to_string(self.root.join("cost-ledger.jsonl")).ok()?;
         let mut s = crate::breaker::UsageSample::default();
         let mut seen = false;
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            if v.get("agent").and_then(|a| a.as_str()) != Some(agent_id) {
+            if v.get("agent_id").and_then(|a| a.as_str()) != Some(agent_id) {
                 continue;
             }
             seen = true;
@@ -358,7 +358,9 @@ impl Hive {
             s.output += v.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
             s.cache_read += v.get("cache_read").and_then(|x| x.as_u64()).unwrap_or(0);
             s.cache_creation += v.get("cache_creation").and_then(|x| x.as_u64()).unwrap_or(0);
-            if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
+            if let Some(ts) = v.get("ts").and_then(|x| x.as_u64()) {
+                s.ts = ts;
+            } else if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
                 if let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) {
                     s.ts = t.timestamp_millis() as u64;
                 }
@@ -394,25 +396,96 @@ impl Hive {
         now.saturating_sub(latest) > threshold_ms
     }
 
-    /// Persist a proxy-bridge usage sample to the cost ledger — a separate
-    /// append-only file so log.jsonl stays the event feed. Rows keep the
-    /// upstream accounting schema (input/output/cache/usd estimate).
+    /// The path downstream consumers read — the ledger's name IS the
+    /// contract (upstream + Kevin's SQLite migration both key on it).
+    pub fn cost_ledger_path(&self) -> PathBuf {
+        self.root.join("cost-ledger.jsonl")
+    }
+
+    /// Last cumulative usd recorded for one (agent,session) — the fold's
+    /// monotonic anchor. Returns 0 for a session with no prior rows.
+    fn last_session_usd(&self, agent_id: &str, session_id: &str) -> f64 {
+        let Ok(text) = fs::read_to_string(self.cost_ledger_path()) else {
+            return 0.0;
+        };
+        let mut last = 0.0;
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("agent_id").and_then(|a| a.as_str()) == Some(agent_id)
+                && v.get("session_id").and_then(|s| s.as_str()) == Some(session_id)
+            {
+                if let Some(u) = v.get("usd").and_then(|x| x.as_f64()) {
+                    last = u;
+                }
+            }
+        }
+        last
+    }
+
+    /// Persist a usage sample to `cost-ledger.jsonl` — upstream schema
+    /// (agent_id/session_id/ts/input/output/cache_read/cache_creation/model/
+    /// usd), append-only so log.jsonl stays the event feed.
+    ///
+    /// `usd` is the cumulative per-session counter, because the lifetime fold
+    /// (costLifetime) detects app restarts as counter DECREASES: deltas would
+    /// fake a reset on every row. A caller that hands us a DELTA (proxy
+    /// CostSample, token rows) gets its usd accumulated onto the session's
+    /// last value; a caller that already holds the session's cumulative
+    /// (telemetry) passes it through `cumulative_usd`.
+    ///
+    /// Dedup gate (#56): rows without a session id are never ledgered — an
+    /// unresolvable session would corrupt the monotonic segments.
     pub fn append_cost_sample(&self, agent_id: &str, p: &serde_json::Value) -> Result<()> {
         use std::io::Write;
+        let Some(session_id) = p.get("session_id").and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+        if session_id.is_empty() {
+            return Ok(());
+        }
+        let model = p.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        let (input, output, cr, cw) = (
+            p.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
+            p.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
+            p.get("cache_read").and_then(|v| v.as_u64()).unwrap_or(0),
+            p.get("cache_creation").and_then(|v| v.as_u64()).unwrap_or(0),
+        );
+        let usd = p
+            .get("usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(|| {
+                // The proxy emits token deltas — accumulate an estimate onto
+                // the session's running counter so the fold's monotonic
+                // segment holds.
+                self.last_session_usd(agent_id, session_id)
+                    + crate::pricing::estimate_cost_usd(
+                        model,
+                        input as f64,
+                        output as f64,
+                        cr as f64,
+                        cw as f64,
+                    )
+            });
         let row = serde_json::json!({
-            "agent": agent_id,
-            "session": p.get("session_id"),
-            "ts": Utc::now().to_rfc3339(),
-            "input": p.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
-            "output": p.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
-            "cache_read": p.get("cache_read").and_then(|v| v.as_u64()).unwrap_or(0),
-            "cache_creation": p.get("cache_creation").and_then(|v| v.as_u64()).unwrap_or(0),
-            "model": p.get("model").and_then(|v| v.as_str()).unwrap_or(""),
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "ts": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            "input": input,
+            "output": output,
+            "cache_read": cr,
+            "cache_creation": cw,
+            "model": model,
+            "usd": usd,
         });
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.root.join("cost.jsonl"))?;
+            .open(self.cost_ledger_path())?;
         writeln!(f, "{}", serde_json::to_string(&row)?)?;
         Ok(())
     }

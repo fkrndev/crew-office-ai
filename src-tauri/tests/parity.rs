@@ -138,8 +138,10 @@ fn status_and_cost_sample_persist() {
     h.set_status("w1", "working").unwrap();
     assert_eq!(h.registry()[0].status, "working");
     // append_cost_sample → the proxy/hook cost ledger line lands.
+    // The #56 dedup gate: only sessioned samples hit the ledger.
     h.append_cost_sample("w1", &json!({
-        "model": "claude-sonnet-4", "usage": {"input_tokens": 100, "output_tokens": 50}
+        "session_id": "s1", "model": "claude-sonnet-4",
+        "input": 100, "output": 50
     }))
     .unwrap();
     let sample = h.usage_sample("w1");

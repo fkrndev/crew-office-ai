@@ -55,6 +55,12 @@ pub struct AppState {
     pub context_usage: Mutex<HashMap<String, (u64, u64)>>,
     /// Per-agent last context-trigger compact (runtime state, not config).
     pub context_last_compact: Mutex<HashMap<String, u64>>,
+    /// "agent\tsession" → last ledgered cumulative usd — the #56 dedup gate
+    /// (only append when the counter moved).
+    pub cost_moved: Mutex<HashMap<String, f64>>,
+    /// The roster mirror (roster.rs) — UI floor state on disk with
+    /// append-only backups + the empty-first-write guard.
+    pub roster: crate::roster::RosterStore,
 }
 
 impl AppState {
@@ -91,6 +97,8 @@ impl AppState {
             trigger_history: crate::trigger_history::TriggerHistory::new(harness_home.clone()),
             context_usage: Mutex::new(HashMap::new()),
             context_last_compact: Mutex::new(HashMap::new()),
+            cost_moved: Mutex::new(HashMap::new()),
+            roster: crate::roster::RosterStore::new(harness_home.clone()),
             sock_addr: None,
             hook_bin,
         })
@@ -837,6 +845,43 @@ pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
     Ok(state(&app).webhook.pending())
+}
+
+// ─── roster mirror (UI floor state on disk) ─────────────────────────────────
+
+#[tauri::command]
+pub fn roster_read(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    Ok(state(&app).roster.read())
+}
+
+#[tauri::command]
+pub fn roster_write(app: AppHandle, snap: serde_json::Value) -> Result<bool, String> {
+    // A declined empty-first-write is not an error for the caller — the file
+    // was protected, which is the outcome the renderer wants either way.
+    match state(&app).roster.write(&snap) {
+        Ok(()) => Ok(true),
+        Err(e) if e.starts_with("skipped:") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+pub fn roster_archive(app: AppHandle) -> Result<bool, String> {
+    state(&app).roster.archive();
+    Ok(true)
+}
+
+/// Lifetime spend folded from cost-ledger.jsonl — the reset-safe number
+/// (telemetry's cumulative-since-boot counter understates post-restart).
+#[tauri::command]
+pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    let mut t = crate::cost_lifetime::CostLedgerTotals::default();
+    t.refresh_fully(&st.hive.cost_ledger_path());
+    Ok(serde_json::json!({
+        "agents": t.all(),
+        "floor_total": t.floor_total(),
+    }))
 }
 
 // ─── task ledger writes (patchTaskInLedger semantics) ───────────────────────

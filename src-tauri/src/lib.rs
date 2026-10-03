@@ -2,6 +2,7 @@ pub mod breaker;
 mod bridges;
 mod commands;
 pub mod config;
+pub mod cost_lifetime;
 mod control;
 pub mod hive;
 mod hooks;
@@ -10,6 +11,7 @@ pub mod pricing;
 mod pty;
 pub mod proxy;
 mod ptyenv;
+pub mod roster;
 pub mod skills;
 mod telemetry;
 pub mod trigger_history;
@@ -158,6 +160,27 @@ pub fn run() {
                         .collect();
                     if inputs.is_empty() {
                         continue;
+                    }
+                    // Cost-ledger append gate (index.ts #56): each live
+                    // session's cumulative usd is ledgered when the counter
+                    // moved — the fold detects restarts as counter decreases.
+                    {
+                        let mut moved = st.cost_moved.lock().unwrap();
+                        for a in st.hive.registry() {
+                            if !live.contains(&a.id) {
+                                continue;
+                            }
+                            for (sid, row) in st.telemetry.session_samples(&a.id) {
+                                let key = format!("{}\t{}", a.id, sid);
+                                let usd = row["usd"].as_f64().unwrap_or(0.0);
+                                if moved.get(&key).copied().unwrap_or(-1.0) == usd {
+                                    continue;
+                                }
+                                if st.hive.append_cost_sample(&a.id, &row).is_ok() {
+                                    moved.insert(key, usd);
+                                }
+                            }
+                        }
                     }
                     // Drain each agent's api_error stamps into the breaker's
                     // storm window before the tick (telemetry push → pull).
@@ -503,6 +526,10 @@ pub fn run() {
             commands::webhook_pending,
             commands::triggers_list,
             commands::triggers_clear,
+            commands::cost_lifetime,
+            commands::roster_read,
+            commands::roster_write,
+            commands::roster_archive,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,

@@ -149,6 +149,28 @@ impl TelemetryCollector {
         seen.then_some(out)
     }
 
+    /// Per-session usage rows for the cost-ledger append path — upstream's
+    /// `if (moved) hive.appendCostLedger(sample)` needs a sessionId + that
+    /// session's cumulative usd, not the agent-rolled aggregate.
+    pub fn session_samples(&self, agent_id: &str) -> Vec<(String, serde_json::Value)> {
+        let sids = self.agent_sessions.lock().unwrap().get(agent_id).cloned().unwrap_or_default();
+        let sessions = self.sessions.lock().unwrap();
+        let mut out = Vec::new();
+        for sid in sids {
+            let Some(a) = sessions.get(&sid) else { continue };
+            out.push((
+                sid.clone(),
+                serde_json::json!({
+                    "session_id": sid,
+                    "input": a.input, "output": a.output,
+                    "cache_read": a.cache_read, "cache_creation": a.cache_creation,
+                    "model": a.model, "usd": a.usd,
+                }),
+            ));
+        }
+        out
+    }
+
     /// True when the agent has ANY live session (even a zero-token boot
     /// sample) — "no turn" means something for a telemetry-exporting agent.
     pub fn has_telemetry(&self, agent_id: &str) -> bool {

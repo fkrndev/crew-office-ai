@@ -284,3 +284,12 @@ retry+backoff on index.lock).
   fail-open paths). 47 tests green. Upstream surfaces deliberately not
   ported are enumerated in parity.rs's closing note (Monaco/Pixi/
   keychain/updater/slack are architecture-bound).
+- 2026-10-04 (25): cost-ledger.jsonl parity — upstream snake_case schema
+  (agent_id/session_id/numeric-ts/input/output/cache/model/usd), usd as
+  CUMULATIVE per-session (proxy deltas accumulate onto the session's
+  last row so the restart-detection fold stays monotonic), #56 session
+  dedup gate, telemetry→ledger append-on-moved in the breaker beat.
+  cost_lifetime.rs: CostLedgerTotals incremental fold (segment peaks +
+  open peak; counter decrease = app restart) + roster.rs: roster.json
+  mirror with append-only backups + empty-first-write guard + archive.
+  commands: cost_lifetime, roster_read/write/archive. 52 tests green.
