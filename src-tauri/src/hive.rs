@@ -331,6 +331,33 @@ impl Hive {
         seen.then_some(s)
     }
 
+    /// Is the floor quiet? (index.ts isFloorQuiet) — newest of: log.jsonl
+    /// mtime (every routed msg/spawn touches it), each agent's mailbox mtimes,
+    /// and live-PTY last_output clocks passed in `pty_clocks`. Never
+    /// registry.status. Returns false when there's nothing to judge.
+    pub fn is_floor_quiet(&self, threshold_ms: u64, pty_clocks: &[u64]) -> bool {
+        let mut times: Vec<u64> = vec![newest_mtime(&self.root.join("log.jsonl"))];
+        if let Ok(rd) = fs::read_dir(self.root.join("agents")) {
+            for e in rd.flatten() {
+                let d = e.path();
+                times.push(newest_mtime(&d.join("inbox")));
+                times.push(newest_mtime(&d.join("outbox")));
+            }
+        }
+        times.extend_from_slice(pty_clocks);
+        let Some(&latest) = times.iter().max() else {
+            return false;
+        };
+        if latest == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        now.saturating_sub(latest) > threshold_ms
+    }
+
     /// Persist a proxy-bridge usage sample to the cost ledger — a separate
     /// append-only file so log.jsonl stays the event feed. Rows keep the
     /// upstream accounting schema (input/output/cache/usd estimate).

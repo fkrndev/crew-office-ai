@@ -10,6 +10,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::breaker::BreakerConfig;
+use crate::missions::ScheduledMission;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +27,13 @@ pub struct Config {
     pub cost_cap_tokens: Option<u64>,
     /// Per-agent work-token caps (cache_read excluded, upstream #189).
     pub agent_token_caps: HashMap<String, u64>,
+    /// Recurring auto-dispatch missions (missions.rs + scheduler loop).
+    pub missions: Vec<ScheduledMission>,
+    /// One-time seeding guards — a user who deletes a built-in mission does
+    /// not get it re-added every boot (upstream *_seeded flags).
+    pub ops_standup_seeded: bool,
+    pub heartbeat_seeded: bool,
+    pub compact_seeded: bool,
 }
 
 impl Default for Config {
@@ -37,7 +45,35 @@ impl Default for Config {
             cost_cap_usd: None,
             cost_cap_tokens: None,
             agent_token_caps: HashMap::new(),
+            missions: Vec::new(),
+            ops_standup_seeded: false,
+            heartbeat_seeded: false,
+            compact_seeded: false,
         }
+    }
+}
+
+impl Config {
+    /// Seed the built-in missions once (upstream ensureDefaultMissions):
+    /// stamped with last_fired_at = now so a first launch waits a full
+    /// cadence rather than opening with an interruption.
+    pub fn seed_missions(&mut self, now_ms: u64) -> bool {
+        let mut changed = false;
+        let mut ensure = |m: ScheduledMission, seeded: &mut bool| {
+            if !*seeded {
+                let mut m = m;
+                m.last_fired_at = now_ms;
+                if !self.missions.iter().any(|x| x.id == m.id) {
+                    self.missions.push(m);
+                }
+                *seeded = true;
+                changed = true;
+            }
+        };
+        ensure(crate::missions::ops_standup(), &mut self.ops_standup_seeded);
+        ensure(crate::missions::heartbeat(), &mut self.heartbeat_seeded);
+        ensure(crate::missions::compact_maintenance(), &mut self.compact_seeded);
+        changed
     }
 }
 

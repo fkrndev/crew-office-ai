@@ -280,6 +280,15 @@ fn schedule_idle_delivery(app: AppHandle, agent_id: String) {
         if !still_idle {
             return;
         }
+        // A queued /compact drains at the idle boundary — compacts between
+        // steps, never mid-step (upstream's renderer-side queue, backend-side).
+        if st.compact_queue.lock().unwrap().remove(&agent_id) {
+            let mut ptys = st.ptys.lock().unwrap();
+            if let Some(h) = ptys.get_mut(&agent_id) {
+                let _ = h.write("/compact\r");
+            }
+            drop(ptys);
+        }
         let Ok(inbox) = st.hive.inbox(&agent_id) else {
             return;
         };

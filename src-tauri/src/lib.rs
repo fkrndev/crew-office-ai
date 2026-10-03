@@ -4,6 +4,7 @@ mod config;
 mod control;
 mod hive;
 mod hooks;
+mod missions;
 mod pty;
 mod ptyenv;
 mod usage;
@@ -12,6 +13,58 @@ use std::time::Duration;
 
 use commands::AppState;
 use tauri::{Emitter, Manager};
+
+/// Dispatch one due mission (index.ts fire()): non-compact kinds mail `body`
+/// to `to` from the 'scheduler' virtual sender; a compact mission queues a
+/// `/compact` per live agent — typed immediately if idle, else parked in the
+/// compact queue for the next idle boundary.
+fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMission) {
+    if m.kind.as_deref() != Some("compact") && !m.to.is_empty() {
+        let _ = st.hive.send_virtual("scheduler", &m.to, "request", &m.label, &m.body);
+        // God is the heartbeat's whole point: if the target sits idle, type
+        // the wake nudge now rather than waiting for a Stop that isn't coming.
+        let target_id = if m.to == "god" { st.hive.god_id() } else { Some(m.to.clone()) };
+        if let Some(tid) = target_id {
+            let idle = st
+                .hive
+                .registry()
+                .iter()
+                .any(|a| a.id == tid && a.status == "idle");
+            if idle {
+                let nudge = format!(
+                    "[{}] {} — check your inbox for the mission message.",
+                    m.label, m.body
+                );
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut(&tid) {
+                    let _ = h.write(&format!("{nudge}\r"));
+                }
+            }
+        }
+    }
+    if m.auto_compact || m.kind.as_deref() == Some("compact") {
+        let live: Vec<String> = st.ptys.lock().unwrap().keys().cloned().collect();
+        for id in live {
+            let idle = st
+                .hive
+                .registry()
+                .iter()
+                .any(|a| a.id == id && a.status == "idle");
+            if idle {
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut(&id) {
+                    let _ = h.write("/compact\r");
+                }
+            } else {
+                st.compact_queue.lock().unwrap().insert(id);
+            }
+        }
+    }
+    let _ = app.emit(
+        "hive-log",
+        serde_json::json!({ "event": "mission_fired", "id": m.id, "label": m.label }),
+    );
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -159,6 +212,59 @@ pub fn run() {
                     }
                 }
             });
+            // Mission scheduler — syncMissions port as a 15s poll (no timer
+            // re-arm; a missions:save takes effect on the next tick).
+            let handle3 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    tick.tick().await;
+                    let st = handle3.state::<AppState>();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let mut fired_ids: Vec<String> = Vec::new();
+                    {
+                        let cfg = st.config.lock().unwrap();
+                        for m in &cfg.missions {
+                            if !m.enabled || m.interval_ms == 0 {
+                                continue;
+                            }
+                            if now.saturating_sub(m.last_fired_at) < m.interval_ms {
+                                continue;
+                            }
+                            // Heartbeat is quiet-gated: only fires when the
+                            // whole floor has been silent past its threshold.
+                            if m.kind.as_deref() == Some("heartbeat") {
+                                let clocks: Vec<u64> = st
+                                    .ptys
+                                    .lock()
+                                    .unwrap()
+                                    .values()
+                                    .map(|h| h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
+                                    .collect();
+                                let threshold = m.quiet_threshold_ms.unwrap_or(300_000);
+                                if !st.hive.is_floor_quiet(threshold, &clocks) {
+                                    continue;
+                                }
+                            }
+                            fire_mission(&handle3, &st, m);
+                            fired_ids.push(m.id.clone());
+                        }
+                    }
+                    if !fired_ids.is_empty() {
+                        let mut cfg = st.config.lock().unwrap();
+                        for m in cfg.missions.iter_mut() {
+                            if fired_ids.contains(&m.id) {
+                                m.last_fired_at = now;
+                            }
+                        }
+                        let _ = st.config_store.save(&cfg);
+                        let _ = handle3.emit("missions-updated", serde_json::json!({}));
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -183,6 +289,8 @@ pub fn run() {
             commands::control_gate_tool,
             commands::control_snapshot,
             commands::breaker_level,
+            commands::missions_list,
+            commands::missions_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running office-agent");

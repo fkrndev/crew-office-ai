@@ -31,6 +31,10 @@ pub struct AppState {
     /// The native hook-shim binary copied into `<harness>/bin/` — the analogue
     /// of upstream writing cth-hook.cjs into the hive's bin dir.
     pub hook_bin: Option<PathBuf>,
+    /// Agents with a `/compact` pending — queued when a compact mission fires
+    /// mid-work, drained at the next idle boundary (upstream's renderer-side
+    /// compact queue, moved backend-side where agent status lives).
+    pub compact_queue: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -43,6 +47,14 @@ impl AppState {
         // bin/cth-hook.cjs. Resolved from beside the running exe (dev:
         // target/debug/, bundle: install dir). Missing → hooks degrade off.
         let hook_bin = stage_hook_bin(&harness_home);
+        let mut config = config;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if config.seed_missions(now) {
+            let _ = config_store.save(&config);
+        }
         Ok(Self {
             hive,
             config_store,
@@ -51,6 +63,7 @@ impl AppState {
             breaker: Mutex::new(CircuitBreaker::default()),
             control: Mutex::new(ControlRegistry::default()),
             usage: crate::usage::UsageReader::default(),
+            compact_queue: Mutex::new(std::collections::HashSet::new()),
             sock_addr: None,
             hook_bin,
         })
@@ -426,6 +439,30 @@ pub fn control_gate_tool(
 #[tauri::command]
 pub fn control_snapshot(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
     Ok(state(&app).control.lock().unwrap().snapshot(&agent_id))
+}
+
+// ─── missions (scheduler) ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn missions_list(app: AppHandle) -> Result<Vec<crate::missions::ScheduledMission>, String> {
+    Ok(state(&app).config.lock().unwrap().missions.clone())
+}
+
+#[tauri::command]
+pub fn missions_save(
+    app: AppHandle,
+    missions: Vec<crate::missions::ScheduledMission>,
+) -> Result<(), String> {
+    let st = state(&app);
+    {
+        let mut cfg = st.config.lock().unwrap();
+        cfg.missions = missions;
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    // The scheduler polls config — a save takes effect on the next tick for
+    // free (no re-arm plumbing; that's the poll design's payoff).
+    let _ = app.emit("missions-updated", serde_json::json!({}));
+    Ok(())
 }
 
 // ─── breaker (the beat's data seam + level read) ────────────────────────────

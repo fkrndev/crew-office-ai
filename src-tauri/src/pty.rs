@@ -83,6 +83,9 @@ pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
+    /// Epoch-ms of the last byte read — the heartbeat's quiet-floor signal
+    /// (an agent printing/thinking counts as activity, same as upstream).
+    pub last_output_at: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -181,6 +184,13 @@ fn finish(
 ) -> Result<PtyHandle> {
     let mut reader = master.try_clone_reader().context("clone reader")?;
     let writer = master.take_writer().context("take writer")?;
+    let last_output_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    ));
+    let clock = last_output_at.clone();
     let event_id = id.to_string();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
@@ -188,6 +198,13 @@ fn finish(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    clock.store(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     let _ = app.emit(
                         "pty-output",
                         PtyOutputPayload {
@@ -211,6 +228,7 @@ fn finish(
         writer,
         child,
         master,
+        last_output_at,
     })
 }
 

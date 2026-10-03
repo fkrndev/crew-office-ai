@@ -25,6 +25,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `control.ts` (ControlRegistry: pause/halt/steer/tool gates) | `control.rs` + commands + ControlStrip UI; wired into hooks (halt→continue:false, PreToolUse deny, steer→additionalContext) | DONE |
 | `transcript.ts` + `pricing.ts` (Claude transcript usage reconciler, per-model pricing) | `usage.rs` — incremental per-file cache, per-session buckets, per-record pricing | DONE (offline path) |
 | `telemetry.ts` (OTel collector, api_error spans), `costLifetime.ts`, `usage.ts` seams | not started — ledger + transcript cover the beat for now | TODO |
+| `index.ts` syncMissions + `config.ts` mission constants | `missions.rs` + 15s scheduler poll in lib.rs; seed-once flags; quiet-gated heartbeat; compact mission → per-agent idle-boundary `/compact` queue | DONE (weekly schedules = TODO) |
 | `updater.ts` (electron-updater) | `tauri-plugin-updater` | TODO |
 | `integrations.ts` (Electron safeStorage secrets) | `keyring` crate or `tauri-plugin-stronghold` | TODO |
 | `modelCatalog.ts`, `ossModels.ts` | `models.rs` | TODO |
@@ -146,4 +147,11 @@ retry+backoff on index.lock).
   incremental per-file parse cache (stat-only steady state), per-session
   buckets, per-record model pricing, torn-line tolerance. Beat now feeds
   velocity/cap/no-progress arms real data: ledger → transcript fallback.
-  4/4 unit tests. Next up: Pixi floor port or missions/heartbeat.
+  4/4 unit tests.
+- 2026-10-04 (5): missions/scheduler. missions.rs + 15s poll (poll design
+  replaces upstream's setTimeout/re-arm); ops-standup seeded enabled,
+  heartbeat + compact seeded disabled; heartbeat quiet-gated via
+  is_floor_quiet (log.jsonl + mailbox mtimes + PTY last_output_at); compact
+  queues /compact per agent delivered at idle boundary. Verified: build
+  clean, app alive, missions seeded in config.json.
+  Next up: Pixi office floor (the big one) or Slack/webhook ingress.
