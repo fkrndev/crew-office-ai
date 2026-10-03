@@ -6,6 +6,7 @@ mod hive;
 mod hooks;
 mod pty;
 mod ptyenv;
+mod usage;
 
 use std::time::Duration;
 
@@ -81,7 +82,13 @@ pub fn run() {
                         .filter(|a| live.contains(&a.id))
                         .map(|a| breaker::BreakerInput {
                             agent_id: a.id.clone(),
-                            sample: st.hive.usage_sample(&a.id),
+                            // Live ledger first (proxy CostSamples); Claude
+                            // Code falls back to its transcript JSONL — the
+                            // same OTel→transcript fallback order as upstream.
+                            sample: st
+                                .hive
+                                .usage_sample(&a.id)
+                                .or_else(|| st.usage.sample(&a.cwd, a.session_id.as_deref())),
                             progressing: now.saturating_sub(st.hive.last_coordination_at(&a.id))
                                 < PROGRESS_WINDOW_MS,
                             last_work_at: hive::Hive::last_work_at(&a.cwd),

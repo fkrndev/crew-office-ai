@@ -23,7 +23,8 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `slack.ts`, `webhook.ts`, `slack-trigger.cjs` (HTTP ingress + tunnelmole) | `ingress.rs` (axum) + `tauri-plugin-localhost`? tunnel = external proc | TODO |
 | `breaker.ts` (circuit breaker: loop/error-storm/velocity/caps/no-progress) | `breaker.rs` + 30s beat in lib.rs (steer/constrain mail, stop kills PTY; hardStop off caps at constrained) | DONE (api_error source pending telemetry) |
 | `control.ts` (ControlRegistry: pause/halt/steer/tool gates) | `control.rs` + commands + ControlStrip UI; wired into hooks (halt→continue:false, PreToolUse deny, steer→additionalContext) | DONE |
-| `transcript.ts`, `usage.ts`, `costLifetime.ts`, `telemetry.ts`, `pricing.ts` | `usage.rs` | TODO |
+| `transcript.ts` + `pricing.ts` (Claude transcript usage reconciler, per-model pricing) | `usage.rs` — incremental per-file cache, per-session buckets, per-record pricing | DONE (offline path) |
+| `telemetry.ts` (OTel collector, api_error spans), `costLifetime.ts`, `usage.ts` seams | not started — ledger + transcript cover the beat for now | TODO |
 | `updater.ts` (electron-updater) | `tauri-plugin-updater` | TODO |
 | `integrations.ts` (Electron safeStorage secrets) | `keyring` crate or `tauri-plugin-stronghold` | TODO |
 | `modelCatalog.ts`, `ossModels.ts` | `models.rs` | TODO |
@@ -91,9 +92,11 @@ retry+backoff on index.lock).
 - Stop→drain: upstream REMOVED forced `{decision:'block'}` at Stop (bypassed
   HITL safety). Ported as guarded idle-wake: on Stop → 1.2s later, if still
   idle AND inbox non-empty → work-order typed into the PTY.
-- Not yet ported inside hooks: goal injection (roster store), transcript
-  cost/OTel telemetry (the breaker's usage sample currently comes from
-  cost.jsonl accumulation only — live OTel spans land with telemetry.rs).
+- Not yet ported inside hooks: goal injection (roster store), live OTel
+  telemetry (the breaker's sample = cost.jsonl ledger → transcript fallback;
+  upstream prefers OTel→transcript in the same order).
+- usage.rs skips the legacy POSIX project-key spelling (pre-2026 installs
+  only) — noted deviation; add if POSIX support lands.
 - Breaker beat inputs: live-PTY agents only (dead entries steer into a
   god-bounce flood — same reasoning as upstream's startup migration);
   `progressing` = hive coordination-file mtimes, `last_work_at` = cwd .git
@@ -139,3 +142,8 @@ retry+backoff on index.lock).
   ControlStrip UI + breaker badges. Also default-run=office-agent (cargo run
   ambiguity after hive-hook bin). Verified: cargo build + vite build clean.
   Next up: Pixi floor port, then missions/heartbeat, telemetry/OTel.
+- 2026-10-04 (4): usage reader. usage.rs ports transcript.ts + pricing.ts —
+  incremental per-file parse cache (stat-only steady state), per-session
+  buckets, per-record model pricing, torn-line tolerance. Beat now feeds
+  velocity/cap/no-progress arms real data: ledger → transcript fallback.
+  4/4 unit tests. Next up: Pixi floor port or missions/heartbeat.

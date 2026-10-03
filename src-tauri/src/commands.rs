@@ -23,6 +23,9 @@ pub struct AppState {
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
     pub breaker: Mutex<CircuitBreaker>,
     pub control: Mutex<ControlRegistry>,
+    /// Transcript-based usage reader (usage.rs) — the breaker's token/cost
+    /// sample source for claude agents until the OTel collector lands.
+    pub usage: crate::usage::UsageReader,
     /// TCP loopback addr of the HookServer (`127.0.0.1:port`) → env HIVE_SOCK.
     pub sock_addr: Option<String>,
     /// The native hook-shim binary copied into `<harness>/bin/` — the analogue
@@ -47,6 +50,7 @@ impl AppState {
             ptys: Mutex::new(HashMap::new()),
             breaker: Mutex::new(CircuitBreaker::default()),
             control: Mutex::new(ControlRegistry::default()),
+            usage: crate::usage::UsageReader::default(),
             sock_addr: None,
             hook_bin,
         })
