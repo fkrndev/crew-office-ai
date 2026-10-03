@@ -308,3 +308,11 @@ retry+backoff on index.lock).
   SLACK_BOT_TOKEN. Not ported: the tunnelmole public tunnel — the local
   listener is the security boundary; point any tunnel at it. Commands:
   slack_start/stop/status/reply. 55 tests green.
+- 2026-10-04 (28): hire.rs — shareable hire manifests (spec
+  munderdifflin/hire@1): validator ported verbatim (capped strings, agy
+  alias, MODEL_RE/FLAG_RE metachar rejection, default-deny safe-flag
+  allowlist with flag-value pairing, bundled-skill + MCP-catalog
+  allowlists, write/secret → consentRequired), munderdifflin://hire deep
+  links, loopback-only http exception, and the SSRF-gated fetcher
+  (resolved-IP blocklist incl. v4-mapped v6, CGNAT, 169.254.169.254).
+  Commands: hire_validate/fetch/import_file. 59 tests green.

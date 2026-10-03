@@ -863,6 +863,39 @@ pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)
     Ok(state(&app).webhook.pending())
 }
 
+// ─── hire manifests (munderdifflin://hire deep link + file import) ──────────
+
+/// Validate + return a hire manifest (prefill only — never auto-spawns).
+#[tauri::command]
+pub fn hire_validate(raw: serde_json::Value) -> serde_json::Value {
+    let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
+    serde_json::json!({ "ok": m.is_some(), "manifest": m, "errors": errors, "consentRequired": consent })
+}
+
+/// Import from an https URL — SSRF-gated (resolved addresses blocklisted).
+#[tauri::command]
+pub fn hire_fetch(url: String) -> Result<serde_json::Value, String> {
+    let raw = crate::hire::fetch_manifest(&url)?;
+    let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
+    if let Some(m) = m {
+        Ok(serde_json::json!({ "ok": true, "manifest": m, "consentRequired": consent }))
+    } else {
+        Err(format!("invalid hire manifest: {}", errors.join("; ")))
+    }
+}
+
+/// Import from a local file — same byte cap + validator.
+#[tauri::command]
+pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
+    let raw = crate::hire::read_manifest_file(std::path::Path::new(&path))?;
+    let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
+    if let Some(m) = m {
+        Ok(serde_json::json!({ "ok": true, "manifest": m, "consentRequired": consent }))
+    } else {
+        Err(format!("invalid hire manifest: {}", errors.join("; ")))
+    }
+}
+
 // ─── slack adapter (Events API → god inbox; reply rail) ─────────────────────
 
 /// Start the Slack listener. The signing secret comes from the credential

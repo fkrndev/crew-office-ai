@@ -6,6 +6,7 @@ pub mod config;
 pub mod cost_lifetime;
 mod control;
 pub mod hive;
+mod hire;
 mod hooks;
 pub mod missions;
 pub mod pricing;
@@ -577,6 +578,9 @@ pub fn run() {
             commands::slack_stop,
             commands::slack_status,
             commands::slack_reply,
+            commands::hire_validate,
+            commands::hire_fetch,
+            commands::hire_import_file,
             commands::task_update,
             commands::task_answer,
             commands::skills_local,
