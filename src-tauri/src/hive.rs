@@ -486,6 +486,85 @@ impl Hive {
         Ok(home)
     }
 
+    /// Hermes lifecycle bridge — per-agent HERMES_HOME isolation + a `hooks:`
+    /// block in the worker's config.yaml, wired to the SAME hive-hook shim in
+    /// `--hermes` translator mode (agent/shell_hooks.py's stdin contract is
+    /// already `{hook_event_name, tool_name, tool_input, session_id, cwd}` —
+    /// Claude-shaped; the shim's argv override maps each Hermes event name
+    /// onto our canonical vocabulary and translates responses back to Hermes
+    /// directives).
+    ///
+    /// Event map (Hermes → canonical): pre_tool_call→PreToolUse (HITL deny
+    /// works — it's a blocking event), post_tool_call→PostToolUse, pre_verify
+    /// + agent_loop_stopped→Stop (the turn-end drain seams), on_session_start
+    /// →SessionStart, subagent_stop→SubagentStop, api_request_error→ApiError
+    /// (breaker error-storm feed — Hermes has no OTel).
+    ///
+    /// The user's own ~/.hermes/config.yaml + .env are COPIED into the
+    /// isolated home (provider creds + model prefs follow the worker; the
+    /// user's home is never mutated). `hooks_auto_accept` is set inside the
+    /// seeded config so the shell-hook consent prompt can't stall a worker.
+    /// Returns the HERMES_HOME path for the worker's env.
+    pub fn install_hermes_hooks(&self, dir: &Path, hook_bin: &Path) -> Result<PathBuf> {
+        let home = dir.join(".hermes");
+        fs::create_dir_all(&home)?;
+        let user_home = dirs::home_dir().unwrap_or_default().join(".hermes");
+
+        for name in ["config.yaml", ".env"] {
+            let (src, dst) = (user_home.join(name), home.join(name));
+            if src.exists() && !dst.exists() {
+                let _ = fs::copy(&src, &dst);
+            }
+        }
+
+        let cfg_path = home.join("config.yaml");
+        let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
+        if !cfg.lines().any(|l| l.starts_with("hooks_auto_accept:")) {
+            cfg.push_str("\n# --- office-agent hive bridge (auto-generated) ---\nhooks_auto_accept: true\n");
+        }
+        // A pre-existing user `hooks:` block wins — merging dict-keyed YAML
+        // blocks safely needs a real YAML writer; log-shaped skip instead.
+        if !cfg.lines().any(|l| l.starts_with("hooks:")) {
+            // Single-quoted YAML scalars: the command already carries double
+            // quotes around the shim path and Windows backslashes — inside
+            // single quotes neither needs escaping.
+            let cmd = |ev: &str| format!("'\"{}\" --hermes {ev}'", hook_bin.display());
+            cfg.push_str(&format!(
+                "hooks:\n\
+                \x20 pre_tool_call:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 post_tool_call:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 pre_verify:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 agent_loop_stopped:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 on_session_start:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 subagent_stop:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n\
+                \x20 api_request_error:\n\
+                \x20   - command: {}\n\
+                \x20     timeout: 30\n",
+                cmd("PreToolUse"),
+                cmd("PostToolUse"),
+                cmd("Stop"),
+                cmd("Stop"),
+                cmd("SessionStart"),
+                cmd("SubagentStop"),
+                cmd("ApiError"),
+            ));
+        }
+        fs::write(&cfg_path, cfg)?;
+        Ok(home)
+    }
+
     fn link_or_copy(src: &Path, dst: &Path) {
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_file(src, dst).is_ok();
@@ -841,6 +920,28 @@ mod tests {
         }
         assert!(cfg.contains("timeout = 30"), "codex floors timeout 0 to 1s - never emit it");
         assert!(cfg.contains("hive-hook.exe"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hermes_hooks_write_config_with_event_map() {
+        let dir = std::env::temp_dir().join(format!("oa-hermes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let hook_bin = dir.join("hive-hook.exe");
+        let home = hive.install_hermes_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("hooks_auto_accept: true"));
+        for ev in ["pre_tool_call", "post_tool_call", "pre_verify",
+                   "agent_loop_stopped", "on_session_start", "subagent_stop",
+                   "api_request_error"] {
+            assert!(cfg.contains(&format!(" {ev}:")), "missing {ev}");
+        }
+        // argv override carries the canonical event; the shim's --hermes
+        // flag selects the response translator.
+        assert!(cfg.contains("--hermes PreToolUse"));
+        assert!(cfg.contains("--hermes Stop"));
+        assert!(cfg.contains("--hermes ApiError"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

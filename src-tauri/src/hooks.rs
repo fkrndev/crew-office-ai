@@ -145,6 +145,9 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             now_ms,
         ),
         "UserPromptSubmit" => st.breaker.lock().unwrap().record_user_prompt(&agent_id, now_ms),
+        // Hermes api_request_error (translated via the shim's --hermes mode)
+        // — the breaker's error-storm feed for engines without OTel.
+        "ApiError" => st.breaker.lock().unwrap().record_error(&agent_id),
         "PreCompact" => st.breaker.lock().unwrap().record_compact_start(&agent_id, now_ms),
         "PostCompact" | "SessionStart" => {
             st.breaker.lock().unwrap().record_compact_end(&agent_id, now_ms)

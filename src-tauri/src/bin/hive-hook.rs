@@ -7,6 +7,14 @@
 //!
 //!   stdin  : the agent CLI's hook payload JSON (Claude-shaped: has
 //!            hook_event_name, tool_name, session_id, stop_hook_active, …)
+//!   argv[1]: `--hermes` puts the shim in translator mode for a Hermes
+//!            shell-hook invocation (agent/shell_hooks.py): argv[2] is then
+//!            the Claude-canonical event name (Hermes `hooks:` entries carry
+//!            their own event names — the argv override maps them into our
+//!            vocabulary) and the HookServer's Claude-shaped response is
+//!            translated back to Hermes directives: a PreToolUse deny or a
+//!            {continue:false} halt becomes {"decision":"block","reason"},
+//!            additionalContext becomes {"context"}.
 //!   argv[1]: optional event override (`PreToolUse`, `--status`, …); when
 //!            absent the event is read from payload.hook_event_name
 //!   env    : HIVE_SOCK (TCP addr `127.0.0.1:port`) — when unset the shim is a
@@ -26,7 +34,12 @@ use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let arg_event = args.get(1).cloned().unwrap_or_default();
+    let hermes_mode = args.get(1).is_some_and(|a| a == "--hermes");
+    let arg_event = if hermes_mode {
+        args.get(2).cloned().unwrap_or_default()
+    } else {
+        args.get(1).cloned().unwrap_or_default()
+    };
 
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -86,8 +99,52 @@ fn main() {
     let mut response = String::new();
     if BufReader::new(stream).read_line(&mut response).is_ok() {
         let trimmed = response.trim();
-        if !trimmed.is_empty() && trimmed != "{}" {
+        if trimmed.is_empty() || trimmed == "{}" {
+            return;
+        }
+        if hermes_mode {
+            println!("{}", to_hermes(trimmed));
+        } else {
             println!("{trimmed}");
         }
     }
+}
+
+/// Claude-shaped HookServer answer → Hermes shell-hook directive. Hermes
+/// reads `{"decision":"block"|"modify","reason"}` / `{"context":...}` /
+/// `{"action":...}` — NOT `hookSpecificOutput`. Unknown content fails open.
+fn to_hermes(resp: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(resp) else {
+        return "{}".into();
+    };
+    // Operator deny at the tool boundary.
+    if let Some(reason) = v
+        .pointer("/hookSpecificOutput/permissionDecisionReason")
+        .and_then(|r| r.as_str())
+    {
+        return serde_json::json!({"decision": "block", "reason": reason}).to_string();
+    }
+    // Operator HALT ({continue:false} in Claude-land).
+    if v.get("continue").and_then(|c| c.as_bool()) == Some(false) {
+        let reason = v
+            .get("stopReason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("Halted by the operator.");
+        return serde_json::json!({"decision": "block", "reason": reason}).to_string();
+    }
+    // Injected context (steer / roster) rides Hermes' "context" channel.
+    if let Some(ctx) = v
+        .get("additionalContext")
+        .or_else(|| v.pointer("/hookSpecificOutput/additionalContext"))
+        .and_then(|c| c.as_str())
+    {
+        if !ctx.is_empty() {
+            return serde_json::json!({"context": ctx}).to_string();
+        }
+    }
+    // Already Hermes-shaped (decision/action keys pass through verbatim).
+    if v.get("decision").is_some() || v.get("action").is_some() || v.get("context").is_some() {
+        return resp.to_string();
+    }
+    "{}".into()
 }

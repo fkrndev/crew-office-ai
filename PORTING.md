@@ -201,3 +201,14 @@ retry+backoff on index.lock).
   status/inbox-drain/HITL-deny/wake all ride the existing pipeline). timeout
   = 30 SECONDS — the 0→1s floor bug documented upstream is preserved as a
   comment. 7/7 tests (new: config.toml shape). Rollout-dir exposure = TODO.
+- 2026-10-04 (13): hermes hook bridge — the original goal, now hive-aware.
+  install_hermes_hooks: per-agent HERMES_HOME (+runtime dir) isolation,
+  user's config.yaml/.env copied, hooks_auto_accept set, and a `hooks:`
+  block wiring pre_tool_call→PreToolUse, post_tool_call→PostToolUse,
+  pre_verify+agent_loop_stopped→Stop, on_session_start→SessionStart,
+  subagent_stop→SubagentStop, api_request_error→ApiError (breaker feed —
+  hermes has no OTel). Shim gains --hermes translator mode: argv override
+  maps event names, responses translate deny/{continue:false}→
+  {"decision":"block"} and additionalContext→{"context"}. Hermes' own
+  stdin contract was already Claude-shaped — no payload transform needed.
+  8/8 tests.

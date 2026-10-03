@@ -254,6 +254,21 @@ fn spawn_inner(
             }
         }
     }
+    // Hermes lifecycle bridge — per-agent HERMES_HOME + config.yaml `hooks:`
+    // block on the same shim (--hermes mode). Runtime dir is isolated too so
+    // multiplex state never collides with the user's own hermes.
+    if args.provider == "hermes" {
+        if let Some(bin) = &st.hook_bin {
+            if let Ok(home) = st.hive.install_hermes_hooks(&agent_dir, bin) {
+                agent_env.insert("HERMES_HOME".into(), home.display().to_string());
+                agent_env.insert(
+                    "HERMES_RUNTIME_DIR".into(),
+                    home.join("runtime").display().to_string(),
+                );
+                agent_env.insert("HERMES_ACCEPT_HOOKS".into(), "1".into());
+            }
+        }
+    }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());
