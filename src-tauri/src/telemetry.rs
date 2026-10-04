@@ -222,7 +222,12 @@ impl TelemetryCollector {
 
     /// The freshest session's (id, model) for one agent — fills the
     /// `sessionId`/`model` fields upstream's AgentUsageSample carries that
-    /// our breaker-facing UsageSample does not.
+    /// our breaker-facing UsageSample does not. Public for the breaker beat's
+    /// recordSession fallback.
+    pub fn freshest_session_pub(&self, agent_id: &str) -> Option<(String, String)> {
+        self.freshest_session(agent_id)
+    }
+
     fn freshest_session(&self, agent_id: &str) -> Option<(String, String)> {
         let sids = self.agent_sessions.lock().unwrap().get(agent_id).cloned()?;
         let sessions = self.sessions.lock().unwrap();
@@ -344,9 +349,18 @@ impl TelemetryCollector {
         }
         for id in touched {
             if let (Some(app), Some(s)) = (app, self.sample(&id)) {
+                // telemetry:event {kind:'usage', sample: AgentUsageSample} —
+                // the sample carries sessionId + model (freshest session),
+                // not just the token totals (the renderer reads both).
+                let mut v = serde_json::to_value(&s).unwrap_or_else(|_| serde_json::json!({}));
+                v["agentId"] = serde_json::json!(id);
+                if let Some((sid, model)) = self.freshest_session(&id) {
+                    v["sessionId"] = serde_json::json!(sid);
+                    v["model"] = serde_json::json!(model);
+                }
                 let _ = app.emit(
-                    "telemetry-usage",
-                    serde_json::json!({ "agentId": id, "sample": s }),
+                    "telemetry-event",
+                    serde_json::json!({ "kind": "usage", "sample": v }),
                 );
             }
         }

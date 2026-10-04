@@ -48,6 +48,20 @@ pub struct Config {
     /// `/compact` with `message` appended (dropped for providers that read
     /// no trailing text, same as upstream).
     pub context_trigger: ContextTriggerCfg,
+    /// Let the orchestrator hire ephemeral workers by dropping JSON into
+    /// hive/spawn-requests/ (default OFF — a spend decision the operator
+    /// opts into; index.ts orchestratorMaySpawn).
+    pub orchestrator_may_spawn: bool,
+    /// Concurrency ceiling for live ephemeral workers (upstream
+    /// maxConcurrentWorkers).
+    pub max_concurrent_workers: u32,
+    /// Idle minutes after which a worker that never signaled done is reaped
+    /// (upstream workerIdleTimeoutMinutes).
+    pub worker_idle_timeout_minutes: u32,
+    /// Per-worker token cap when a request doesn't carry one. 0 = unlimited
+    /// (the default — wired but never throttles, upstream
+    /// defaultWorkerTokenCap).
+    pub default_worker_token_cap: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +106,10 @@ impl Default for Config {
             webhook_port: 8787,
             secret_env_keys: Vec::new(),
             context_trigger: ContextTriggerCfg::default(),
+            orchestrator_may_spawn: false,
+            max_concurrent_workers: 4,
+            worker_idle_timeout_minutes: 20,
+            default_worker_token_cap: 0,
         }
     }
 }

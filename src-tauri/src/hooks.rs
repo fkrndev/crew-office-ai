@@ -369,7 +369,7 @@ fn goal_context(
 /// beat-written fleet.json (index.ts writeFleetSnapshot); this port keeps no
 /// fleet cache, so the same row shape is built live and a best-effort
 /// fleet.json is dropped alongside for agents told to Read it.
-fn fleet_rows(st: &AppState) -> Vec<Value> {
+pub(crate) fn fleet_rows(st: &AppState) -> Vec<Value> {
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
     let extras = crate::hive_admin::all_extras(&st.hive);
     // Lifetime usd (reset-corrected fold) first; session usd is the cold

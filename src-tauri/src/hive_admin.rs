@@ -6,13 +6,10 @@
 //!  - tasks.json is `{"tasks": [...]}` of FLAT cards (taskLedger.ts semantics:
 //!    edit raw entries, never re-serialize a partial model). Add/delete write
 //!    the whole ledger; per-card patches stay in hive.rs `update_task`.
-//!  - RegistryEntry has no archived/hold fields and no serde flatten, and
-//!    `write_registry` re-serializes the typed struct — extra keys on an entry
-//!    would be DROPPED on the next status/session write. Upstream stores
-//!    `archived`/`onHold` on the registry row; we keep them in a sidecar
-//!    `registry-extra.json` (`{"agents": {"<id>": {"archived": b, "onHold": b}}}`)
-//!    that no typed write can clobber. `archived` hides an agent from floor
-//!    lists; `onHold` marks paused-delivery (a 1:1 the human claimed).
+//!  - `archived`/`onHold` live on the registry.json row — exactly where
+//!    upstream stores them (routeMessage reads the row directly). A legacy
+//!    `registry-extra.json` sidecar from an earlier port is still READ as a
+//!    fallback but new writes go to the registry only.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +43,7 @@ fn write_tasks(hive: &Hive, doc: &Value) -> Result<()> {
         serde_json::to_string_pretty(doc)?.as_bytes(),
     )?;
     let n = doc["tasks"].as_array().map(|t| t.len()).unwrap_or(0);
-    let _ = hive.log(&json!({ "event": "tasks", "count": n }));
+    let _ = hive.log(&json!({ "kind": "tasks", "count": n }));
     hive.commit(&format!("hive: tasks ({n})"));
     Ok(())
 }
@@ -74,7 +71,11 @@ pub fn add_task(hive: &Hive, fields: &Value) -> Result<Value> {
         .unwrap_or_else(new_task_id);
     card.insert("id".into(), Value::String(id.clone()));
     if card.get("createdAt").is_none() {
-        card.insert("createdAt".into(), json!(now_ms()));
+        // HiveTask.createdAt is an ISO string upstream (hive.ts:127).
+        card.insert(
+            "createdAt".into(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
     }
 
     let mut doc = hive.read_tasks()?;
@@ -175,7 +176,7 @@ pub fn rename_agent(hive: &Hive, id: &str, new_name: &str) -> Result<Value> {
     patch.insert("name".into(), Value::String(next.to_string()));
     patch_registry_entry(hive, id, &patch)?;
     let _ = hive.log(&json!({
-        "event": "rename", "agent": id, "previousName": previous, "name": next
+        "kind": "rename", "agent": id, "previousName": previous, "name": next
     }));
     hive.commit(&format!("hive: rename {id}"));
     Ok(json!({ "ok": true, "name": next }))
@@ -199,18 +200,24 @@ pub fn patch_agent_role(hive: &Hive, id: &str, role: &str) -> Result<Value> {
     }
     let mut patch = Map::new();
     patch.insert("role".into(), Value::String(next.to_string()));
+    patch.insert("lastSeen".into(), json!(now_ms()));
     patch_registry_entry(hive, id, &patch)?;
     let identity = format!(
         "# {}\n\n- id: `{}`\n- provider: `{}`\n- role: {}\n- cwd: `{}`\n",
         agent.name, agent.id, agent.provider, next, agent.cwd
     );
     let _ = fs::write(hive.agent_dir(id).join("identity.md"), identity);
-    let _ = hive.log(&json!({ "event": "role", "agent": id, "role": next }));
+    let _ = hive.log(&json!({ "kind": "role", "agent": id, "role": next }));
     hive.commit(&format!("hive: role {id}"));
     Ok(json!({ "ok": true }))
 }
 
-// ─── archived / hold (sidecar registry-extra.json) ──────────────────────────
+// ─── archived / hold (registry.json rows, upstream shape) ───────────────────
+//
+// Upstream stores `archived`/`onHold` directly on the registry entry
+// (hive.ts:160-183) and routeMessage/fleet read them from there — so this
+// port patches registry.json and keeps a read fallback on the legacy
+// `registry-extra.json` sidecar written by earlier port versions.
 
 fn extras_path(hive: &Hive) -> PathBuf {
     hive.root.join("registry-extra.json")
@@ -221,58 +228,41 @@ fn read_extras(hive: &Hive) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": {} }))
 }
 
-fn write_extras(hive: &Hive, doc: &Value) -> Result<()> {
-    atomic_write(
-        &extras_path(hive),
-        serde_json::to_string_pretty(doc)?.as_bytes(),
-    )
-}
-
-/// One agent's sidecar flags (`{"archived": bool, "onHold": bool}`) — absent
-/// keys read as their falsy defaults, same as upstream's `!!a.archived`.
-pub fn agent_extra(hive: &Hive, id: &str) -> Value {
-    read_extras(hive)
-        .get("agents")
-        .and_then(|a| a.get(id))
-        .cloned()
-        .unwrap_or_else(|| json!({}))
-}
-
-/// The whole sidecar map — workers_list joins every entry against live PTYs.
+/// The whole flags map — workers_list joins every entry against live PTYs.
+/// Registry rows are authoritative; the legacy sidecar fills agents that
+/// only have old-format flags.
 pub fn all_extras(hive: &Hive) -> Map<String, Value> {
-    read_extras(hive)
+    let mut out: Map<String, Value> = read_extras(hive)
         .get("agents")
         .and_then(|a| a.as_object())
         .cloned()
-        .unwrap_or_default()
-}
-
-fn set_extra(hive: &Hive, id: &str, key: &str, on: bool) -> Result<()> {
-    let mut doc = read_extras(hive);
-    if doc.get("agents").and_then(|a| a.as_object()).is_none() {
-        doc["agents"] = json!({});
+        .unwrap_or_default();
+    for a in hive.registry() {
+        if a.archived || a.on_hold {
+            out.insert(
+                a.id.clone(),
+                json!({ "archived": a.archived, "onHold": a.on_hold }),
+            );
+        }
     }
-    doc["agents"][id][key] = json!(on);
-    write_extras(hive, &doc)
+    out
 }
 
 /// Flip the archived flag (closing a tab archives — retained, NOT deleted; a
-/// respawn clears it). Best-effort no-op on an unknown id or an unchanged
-/// flag, exactly like upstream setArchived.
+/// respawn clears it). Written to the registry row — where routeMessage reads
+/// it — with the lastSeen bump upstream applies on every registry write.
 pub fn set_archived(hive: &Hive, id: &str, archived: bool) -> Result<Value> {
-    let known = hive.registry().iter().any(|a| a.id == id);
-    if !known {
+    let Some(agent) = hive.registry().into_iter().find(|a| a.id == id) else {
+        return Ok(json!({ "ok": true }));
+    };
+    if agent.archived == archived {
         return Ok(json!({ "ok": true }));
     }
-    let cur = agent_extra(hive, id)
-        .get("archived")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if cur == archived {
-        return Ok(json!({ "ok": true }));
-    }
-    set_extra(hive, id, "archived", archived)?;
-    let _ = hive.log(&json!({ "event": "archive", "agent": id, "archived": archived }));
+    let mut patch = Map::new();
+    patch.insert("archived".into(), json!(archived));
+    patch.insert("lastSeen".into(), json!(now_ms()));
+    patch_registry_entry(hive, id, &patch)?;
+    let _ = hive.log(&json!({ "kind": "archive", "agent": id, "archived": archived }));
     hive.commit(&format!("hive: {} {id}", if archived { "archive" } else { "unarchive" }));
     Ok(json!({ "ok": true }))
 }
@@ -280,19 +270,17 @@ pub fn set_archived(hive: &Hive, id: &str, archived: bool) -> Result<Value> {
 /// Put an agent on hold / take it off — upstream's setAgentHold: the human
 /// claimed a 1:1, so auto-delivery and god's dispatch skip them.
 pub fn set_hold(hive: &Hive, id: &str, hold: bool) -> Result<Value> {
-    let known = hive.registry().iter().any(|a| a.id == id);
-    if !known {
+    let Some(agent) = hive.registry().into_iter().find(|a| a.id == id) else {
         anyhow::bail!("Agent not found");
-    }
-    let cur = agent_extra(hive, id)
-        .get("onHold")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if cur == hold {
+    };
+    if agent.on_hold == hold {
         return Ok(json!({ "ok": true, "onHold": hold }));
     }
-    set_extra(hive, id, "onHold", hold)?;
-    let _ = hive.log(&json!({ "event": "agent-hold", "agent": id, "onHold": hold }));
+    let mut patch = Map::new();
+    patch.insert("onHold".into(), json!(hold));
+    patch.insert("lastSeen".into(), json!(now_ms()));
+    patch_registry_entry(hive, id, &patch)?;
+    let _ = hive.log(&json!({ "kind": "agent-hold", "agent": id, "onHold": hold }));
     Ok(json!({ "ok": true, "onHold": hold }))
 }
 
@@ -330,54 +318,125 @@ pub fn agent_context(hive: &Hive, id: &str, pty_live: bool) -> Value {
     })
 }
 
-/// hive:log — the newest-first tail of log.jsonl. Each line is one JSON event;
-/// unparseable lines are skipped. `limit` is capped at 500.
+/// hive:log — upstream logTail: the last `limit` events in FILE order,
+/// oldest→newest; unparseable lines are preserved as `{"raw": <line>}` so a
+/// corrupt tail never silently disappears. `limit` is capped at 500.
 pub fn hive_log(hive: &Hive, limit: usize) -> Vec<Value> {
     let cap = limit.min(500);
     let Ok(text) = fs::read_to_string(hive.root.join("log.jsonl")) else {
         return Vec::new();
     };
-    text.lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .take(cap)
-        .collect()
+    let all: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<Value>(l.trim())
+                .unwrap_or_else(|_| json!({ "raw": l }))
+        })
+        .collect();
+    all.into_iter().rev().take(cap).rev().collect()
 }
 
-/// hive:messages — one agent's mailbox: pending inbox plus the .done audit
-/// trail. Each row is the raw message object annotated with `done` so the UI
-/// can tell backlog from history; sorted newest-first by created_at.
-pub fn hive_messages(hive: &Hive, agent_id: &str, limit: usize) -> Vec<Value> {
-    let inbox = hive.agent_dir(agent_id).join("inbox");
+/// hive:messages — upstream `voiceMessages` (hive.ts:2015): floor-wide or
+/// per-agent mail in the VoiceMessage shape — inbox + outbox plus the
+/// .done/.sent archives, deduped by id, subject+body run through
+/// redactSecrets (the "renderer never sees a secret" gate). `id` narrows to a
+/// single message lookup; `include_archived` defaults true upstream.
+pub fn voice_messages(
+    hive: &Hive,
+    agent_id: Option<&str>,
+    id: Option<&str>,
+    limit: Option<usize>,
+    include_archived: Option<bool>,
+) -> Vec<Value> {
+    let agents_dir = hive.root.join("agents");
+    let only_agent = agent_id.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let want_id = id.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let include_archived = include_archived.unwrap_or(true);
+
+    let owners: Vec<String> = match only_agent {
+        Some(a) => vec![a.to_string()],
+        None => fs::read_dir(&agents_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| !n.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<Value> = Vec::new();
-    for (dir, done) in [(inbox.clone(), false), (inbox.join(".done"), true)] {
-        let Ok(rd) = fs::read_dir(&dir) else { continue };
-        let mut files: Vec<PathBuf> = rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        files.sort();
-        for f in files {
-            let Ok(t) = fs::read_to_string(&f) else { continue };
-            let Ok(mut m) = serde_json::from_str::<Value>(&t) else {
-                continue;
-            };
-            if m.is_object() {
-                m["done"] = json!(done);
-                out.push(m);
+    for owner in owners {
+        let base = hive.agent_dir(&owner);
+        let mut folders = vec![
+            (base.join("inbox"), "inbox", false),
+            (base.join("outbox"), "outbox", false),
+        ];
+        if include_archived {
+            folders.push((base.join("inbox").join(".done"), "inbox", true));
+            folders.push((base.join("outbox").join(".sent"), "outbox", true));
+        }
+        for (dir, direction, archived) in folders {
+            let Ok(rd) = fs::read_dir(&dir) else { continue };
+            let mut files: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .collect();
+            files.sort();
+            for f in files {
+                let Ok(t) = fs::read_to_string(&f) else { continue };
+                let Ok(m) = serde_json::from_str::<Value>(&t) else { continue };
+                let Some(mid) = m.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if !seen.insert(mid.to_string()) {
+                    continue;
+                }
+                if let Some(w) = want_id {
+                    if mid != w {
+                        continue;
+                    }
+                }
+                out.push(json!({
+                    "id": mid,
+                    "conversation": m.get("conversation"),
+                    "from": m.get("from"),
+                    "to": m.get("to"),
+                    "act": m.get("act"),
+                    "subject": crate::hive::redact_secrets(
+                        m.get("subject").and_then(|v| v.as_str()).unwrap_or("")
+                    ),
+                    "body": crate::hive::redact_secrets(
+                        m.get("body").and_then(|v| v.as_str()).unwrap_or("")
+                    ),
+                    "requires_reply": m.get("requires_reply")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    "direction": direction,
+                    "owner": owner,
+                    "archived": archived,
+                    "created_at": m.get("created_at"),
+                }));
             }
         }
     }
-    // ISO-8601 strings sort chronologically — descending puts newest first.
     out.sort_by(|a, b| {
         let ka = a.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
         let kb = b.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
         kb.cmp(ka)
     });
-    out.truncate(limit.min(500));
+    if want_id.is_some() {
+        out.truncate(1);
+        return out;
+    }
+    // Upstream clamps the default to 12, the caller limit to [1,40].
+    let lim = limit
+        .map(|l| l.clamp(1, 40))
+        .unwrap_or(12);
+    out.truncate(lim);
     out
 }
 
@@ -486,7 +545,8 @@ mod tests {
         let id = card["id"].as_str().unwrap();
         assert_eq!(id.len(), 8);
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
-        assert!(card["createdAt"].as_u64().unwrap() > 0);
+        // createdAt is an ISO string upstream (HiveTask.createdAt: string).
+        assert!(card["createdAt"].as_str().unwrap().contains('T'));
 
         // A caller-supplied id is kept; a duplicate id fails (addTask {ok:false}).
         let named = add_task(&hive, &json!({ "id": "abc12345", "title": "x" })).unwrap();
@@ -515,19 +575,25 @@ mod tests {
         assert!(rename_agent(&hive, "w-1", "   ").is_err());
         assert!(rename_agent(&hive, "ghost", "X").is_err());
 
-        // archived flag lives in the sidecar and SURVIVES a typed registry
-        // write (set_status rewrites registry.json wholesale).
+        // The flag lives ON THE REGISTRY ROW (upstream shape) — it must also
+        // survive a typed registry write (set_status rewrites registry.json
+        // wholesale through the same RegistryEntry serde).
         set_archived(&hive, "w-1", true).unwrap();
         hive.set_status("w-1", "working").unwrap();
-        assert_eq!(
-            agent_extra(&hive, "w-1")["archived"], json!(true),
-            "sidecar flag must outlive a registry rewrite"
-        );
+        let a = hive.registry().into_iter().find(|a| a.id == "w-1").unwrap();
+        assert!(a.archived, "archived must outlive a registry rewrite");
+        // Routing honors it: broadcast skips archived agents.
+        let mut msg = crate::hive::Message::new("god", "broadcast", "inform", "x", "y");
+        msg.from = "god".into();
+        let inbox_w1 = hive.agent_dir("w-1").join("inbox");
+        let before = fs::read_dir(&inbox_w1).unwrap().count();
+        hive.send_routed(&msg).unwrap();
+        assert_eq!(fs::read_dir(&inbox_w1).unwrap().count(), before);
         set_archived(&hive, "w-1", false).unwrap();
-        assert_eq!(agent_extra(&hive, "w-1")["archived"], json!(false));
+        assert!(!hive.registry().into_iter().find(|a| a.id == "w-1").unwrap().archived);
 
         set_hold(&hive, "w-1", true).unwrap();
-        assert_eq!(agent_extra(&hive, "w-1")["onHold"], json!(true));
+        assert!(hive.registry().into_iter().find(|a| a.id == "w-1").unwrap().on_hold);
         assert!(set_hold(&hive, "ghost", true).is_err());
     }
 
@@ -544,15 +610,25 @@ mod tests {
     }
 
     #[test]
-    fn log_tail_is_newest_first() {
+    fn log_tail_is_oldest_first_with_raw() {
         let (_r, hive) = tmp_hive("log");
         for i in 0..10 {
             hive.log(&json!({ "event": "t", "i": i })).unwrap();
         }
+        // Upstream logTail: file order (oldest→newest), the LAST `limit`.
         let tail = hive_log(&hive, 3);
         assert_eq!(tail.len(), 3);
-        assert_eq!(tail[0]["i"], json!(9));
-        assert_eq!(tail[2]["i"], json!(7));
+        assert_eq!(tail[0]["i"], json!(7));
+        assert_eq!(tail[2]["i"], json!(9));
+        // Malformed lines survive as {raw} instead of vanishing.
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(hive.root.join("log.jsonl"))
+            .unwrap();
+        use std::io::Write;
+        writeln!(f, "not-json{{").unwrap();
+        let tail = hive_log(&hive, 1);
+        assert_eq!(tail[0], json!({ "raw": "not-json{" }));
         assert!(hive_log(&hive, 999).len() >= 10); // capped at 500, not 999
     }
 
@@ -580,10 +656,40 @@ mod tests {
         hive.send_virtual(&m2.from, "w-4", &m2.act, &m2.subject, &m2.body).unwrap();
         let inbox_id = hive.inbox("w-4").unwrap()[0].id.clone();
         hive.mark_done("w-4", &inbox_id).unwrap();
-        let msgs = hive_messages(&hive, "w-4", 50);
+        let msgs = voice_messages(&hive, Some("w-4"), None, Some(50), None);
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs.iter().filter(|m| m["done"] == true).count(), 1);
-        assert_eq!(msgs.iter().filter(|m| m["done"] == false).count(), 1);
+        // VoiceMessage shape: direction+owner+archived, not a `done` flag —
+        // one pending inbox, one filed .done.
+        assert_eq!(msgs.iter().filter(|m| m["archived"] == true).count(), 1);
+        assert_eq!(msgs.iter().filter(|m| m["archived"] == false).count(), 1);
+        assert!(msgs.iter().all(|m| m["direction"] == "inbox"));
+        assert!(msgs.iter().all(|m| m["owner"] == "w-4"));
+    }
+
+    #[test]
+    fn voice_messages_redacts_and_dedupes() {
+        let (_r, hive) = tmp_hive("vmsg");
+        hive.register_agent(&entry("w-6", "Eve")).unwrap();
+        // A message whose body carries a credential — renderer-facing reads
+        // must never return the secret (upstream redactSecrets gate).
+        let mut m = crate::hive::Message::new(
+            "god", "w-6", "inform", "s", "here's the key sk-ant-1234567890abcdef123",
+        );
+        m.conversation = "cv".into();
+        hive.send_routed(&m).unwrap();
+        // Same id also written to outbox — dedup by id must collapse it.
+        hive.send(&m).unwrap();
+        let msgs = voice_messages(&hive, Some("w-6"), None, Some(40), None);
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0]["body"].as_str().unwrap().contains("[redacted]"));
+        assert!(!msgs[0]["body"].as_str().unwrap().contains("sk-ant-"));
+        // The whole-floor call (no agentId) sees the same message once.
+        let all = voice_messages(&hive, None, None, Some(40), None);
+        assert_eq!(all.iter().filter(|r| r["id"] == m.id).count(), 1);
+        // id lookup narrows to the single message.
+        let one = voice_messages(&hive, None, Some(&m.id), None, None);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0]["id"], m.id);
     }
 
     #[test]

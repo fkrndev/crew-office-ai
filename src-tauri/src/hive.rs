@@ -794,7 +794,7 @@ impl Hive {
     /// The raw registry document: {godId, agents}. Upstream stores `agents`
     /// as a MAP keyed by agent id; reads stay tolerant of the port's original
     /// array shape so an old registry keeps working.
-    fn read_registry_doc(&self) -> (Option<String>, Vec<RegistryEntry>) {
+    pub fn read_registry_doc(&self) -> (Option<String>, Vec<RegistryEntry>) {
         let path = self.root.join("registry.json");
         let text = fs::read_to_string(&path).unwrap_or_default();
         let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -918,6 +918,15 @@ impl Hive {
 
     /// Count undrained inbox messages for an agent (upstream inboxBacklog —
     /// cheap, feeds the fleet snapshot).
+    /// hasMemory (hive.ts:1979): a seeded memory.md is ~90 chars — anything
+    /// meaningfully longer means the agent appended durable facts. Works for
+    /// ANY id, active or archived; never throws.
+    pub fn has_memory(&self, id: &str) -> bool {
+        fs::read_to_string(self.agent_dir(id).join("memory.md"))
+            .map(|s| s.trim().len() > 200)
+            .unwrap_or(false)
+    }
+
     pub fn inbox_backlog(&self, id: &str) -> u64 {
         let dir = self.agent_dir(id).join("inbox");
         fs::read_dir(&dir)
@@ -1754,6 +1763,13 @@ impl Hive {
             if merged.command.is_empty() {
                 merged.command = p.command.clone();
             }
+            // Fields absent from the spawn meta ride through unchanged, same
+            // as upstream's `{...prev}` spread — a respawn keeps the
+            // human's 1:1 hold and the assistant marker.
+            merged.on_hold = p.on_hold;
+            if !merged.is_assistant {
+                merged.is_assistant = p.is_assistant;
+            }
             let prev_keys: serde_json::Map<String, Value> = p
                 .extra
                 .clone()
@@ -1916,6 +1932,25 @@ impl Hive {
             self.commit(&format!("hive: deliver {}", msg.id));
         }
         Ok(delivered)
+    }
+
+    /// Route a fully-formed Message synchronously (upstream hive:send →
+    /// send(partial) → normalize+route in one call). No outbox file is
+    /// written, so virtual senders never materialize an agents/<from> dir.
+    pub fn send_routed(&self, msg: &Message) -> Result<Vec<Delivery>> {
+        let delivered = self.route_message(msg)?;
+        self.commit(&format!("hive: msg {}→{} ({})", msg.from, msg.to, msg.act));
+        Ok(delivered)
+    }
+
+    /// Upstream hive.send(partial, sender) — normalize the partial through
+    /// the same path every outbox file takes (clamps hops, fills defaults)
+    /// and route it immediately. Returns the normalized message.
+    pub fn send_partial(&self, partial: &PartialMessage, sender: &str) -> Result<Message> {
+        let msg = self.normalize(partial, sender);
+        self.route_message(&msg)?;
+        self.commit(&format!("hive: msg {}→{} ({})", msg.from, msg.to, msg.act));
+        Ok(msg)
     }
 
     /// Atomically deliver a message into a recipient agent's inbox.
@@ -2316,6 +2351,7 @@ impl Hive {
             self.root.join("tasks.json"),
             serde_json::to_string_pretty(&doc)?,
         )?;
+        let _ = self.log(&serde_json::json!({ "kind": "tasks", "count": count }));
         self.commit(&format!("hive: tasks ({count})"));
         Ok(true)
     }
@@ -2342,12 +2378,17 @@ impl Hive {
         for (k, v) in patch {
             obj.insert(k.clone(), v.clone()); // explicit null clears a field
         }
+        // Re-pin the id — a stray `id` in the patch must never rename the
+        // card (upstream patchTask does the same after its spread).
+        obj.insert("id".into(), Value::String(id.to_string()));
         let out = entry.clone();
         fs::write(
             self.root.join("tasks.json"),
             serde_json::to_string_pretty(&doc)?,
         )?;
-        self.commit(&format!("hive: task {id}"));
+        let n = doc["tasks"].as_array().map(|t| t.len()).unwrap_or(0);
+        let _ = self.log(&serde_json::json!({ "kind": "tasks", "count": n }));
+        self.commit(&format!("hive: tasks ({n})"));
         Ok(out)
     }
 
@@ -2463,6 +2504,42 @@ impl Hive {
     }
 }
 
+/// redactSecrets (hive.ts:275) — strip credential shapes from any text bound
+/// for the renderer/voice layer (hive:messages, trigger history surfaces).
+/// Patterns are verbatim upstream: PEM blocks, JWTs, known token prefixes,
+/// Bearer headers, and labeled `key = value` / `key: value` secrets.
+pub fn redact_secrets(text: &str) -> String {
+    use regex::Regex;
+    if text.is_empty() {
+        return String::new();
+    }
+    let s = text.to_string();
+    let s = Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
+        .unwrap()
+        .replace_all(&s, "[redacted]")
+        .to_string();
+    let s = Regex::new(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")
+        .unwrap()
+        .replace_all(&s, "[redacted]")
+        .to_string();
+    let s = Regex::new(r"(?:sk-(?:ant-)?[A-Za-z0-9_-]{16,}|xox[bpaors]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|gh[posru]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{20,})")
+        .unwrap()
+        .replace_all(&s, "[redacted]")
+        .to_string();
+    let s = Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=\-]{8,}")
+        .unwrap()
+        .replace_all(&s, "$1 [redacted]")
+        .to_string();
+    // Upstream uses a \3 backreference to match an optional closing quote;
+    // the regex crate has no backreferences — the value char-class already
+    // stops at quote chars, so the terminal quote is left in place instead.
+    let s = Regex::new(r#"(?i)\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|secret[_-]?access[_-]?key|secret|token|password|passwd|pwd|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|auth[_-]?token|bot[_-]?token|private[_-]?key))(\s*[:=]\s*)(["']?)[^\s"',}]{6,}"#)
+        .unwrap()
+        .replace_all(&s, "$1=[redacted]")
+        .to_string();
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2553,8 +2630,60 @@ mod tests {
         assert!(card.get("customField").map(|v| v.is_null()).unwrap_or(false));
         assert_eq!(card["title"], "a"); // untouched fields survive
         assert_eq!(card["humanQA"][0]["q"], "ok?");
+        // A stray `id` in the patch must never rename the card (upstream
+        // re-pins the id after its spread).
+        let mut id_patch = serde_json::Map::new();
+        id_patch.insert("id".into(), Value::String("t-other".into()));
+        let card = hive.update_task("t1", &id_patch).unwrap();
+        assert_eq!(card["id"], "t1");
         assert!(hive.update_task("missing", &patch).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn send_partial_routes_synchronously_without_sender_dirs() {
+        let (hive, dir) = tmp_hive("sendpart");
+        reg(&hive, "w-x", false, dir.as_path());
+        let mut p = PartialMessage {
+            to: Some("w-x".into()),
+            act: Some("request".into()),
+            subject: Some("t".into()),
+            body: Some("b".into()),
+            conversation: Some("c-1".into()),
+            requires_reply: Some(true),
+            ..Default::default()
+        };
+        p.hops = Some(0);
+        let msg = hive.send_partial(&p, "human").unwrap();
+        assert_eq!(msg.conversation, "c-1");
+        assert!(msg.requires_reply);
+        // Delivered NOW — not after a router poll.
+        assert_eq!(hive.inbox("w-x").unwrap().len(), 1);
+        // The virtual sender never materializes an agents/human dir.
+        assert!(!hive.agent_dir("human").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn redact_secrets_covers_upstream_patterns() {
+        for (src, must_contain) in [
+            ("key sk-ant-abc1234567890def in body", "[redacted]"),
+            ("xoxb-1234-abcdef-token", "[redacted]"),
+            ("AKIAIOSFODNN7EXAMPLE", "[redacted]"),
+            ("aws_secret_access_key=AKIAIOSFODNN7EXAMPLE", "[redacted]"),
+            ("api_key: supersecretvalue", "[redacted]"),
+            ("Authorization Bearer abcdef123456", "[redacted]"),
+            ("-----BEGIN RSA PRIVATE KEY-----\nMIIx\n-----END RSA PRIVATE KEY-----", "[redacted]"),
+            ("eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV", "[redacted]"),
+        ] {
+            let out = redact_secrets(src);
+            assert!(
+                out.contains(must_contain),
+                "expected redaction in {src:?} -> {out:?}"
+            );
+        }
+        assert_eq!(redact_secrets("nothing sensitive"), "nothing sensitive");
+        assert_eq!(redact_secrets(""), "");
     }
 
     fn reg(hive: &Hive, id: &str, god: bool, dir: &Path) {

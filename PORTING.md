@@ -107,6 +107,15 @@ retry+backoff on index.lock).
   markers, `sample` = cumulative cost.jsonl fold per agent.
 - Virtual senders ('breaker') deliver directly to inboxes via
   `hive.send_virtual` — no outbox dir for non-agents.
+- fleet.json refresh cadence: upstream's always-on ~8s fleetTimer → this
+  port refreshes on the 30s breaker beat + god-hook writes. Agents told to
+  Read it still see fresh rows, just coarser.
+- Worker worktree isolation (`isolate: true` → git worktree per worker) and
+  the preserved-worktree GC sweep are NOT ported — workers spawn in the
+  request's cwd directly; `workers:list`'s `preserved` is always [].
+- redactSecrets: upstream's closing-quote backreference (\3) has no regex
+  crate equivalent — the value char-class already stops at quotes, so an
+  optional trailing quote is left in place (cosmetic only).
 - `git2` (0.21) for single-committer commits; degraded to no-op if repo
   can't init (matching electron's best-effort commit).
 - Hook shims (`cth-hook.cjs`, agy/codex/grok/gemini/pi/opencode translators,
@@ -368,8 +377,9 @@ mirrored by tauri commands. New this pass:
 - hive_admin.rs + cmd_hive.rs — hive:addTask/deleteTask/patchAgentRole/
   renameAgent/setArchived/setAgentHold/agentDirectory/agentUsage/
   agentContext/log/messages/textSearch; session:resolveCwd; pty:list/
-  redraw; workers:list/stop. Archived/hold flags live in a sidecar
-  registry-extra.json (typed RegistryEntry would drop them).
+  redraw; workers:list/stop. Archived/hold flags live on the registry.json
+  row (upstream shape; a registry-extra.json sidecar from an earlier
+  pass is still read as a fallback).
 - git_ops.rs completed + cmd_git.rs — the whole git:* surface: diff,
   branches, checkout (dirty + worktree-occupancy guards), worktrees
   add/remove (unintegrated-work guard), logGraph, commitFiles,
@@ -413,16 +423,55 @@ mirrored by tauri commands. New this pass:
   hive:message event payload), rosterContext LIVE ROSTER injection with
   ctx% + ON HOLD rows, inboxBacklog, writeFleetSnapshot, verbatim
   injectedPrompt via PromptOpts (mempalace/kg/runtime/spawn-queue blocks),
-  task_answer (humanQA patch + HUMAN ANSWER mail to god, status untouched �
+  task_answer (humanQA patch + HUMAN ANSWER mail to god, status untouched �
   god unblocks), COMMANDS.md/PROTOCOL.md verbatim. hooks.rs: accepts BOTH
   envelope shapes (hive-hook wrapped {agent_id,event,payload} AND unwrapped
   cth-hook {hook_event_name,...}); injected_context merges roster+goal+steer;
   fleet.json rows with breaker/usd/inboxBacklog/onHold/lastActiveSecAgo.
   bridges.rs JS: HIVE_SOCK parsed as TCP host:port (last-colon split,
-  IPv6-safe) � was treating it as an IPC path. cmd_update.rs: notify-only
+  IPv6-safe) � was treating it as an IPC path. cmd_update.rs: notify-only
   updater surface (checkNow/current/openRelease/download/restartAndInstall/
   simulate). git:diff = working-tree single-file diff (rev-range moved to
   git:diffRefs); checkout detach flag; pty:redraw replays retained tail.
   hive_admin: registry patch map-tolerant, text_search = upstream contract
   (board.md+tasks.json+agents/*/memory.md, 3 hits/file, {source,excerpt}).
   108 tests green (89 lib + 11 parity + 8 shim); cargo build + tsc clean.
+
+- 2026-10-05 (9): hive-audit parity fix sweep + ephemeral-worker watcher.
+  Routing/registry: archived/onHold moved onto the registry.json row
+  (routeMessage was blind to the sidecar); set_archived/set_hold patch the
+  row with the lastSeen bump; register_agent now runs on EVERY spawn
+  (ensureAgent semantics — respawn re-merges: identity.md refresh, cwd
+  revalidation, archived cleared, sessionId/onHold/isAssistant/extra
+  preserved, mailbox dirs recreated); spawn status 'idle', kill status
+  'gone' (upstream vocabulary). hive:send = send(partial) → {ok,message}
+  synchronous route with conversation/in_reply_to/requires_reply/
+  needs_human. hive:registry returns the upstream {godId, agents:{}}
+  document. hive:messages = voiceMessages contract (floor-wide or per-agent,
+  inbox+outbox+.done+.sent, id dedup, direction/owner/archived, secrets
+  redacted via ported redactSecrets, default limit 12 / clamp 1–40, id
+  lookup mode). hive:agentDirectory = upstream's consolidated
+  {godId, agents[]} join (telemetry/breaker/context/hasMemory/inboxBacklog;
+  per-agent file listing stays behind an `id` arg). hive:log = upstream
+  logTail (oldest→newest, malformed lines as {raw}). Tasks: createdAt ISO
+  string, patch can't rename the id, kind:"tasks" log + "hive: tasks (N)"
+  commit on every write; log keys unified on "kind".
+  Breaker: god + isAssistant excluded from inputs; `progressing` gains the
+  telemetry-activity leg (a supervisor whose tool calls never hit its own
+  hooks still counts); recordSession fallback + fleet.json refresh on the
+  beat; one `hive:message` event per routed message (targets array) emitted
+  beside hive-deliver; hive-terminal-handoff emitted for providers without
+  canReceiveInbox.
+  workers.rs (NEW): the ephemeral-worker subsystem — spawn-requests/ poll at
+  the router cadence, gated on config.orchestratorMaySpawn (default off),
+  concurrency cap via maxConcurrentWorkers; processSpawnRequest ports
+  objective/cwd/bin validation verbatim (safe-name-or-absolute check,
+  installed-CLI gate), worker-<reqId> spawn through the normal path,
+  hive-agent-spawned broadcast, god dispatch mail with the autonomous
+  worker preamble (Slack protocol when the request carries coords) + the
+  WORKER COMPLETION suffix; release-on-done with stale-done guard,
+  settle_inbox on release (mail-before-done filed, later mail stays
+  pending, unanswered non-order mail reported to god with Slack coords),
+  token-cap + idle reaps; workers:list = upstream {live, preserved,
+  maxWorkers} snapshot (registry join moved to workers:registry).
+  112 tests green (93 lib + 11 parity + 8 shim); cargo build + tsc clean.

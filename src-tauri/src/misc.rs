@@ -41,6 +41,14 @@ pub fn harness_home(app: &AppHandle) -> PathBuf {
 /// user home; a value still relative afterwards is returned trimmed and
 /// unchanged (callers keep their own not-absolute errors); empty passes
 /// through.
+/// AGENT_PROVIDER_PRESETS.canReceiveInbox — the backend copy (the preset
+/// table lives renderer-side). Only providers that can't take typed inbox
+/// nudges return false: the router hands their delivery off to the frontend
+/// as a terminal handoff instead of pretending it landed.
+pub fn can_receive_inbox(provider: &str) -> bool {
+    !matches!(provider, "kimi" | "copilot")
+}
+
 pub fn expand_tilde(p: &str) -> String {
     let t = p.trim();
     if t.is_empty() {
@@ -282,43 +290,43 @@ pub fn load_hero(cache_path: &Path, force: bool) -> Value {
 // ─── slack reply helper script ──────────────────────────────────────────────
 
 /// Write (idempotently) the `<harness>/bin/slack-reply.<ext>` helper and return
-/// its path — the analogue of upstream's bundled `md-slack-reply.cjs` that
-/// agents invoke to post back into a Slack thread. Deviation: upstream's cjs
-/// hits the app's loopback endpoint; this port's Slack server serves no
-/// reply route, so the script calls `chat.postMessage` directly with
-/// `SLACK_BOT_TOKEN` taken from the environment (registered via the app's
-/// secret-env-keys injection, never on the command line).
+/// its path — the analogue of upstream's bundled `md-slack-reply.cjs`. Agents
+/// POST {channel, thread_ts, text} to the app's loopback reply rail, whose
+/// {port, token} it discovers from `<harness>/slack-reply.json` (written by
+/// slack_start). The bot token stays in the main process — the worker env
+/// never carries it.
 pub fn write_slack_reply_script(home: &Path) -> Result<PathBuf, String> {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let cfg_path = home.join("slack-reply.json").display().to_string().replace('\\', "\\\\");
     #[cfg(windows)]
     {
         let path = dir.join("slack-reply.ps1");
-        let body = r#"param(
+        let body = format!(r#"param(
   [Parameter(Mandatory = $true)][string]$Channel,
   [Parameter(Mandatory = $true)][string]$Thread,
   [Parameter(Mandatory = $true)][string]$Text
 )
-# Post a reply into a Slack thread via chat.postMessage.
-# Requires SLACK_BOT_TOKEN in the environment — register it as a secret env
-# key in the app so spawned agents receive it.
-$token = $env:SLACK_BOT_TOKEN
-if (-not $token) { Write-Error 'SLACK_BOT_TOKEN not in env'; exit 1 }
-$body = @{ channel = $Channel; thread_ts = $Thread; text = $Text } | ConvertTo-Json -Compress
-Invoke-RestMethod -Method Post -Uri 'https://slack.com/api/chat.postMessage' `
-  -Headers @{ Authorization = "Bearer $token" } `
+# Post a reply into a Slack thread via the Agent Office loopback reply rail
+# (the app applies the bot token — it never lives in this process's env).
+$cfg = '{cfg_path}'
+if (-not (Test-Path $cfg)) {{ Write-Error 'slack-reply.json missing — is the Slack rail running?'; exit 1 }}
+$c = Get-Content $cfg -Raw | ConvertFrom-Json
+$body = @{{ channel = $Channel; thread_ts = $Thread; text = $Text }} | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri ("http://127.0.0.1:" + $c.port + "/reply") `
+  -Headers @{{ 'x-md-reply-token' = $c.token }} `
   -ContentType 'application/json; charset=utf-8' -Body $body | ConvertTo-Json -Compress
-"#;
+"#);
         std::fs::write(&path, body).map_err(|e| e.to_string())?;
         Ok(path)
     }
     #[cfg(not(windows))]
     {
         let path = dir.join("slack-reply.sh");
-        let body = r#"#!/bin/sh
+        let body = format!(r#"#!/bin/sh
 # slack-reply.sh --channel <id> --thread <ts> --text <msg>
-# Post a reply into a Slack thread via chat.postMessage.
-# Requires SLACK_BOT_TOKEN in the environment.
+# Post a reply into a Slack thread via the Agent Office loopback reply rail
+# (the app applies the bot token — it never lives in this process's env).
 set -e
 CHANNEL=""; THREAD=""; TEXT=""
 while [ $# -gt 0 ]; do
@@ -329,12 +337,15 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-: "${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN not in env}"
-curl -sS -X POST 'https://slack.com/api/chat.postMessage' \
-  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-  -H 'Content-Type: application/json; charset=utf-8' \
-  --data "{\"channel\":\"$CHANNEL\",\"thread_ts\":\"$THREAD\",\"text\":\"$TEXT\"}"
-"#;
+CFG="{cfg_path}"
+PORT=$(sed -n 's/.*"port":\([0-9]*\).*/\1/p' "$CFG" | head -1)
+TOKEN=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$CFG" | head -1)
+[ -n "$PORT" ] && [ -n "$TOKEN" ] || {{ echo "slack-reply.json missing/invalid" >&2; exit 1; }}
+curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
+  -H "x-md-reply-token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "{{\"channel\":\"$CHANNEL\",\"thread_ts\":\"$THREAD\",\"text\":\"$TEXT\"}}"
+"#);
         std::fs::write(&path, body).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {

@@ -69,9 +69,23 @@ export const ptyResize = (id: string, cols: number, rows: number) =>
 export const killAgent = (id: string) => invoke('kill_agent', { id });
 export const respawnAgent = (agentId: string) => invoke<{ id: string }>('respawn_agent', { agentId });
 
-export const hiveRegistry = () => invoke<RegistryEntry[]>('hive_registry');
-export const hiveSend = (from: string, to: string, act: string, subject: string, body: string) =>
-  invoke<Message>('hive_send', { from, to, act, subject, body });
+export interface HiveRegistryDoc {
+  godId: string | null;
+  agents: Record<string, RegistryEntry>;
+}
+export const hiveRegistry = () => invoke<HiveRegistryDoc>('hive_registry');
+export const hiveSend = (
+  from: string,
+  to: string,
+  act: string,
+  subject: string,
+  body: string,
+  extra?: { conversation?: string; in_reply_to?: string; requires_reply?: boolean; needs_human?: boolean }
+) =>
+  invoke<{ ok: boolean; message: Message }>('hive_send', {
+    partial: { to, act, subject, body, ...extra },
+    from
+  });
 export const hiveInbox = (agentId: string) => invoke<Message[]>('hive_inbox', { agentId });
 export const hiveMarkDone = (agentId: string, msgId: string) =>
   invoke('hive_mark_done', { agentId, msgId });
@@ -141,7 +155,7 @@ export const hiveRenameAgent = (id: string, name: string) => invoke('hive_rename
 export const hiveSetArchived = (id: string, archived: boolean) =>
   invoke('hive_set_archived', { id, archived });
 export const hiveSetAgentHold = (id: string, hold: boolean) => invoke('hive_set_agent_hold', { id, hold });
-export const hiveAgentDirectory = (id: string) => invoke('hive_agent_directory', { id });
+export const hiveAgentDirectory = (id?: string) => invoke('hive_agent_directory', id ? { id } : {});
 export const hiveAgentUsage = (id: string) => invoke('hive_agent_usage', { id });
 export const hiveAgentContext = (id: string) => invoke('hive_agent_context', { id });
 export const hiveLog = (limit?: number) => invoke('hive_log', { limit });

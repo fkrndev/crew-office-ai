@@ -61,11 +61,87 @@ pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Val
 
 // ─── read surface ───────────────────────────────────────────────────────────
 
-/// hive:agentDirectory — the agent's hive folder listing (confined read).
+/// hive:agentDirectory — the consolidated per-agent directory (upstream
+/// index.ts:3902): registry record joined with live telemetry + breaker +
+/// context slot, INCLUDING archived agents (the floor can still speak to
+/// them). `{godId, agents:[…]}`; a `files` param asks for one agent's hive
+/// folder listing instead (the port's per-agent file surface).
 #[tauri::command]
-pub fn hive_agent_directory(app: AppHandle, id: String) -> Result<Vec<Value>, String> {
+pub fn hive_agent_directory(
+    app: AppHandle,
+    id: Option<String>,
+) -> Result<Value, String> {
     let st = state(&app);
-    Ok(crate::hive_admin::agent_directory(&st.hive, &id))
+    if let Some(id) = id {
+        return Ok(json!(crate::hive_admin::agent_directory(&st.hive, &id)));
+    }
+    let snap = st.telemetry.snapshot();
+    let usage_by_id: std::collections::HashMap<String, Value> = snap
+        .get("usage")
+        .and_then(|u| u.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|u| {
+                    u.get("agentId")
+                        .and_then(|i| i.as_str())
+                        .map(|i| (i.to_string(), u.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let (god_id, entries) = st.hive.read_registry_doc();
+    let agents: Vec<Value> = entries
+        .iter()
+        .map(|a| {
+            let u = usage_by_id.get(&a.id);
+            let spans = snap
+                .get("spans")
+                .and_then(|s| s.get(&a.id))
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let tokens = u
+                .map(|u| {
+                    u["input"].as_u64().unwrap_or(0)
+                        + u["output"].as_u64().unwrap_or(0)
+                        + u["cache_read"].as_u64().unwrap_or(0)
+                        + u["cache_creation"].as_u64().unwrap_or(0)
+                })
+                .unwrap_or(0);
+            let ctx = st.context_usage.lock().unwrap().get(&a.id).copied();
+            let usd = u.and_then(|u| u["usd"].as_f64()).unwrap_or(0.0);
+            let ts = u.and_then(|u| u["ts"].as_u64());
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "role": if a.role.is_empty() { if a.is_god { "orchestrator" } else { "agent" } } else { &a.role },
+                "provider": a.provider,
+                "model": u.and_then(|u| u["model"].as_str()),
+                "status": if a.status.is_empty() { "idle" } else { &a.status },
+                "cwd": a.cwd,
+                "cwdValid": a.cwd_valid,
+                "archived": a.archived,
+                "isGod": a.is_god,
+                "isAssistant": a.is_assistant,
+                "sessionId": a.session_id,
+                "hasMemory": st.hive.has_memory(&a.id),
+                "inboxBacklog": st.hive.inbox_backlog(&a.id),
+                "breaker": st.breaker.lock().unwrap().level_for(&a.id),
+                "tokens": tokens,
+                "usd": (usd * 10000.0).round() / 10000.0,
+                "lastTool": spans.last().and_then(|s| s["tool"].as_str()),
+                "lastActiveSecAgo": ts.map(|t| now.saturating_sub(t) / 1000),
+                "contextTokens": ctx.map(|(t, _)| t),
+                "contextLimit": ctx.map(|(_, l)| l),
+                "contextPct": ctx.and_then(|(t, l)| (l > 0).then(|| t * 100 / l)),
+            })
+        })
+        .collect();
+    Ok(json!({ "godId": god_id, "agents": agents }))
 }
 
 /// hive:agentUsage — cost-ledger fold PLUS the transcript reconciler sample
@@ -127,19 +203,24 @@ pub fn hive_log(app: AppHandle, limit: Option<u32>) -> Result<Vec<Value>, String
     ))
 }
 
-/// hive:messages — one agent's mailbox: pending inbox + .done history,
-/// newest first.
+/// hive:messages — upstream voiceMessages: floor-wide or per-agent mail in
+/// the VoiceMessage shape (deduped, secrets redacted). `id` narrows to a
+/// single message lookup.
 #[tauri::command]
 pub fn hive_messages(
     app: AppHandle,
-    agent_id: String,
+    agent_id: Option<String>,
+    id: Option<String>,
     limit: Option<u32>,
+    include_archived: Option<bool>,
 ) -> Result<Vec<Value>, String> {
     let st = state(&app);
-    Ok(crate::hive_admin::hive_messages(
+    Ok(crate::hive_admin::voice_messages(
         &st.hive,
-        &agent_id,
-        limit.unwrap_or(40) as usize,
+        agent_id.as_deref(),
+        id.as_deref(),
+        limit.map(|l| l as usize),
+        include_archived,
     ))
 }
 
@@ -192,11 +273,19 @@ pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
     Ok(tail)
 }
 
-/// workers:list — every registry entry joined with its live-PTY flag and the
-/// sidecar's archived/onHold flags (upstream joins liveWorkers + registry;
-/// this port's registry IS the live-worker table).
+/// workers:list — upstream's ephemeral-worker tab snapshot:
+/// `{live: WorkerSnapshot[], preserved: [], maxWorkers}` (the preserved-
+/// worktree list is not tracked in this port yet — PORTING.md).
 #[tauri::command]
-pub fn workers_list(app: AppHandle) -> Result<Vec<Value>, String> {
+pub fn workers_list(app: AppHandle) -> Result<Value, String> {
+    Ok(crate::workers::list(&app))
+}
+
+/// workers:registry — every registry entry joined with its live-PTY flag
+/// and archived/onHold. The port's floor-roster surface (upstream folds the
+/// same data into hive:agentDirectory).
+#[tauri::command]
+pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
     let st = state(&app);
     let live: std::collections::HashSet<String> =
         st.ptys.lock().unwrap().keys().cloned().collect();

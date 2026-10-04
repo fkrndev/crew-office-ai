@@ -45,6 +45,7 @@ pub mod trigger_history;
 mod usage;
 mod webhook;
 mod workerwake;
+mod workers;
 
 use std::time::Duration;
 
@@ -232,8 +233,56 @@ pub fn run() {
                             if let Some(phase) = st.closing.poll_timeout() {
                                 commands::emit_closing(&handle, phase);
                             }
+                            // Upstream emits ONE `hive:message` per routed
+                            // message with the full targets array (the
+                            // renderer's feed contract); `hive-deliver`
+                            // stays as this port's per-target detail event.
+                            {
+                                let mut by_msg: std::collections::BTreeMap<
+                                    String,
+                                    Vec<String>,
+                                > = std::collections::BTreeMap::new();
+                                for d in &deliveries {
+                                    by_msg
+                                        .entry(d.msg_id.clone())
+                                        .or_default()
+                                        .push(d.to.clone());
+                                }
+                                for (msg_id, targets) in by_msg {
+                                    let _ = handle.emit(
+                                        "hive:message",
+                                        serde_json::json!({
+                                            "id": msg_id,
+                                            "targets": targets,
+                                        }),
+                                    );
+                                }
+                            }
                             for d in deliveries {
                                 let _ = handle.emit("hive-deliver", &d);
+                                // Hookless-provider handoff (upstream
+                                // agentInbox → terminal handoff): when the
+                                // target's CLI can't take a typed inbox
+                                // nudge the mail still lands, but the
+                                // renderer is told to surface a handoff
+                                // instead of the agent being silently nudged.
+                                let provider = st
+                                    .hive
+                                    .registry()
+                                    .iter()
+                                    .find(|a| a.id == d.to)
+                                    .map(|a| a.provider.clone())
+                                    .unwrap_or_default();
+                                if !crate::misc::can_receive_inbox(&provider) {
+                                    let _ = handle.emit(
+                                        "hive-terminal-handoff",
+                                        serde_json::json!({
+                                            "agent_id": d.to,
+                                            "provider": provider,
+                                            "msg_id": d.msg_id,
+                                        }),
+                                    );
+                                }
                             }
                         }
                         Err(e) => {
@@ -269,7 +318,13 @@ pub fn run() {
                         .hive
                         .registry()
                         .iter()
-                        .filter(|a| live.contains(&a.id))
+                        // Upstream excludes god AND the assistant from the
+                        // breaker — a tripping orchestrator must never be
+                        // steered into an inbox flood, and hardStop must
+                        // never kill the only coordinator (index.ts:1204).
+                        .filter(|a| {
+                            live.contains(&a.id) && !a.is_god && !a.is_assistant
+                        })
                         .map(|a| breaker::BreakerInput {
                             agent_id: a.id.clone(),
                             // Live OTel first, then the proxy-sample ledger,
@@ -280,8 +335,16 @@ pub fn run() {
                                 .sample(&a.id)
                                 .or_else(|| st.hive.usage_sample(&a.id))
                                 .or_else(|| st.usage.sample(&a.cwd, a.session_id.as_deref())),
-                            progressing: now.saturating_sub(st.hive.last_coordination_at(&a.id))
-                                < PROGRESS_WINDOW_MS,
+                            // Fresh coordination files OR a recent OTel tool
+                            // span — a parent supervising subagents whose
+                            // tool calls never hit its own hooks still counts
+                            // as progressing (upstream's two-leg check).
+                            progressing: now
+                                .saturating_sub(st.hive.last_coordination_at(&a.id))
+                                < PROGRESS_WINDOW_MS
+                                || now
+                                    .saturating_sub(st.telemetry.last_activity_at(&a.id))
+                                    < PROGRESS_WINDOW_MS,
                             last_work_at: hive::Hive::last_work_at(&a.cwd),
                         })
                         .collect();
@@ -309,6 +372,21 @@ pub fn run() {
                             }
                         }
                     }
+                    // recordSession fallback — the resume key must exist even
+                    // when hooks don't fire; upstream stamps it from the live
+                    // sample on every beat. Also refreshes fleet.json so the
+                    // file god is told to Read is never hours stale.
+                    for a in st.hive.registry() {
+                        if !live.contains(&a.id) {
+                            continue;
+                        }
+                        if let Some((sid, _)) = st.telemetry.freshest_session_pub(&a.id) {
+                            if a.session_id.as_deref() != Some(sid.as_str()) {
+                                let _ = st.hive.record_session(&a.id, &sid);
+                            }
+                        }
+                    }
+                    commands::write_fleet_snapshot(&handle2);
                     // Drain each agent's api_error stamps into the breaker's
                     // storm window before the tick (telemetry push → pull).
                     {
@@ -371,7 +449,7 @@ pub fn run() {
                                 if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
                                     let _ = h.kill();
                                 }
-                                let _ = st.hive.set_status(&id, "stopped");
+                                let _ = st.hive.set_status(&id, "gone");
                                 let _ = handle2.emit(
                                     "breaker-toast",
                                     serde_json::json!({ "text": format!("{name} stopped by circuit breaker"), "reason": d.state.reason }),
@@ -424,6 +502,17 @@ pub fn run() {
                             );
                         }
                     }
+                }
+            });
+            // Ephemeral-worker watcher (workers.rs — upstream's 1.5s
+            // spawn-request poll): release-on-done + idle/token-cap reaping,
+            // then gated intake from hive/spawn-requests/.
+            let handle5 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_millis(1500));
+                loop {
+                    tick.tick().await;
+                    workers::tick(&handle5);
                 }
             });
             // Worker-wake watchdog beat (workerwake.rs, #151): the backstop
@@ -485,6 +574,16 @@ pub fn run() {
                             oldest_mail_at: oldest,
                         });
                     }
+                    // Webhook done-observer — the outbound half of the trigger
+                    // ledger (upstream polls every 5s; we piggyback this beat).
+                    crate::webhook::poll_done_tasks(
+                        &st.hive,
+                        &st.trigger_history,
+                        &handle4,
+                    );
+                    // Slack done-notifier — the same pass for slack-origin
+                    // cards (upstream pollSlackDoneTasks, 5s cadence).
+                    commands::poll_slack_done_tasks(&handle4);
                     if facts.is_empty() {
                         continue;
                     }
@@ -554,6 +653,9 @@ pub fn run() {
                     (cfg.webhooks.clone(), cfg.webhook_port)
                 };
                 if st.webhook.set_endpoints(&eps) > 0 {
+                    // Drop held-token mappings whose ledger row aged out.
+                    st.webhook
+                        .prune_held(&app.handle(), &st.trigger_history);
                     let wh = st.webhook.clone();
                     let hive = st.hive.clone();
                     let app2 = app.handle().clone();
@@ -688,6 +790,7 @@ pub fn run() {
             cmd_hive::pty_list,
             cmd_hive::pty_redraw,
             cmd_hive::workers_list,
+            cmd_hive::workers_registry,
             cmd_hive::workers_stop,
             cmd_git::git_is_repo,
             cmd_git::git_branch,

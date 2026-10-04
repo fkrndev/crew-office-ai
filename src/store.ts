@@ -19,8 +19,8 @@ export const useApp = create<AppState>((set) => ({
   inbox: {},
   breaker: {},
   refreshAgents: async () => {
-    const agents = await hiveRegistry();
-    set({ agents });
+    const doc = await hiveRegistry();
+    set({ agents: Object.values(doc.agents) });
   },
   select: (id) => set({ selected: id }),
   setInbox: (agentId, msgs) => set((s) => ({ inbox: { ...s.inbox, [agentId]: msgs } })),

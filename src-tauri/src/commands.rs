@@ -66,12 +66,21 @@ pub struct AppState {
     pub closing: crate::closing_time::ClosingTime,
     /// Slack Events-API adapter (slack.rs) — HMAC-gated inbound → god inbox.
     pub slack: std::sync::Arc<crate::slack::SlackServer>,
+    /// Loopback reply rail — agents post back to Slack without ever seeing
+    /// the bot token (upstream SlackReplyServer).
+    pub slack_reply: std::sync::Arc<crate::slack::SlackReplyServer>,
+    /// thread_ts values an agent already answered DIRECTLY via the reply
+    /// rail — the done-summary poller skips these (fallback, not duplicator).
+    pub directly_replied: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
     /// Durable harness state (db.rs) — kv + command history in SQLite/WAL.
     pub persist: Mutex<crate::db::PersistStore>,
     /// The (session_id, goal) last injected per agent — upstream's
     /// deliveredGoalByAgent: the durable standing goal is re-sent on a new
     /// session or a roster change, not every prompt (transcript bloat).
     pub delivered_goal: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
+    /// Live god-triggered ephemeral workers (workers.rs spawn-request
+    /// watcher) — release-on-done + idle/token reaping state.
+    pub live_workers: crate::workers::LiveWorkers,
 }
 
 impl AppState {
@@ -112,7 +121,10 @@ impl AppState {
             roster: crate::roster::RosterStore::new(harness_home.clone()),
             closing: crate::closing_time::ClosingTime::default(),
             slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
+            slack_reply: std::sync::Arc::new(crate::slack::SlackReplyServer::new()),
+            directly_replied: std::sync::Arc::new(Mutex::new(std::collections::HashSet::new())),
             delivered_goal: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(HashMap::new()),
             persist: {
                 let mut s = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
                 let _ = s.open(); // best-effort — a DB failure can't crash startup
@@ -218,7 +230,7 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
     spawn_inner(app, args, Some(agent_id), resume)
 }
 
-fn spawn_inner(
+pub(crate) fn spawn_inner(
     app: AppHandle,
     args: SpawnArgs,
     forced_id: Option<String>,
@@ -240,19 +252,17 @@ fn spawn_inner(
         role: args.role.clone().unwrap_or_default(),
         cwd: args.cwd.clone(),
         is_god: args.is_god,
-        status: "starting".into(),
+        status: "idle".into(),
         session_id: None,
         command: args.command.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         ..Default::default()
     };
-    // New agents get the full folder+registry bootstrap; a respawn reuses the
-    // existing entry and just re-stamps its status.
-    if forced_id.is_none() {
-        st.hive.register_agent(&entry).map_err(err_str)?;
-    } else {
-        st.hive.set_status(&id, "starting").map_err(err_str)?;
-    }
+    // ensureAgent semantics run on EVERY spawn (upstream pty:spawn): a fresh
+    // hire gets the full bootstrap; a respawn re-merges — refreshed
+    // identity.md, re-validated cwd, cleared archived, preserved
+    // sessionId/onHold/extra, mailbox dirs re-created.
+    st.hive.register_agent(&entry).map_err(err_str)?;
 
     // Per-agent hive identity env (hive.ts:803) layered over the inherited env
     // minus parent-session markers (ptyEnv.ts).
@@ -658,7 +668,9 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     // A dead worker's broker capability token dies with it
     // (integrationBroker.ts revoke-on-teardown).
     crate::integrations::BROKER.revoke(&id);
-    st.hive.set_status(&id, "stopped").map_err(err_str)?;
+    // Gone means gone — the ephemeral-worker watcher stops tracking it too.
+    st.live_workers.lock().unwrap().remove(&id);
+    st.hive.set_status(&id, "gone").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",
         serde_json::json!({ "id": id, "status": "stopped" }),
@@ -668,23 +680,35 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
 
 // ─── hive surface ───────────────────────────────────────────────────────────
 
+/// hive:registry — upstream returns the registry DOCUMENT `{godId, agents:{
+/// <id>: entry}}` so the renderer can key by id and reach godId.
 #[tauri::command]
-pub fn hive_registry(app: AppHandle) -> Result<Vec<RegistryEntry>, String> {
-    Ok(state(&app).hive.registry())
+pub fn hive_registry(app: AppHandle) -> Result<serde_json::Value, String> {
+    let (god_id, agents) = state(&app).hive.read_registry_doc();
+    let map: serde_json::Map<String, serde_json::Value> = agents
+        .into_iter()
+        .filter_map(|a| {
+            serde_json::to_value(&a)
+                .ok()
+                .map(|v| (a.id.clone(), v))
+        })
+        .collect();
+    Ok(serde_json::json!({ "godId": god_id, "agents": map }))
 }
 
+/// hive:send — upstream's exact contract: `{ok, message}` where the partial
+/// is normalized and routed SYNCHRONOUSLY (index.ts:3503 — no outbox hop, so
+/// virtual senders like 'human'/'system' never materialize an agents/<from>
+/// dir).
 #[tauri::command]
 pub fn hive_send(
     app: AppHandle,
-    from: String,
-    to: String,
-    act: String,
-    subject: String,
-    body: String,
-) -> Result<Message, String> {
-    let msg = Message::new(&from, &to, &act, &subject, &body);
-    state(&app).hive.send(&msg).map_err(err_str)?;
-    Ok(msg)
+    partial: crate::hive::PartialMessage,
+    from: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let sender = from.unwrap_or_else(|| "system".into());
+    let msg = state(&app).hive.send_partial(&partial, &sender).map_err(err_str)?;
+    Ok(serde_json::json!({ "ok": true, "message": msg }))
 }
 
 #[tauri::command]
@@ -924,6 +948,7 @@ fn ensure_webhook_server(
     if st.webhook.set_endpoints(endpoints) == 0 {
         return None;
     }
+    st.webhook.prune_held(app, &st.trigger_history);
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Some(port); // already bound; set_endpoints already applied
@@ -940,39 +965,31 @@ fn ensure_webhook_server(
     Some(port)
 }
 
+/// Approve a held inbound — upstream triggerHistory:decide with
+/// decision='approved'. Takes the HISTORY ENTRY id (the pending row the UI
+/// lists), releases the message down the identical card+god path, and flips
+/// the ledger. Idempotent: already-decided entries are a no-op.
 #[tauri::command]
-pub fn webhook_approve(app: AppHandle, token: String) -> Result<String, String> {
+pub fn webhook_approve(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
     let st = state(&app);
-    let hist_id = st.webhook.pending_hist(&token);
-    let msg_id = st
-        .webhook
-        .approve(&token, &st.hive)
-        .ok_or_else(|| "unknown or non-pending token".to_string())?;
-    // Flip the ledger row: pending → approved, + the spawned task id.
-    if let Some(id) = hist_id {
-        st.trigger_history
-            .update(&id, Some("approved".into()), Some(msg_id.clone()), None, None);
-    }
-    Ok(msg_id)
+    st.webhook
+        .decide(&app, &st.hive, &token, "approved")
+        .ok_or_else(|| "unknown or non-pending entry".to_string())
 }
 
 #[tauri::command]
-pub fn webhook_reject(app: AppHandle, token: String) -> Result<bool, String> {
+pub fn webhook_reject(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
     let st = state(&app);
-    let hist_id = st.webhook.pending_hist(&token);
-    let ok = st.webhook.reject(&token);
-    if ok {
-        if let Some(id) = hist_id {
-            st.trigger_history
-                .update(&id, Some("rejected".into()), None, None, None);
-        }
-    }
-    Ok(ok)
+    st.webhook
+        .decide(&app, &st.hive, &token, "rejected")
+        .ok_or_else(|| "unknown or non-pending entry".to_string())
 }
 
+/// Pending inbound rows — upstream's surface is the trigger ledger itself
+/// (entries still at decision:'pending').
 #[tauri::command]
-pub fn webhook_pending(app: AppHandle) -> Result<Vec<(String, serde_json::Value)>, String> {
-    Ok(state(&app).webhook.pending())
+pub fn webhook_pending(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state(&app).webhook.pending(&app))
 }
 
 // ─── hire deep-link queue (agent-office://hire?src=...) ─────────────────────
@@ -1044,22 +1061,48 @@ pub fn webhook_set_config(
     port: Option<u16>,
     enabled: Option<bool>,
 ) -> Result<bool, String> {
-    if let Some(sec) = secret {
+    // Mirror a legacy setConfig/generateSecret edit onto the `legacy`
+    // WebhookTrigger (upstream upsertLegacyWebhookTrigger): creates the row
+    // only once a secret exists — an enabled endpoint without a secret would
+    // be an open door, so a bare "enable" is deliberately a no-op.
+    {
         let st = state(&app);
         let mut cfg = st.config.lock().unwrap();
-        if let Some(ep) = cfg.webhooks.iter_mut().find(|e| e.id == "legacy") {
-            ep.secret = sec.clone();
-        } else {
-            cfg.webhooks.push(crate::webhook::WebhookEndpoint {
+        let prior = cfg.webhooks.iter().find(|e| e.id == "legacy").cloned();
+        let next_secret = secret.clone().or_else(|| prior.as_ref().map(|p| p.secret.clone()));
+        if let Some(sec) = next_secret.filter(|s| !s.is_empty()) {
+            let row = crate::webhook::WebhookEndpoint {
                 id: "legacy".into(),
-                name: "legacy".into(),
+                name: prior
+                    .as_ref()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "Default webhook".into()),
                 secret: sec,
-                schema: String::new(),
-                mode: "strict".into(),
-                enabled: true,
-            });
+                schema: prior
+                    .as_ref()
+                    .map(|p| p.schema.clone())
+                    .unwrap_or_default(),
+                mode: prior
+                    .as_ref()
+                    .map(|p| p.mode.clone())
+                    .unwrap_or_else(|| crate::trigger_history::DEFAULT_TRIGGER_MODE.into()),
+                enabled: enabled
+                    .or_else(|| prior.as_ref().map(|p| p.enabled))
+                    .unwrap_or(false),
+            };
+            match cfg.webhooks.iter_mut().find(|e| e.id == "legacy") {
+                Some(ep) => *ep = row,
+                None => cfg.webhooks.push(row),
+            }
+            st.config_store.save(&cfg).map_err(err_str)?;
+        } else if enabled.is_some() {
+            // Secret cleared (or never set) but a disable still applies —
+            // dropping the public surface immediately is safe.
+            if let Some(ep) = cfg.webhooks.iter_mut().find(|e| e.id == "legacy") {
+                ep.enabled = enabled.unwrap_or(ep.enabled);
+                st.config_store.save(&cfg).map_err(err_str)?;
+            }
         }
-        st.config_store.save(&cfg).map_err(err_str)?;
     }
     let st = state(&app);
     if let Some(p) = port {
@@ -1067,8 +1110,14 @@ pub fn webhook_set_config(
         cfg.webhook_port = p;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    if let Some(on) = enabled {
-        st.persist.lock().unwrap().set_kv("webhook_enabled", &serde_json::Value::Bool(on));
+    // Hot-swap endpoints on the live server, same as webhooks_save — a
+    // disable or secret rotation must not need an app restart.
+    {
+        let (eps, port) = {
+            let cfg = st.config.lock().unwrap();
+            (cfg.webhooks.clone(), cfg.webhook_port)
+        };
+        ensure_webhook_server(&app, &eps, port);
     }
     Ok(true)
 }
@@ -1287,16 +1336,63 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
     let hive = st.hive.clone();
     let trigger_history = st.trigger_history.clone();
     let app2 = app.clone();
+    let app3 = app.clone();
     st.slack
         .start(port, secret, channel_id, move |text, channel, _ts, thread_ts, files| {
-            let body = if files.is_empty() {
-                text.clone()
-            } else {
-                format!("{text}\n\n({} file(s) attached)", files.len())
-            };
-            // Verified inbound → god's inbox, same as a webhook message.
-            let msg = format!("{body}\n\n(from: slack #{channel}, ts: {thread_ts})");
-            if let Ok(_d) = hive.send_virtual("slack", "god", "request", "Slack", &msg) {
+            // Download file attachments with the bot token (stays in main —
+            // only local paths reach the card/message). Dest dir lives under
+            // the harness home, out of the repo and out of MemPalace.
+            let bot_token = secret_get(&app3, "SLACK_BOT_TOKEN");
+            let files_dir = crate::misc::harness_home(&app3).join("slack-files");
+            let local_files = crate::slack::download_slack_files(
+                &files,
+                bot_token.as_deref(),
+                &files_dir,
+            );
+            let mut text = text.trim().to_string();
+            if !local_files.is_empty() {
+                let lines = local_files
+                    .iter()
+                    .map(|f| format!("- {} ({})", f["path"].as_str().unwrap_or(""), f["name"].as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                text = if text.is_empty() {
+                    format!("Attached files:\n{lines}")
+                } else {
+                    format!("{text}\n\nAttached files:\n{lines}")
+                };
+            }
+
+            // The kanban card — carries slack:{channel,thread_ts} so the
+            // done-observer can post the summary back in-thread. Title stays
+            // the user's raw text (human-facing).
+            let task_id = format!(
+                "slack-{}-{}",
+                thread_ts,
+                uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+            );
+            let card_title: String = text.chars().take(80).collect();
+            let _ = hive.add_task(&serde_json::json!({
+                "id": task_id,
+                "title": card_title,
+                "description": text,
+                "status": "todo",
+                "dependsOn": [],
+                "priority": 1,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+                "slack": { "channel": channel, "thread_ts": thread_ts },
+            }));
+
+            // God gets the AUTONOMOUS REQUEST PROTOCOL prepended — the
+            // authoritative policy block, built per message with the resolved
+            // helper path so god hands the worker an exact reply command.
+            let helper = crate::misc::write_slack_reply_script(&crate::misc::harness_home(&app3))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "slack-reply".into());
+            let preamble =
+                crate::slack::autonomous_request_protocol(&channel, &thread_ts, &helper);
+            let instruction = format!("{preamble}{text}\n\n(tracked as kanban card {task_id})");
+            if let Ok(_d) = hive.send_virtual("slack", "god", "request", &card_title, &instruction) {
                 trigger_history.append(crate::trigger_history::TriggerHistoryEntry {
                     id: String::new(),
                     source: "webhook".into(),
@@ -1304,24 +1400,69 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
                     source_name: "slack".into(),
                     direction: "inbound".into(),
                     peer: format!("#{channel}"),
-                    title: Some("slack message".into()),
-                    body,
-                    kind: crate::trigger_history::classify_inbound_kind(&msg).into(),
+                    title: Some(card_title.clone()),
+                    body: text.clone(),
+                    kind: crate::trigger_history::classify_inbound_kind(&text).into(),
                     decision: Some("auto-allowed".into()),
                     correlation_id: Some(format!("{channel}:{thread_ts}")),
-                    task_id: None,
+                    task_id: Some(task_id.clone()),
                     at: 0,
                 });
                 let _ = app2.emit("hive-deliver", serde_json::json!({"to": "god"}));
             }
+            // Immediate "queued" acknowledgement in the originating thread —
+            // posted server-side with the bot token (renderer did this in
+            // upstream; the port's slack flow is all main-side).
+            if let Some(tok) = &bot_token {
+                let _ = crate::slack::post_slack_reply(
+                    tok,
+                    &channel,
+                    &thread_ts,
+                    ":hourglass_flowing_sand: *Received.* Your request has been queued — the team is on it and will reply here when done.",
+                );
+            }
         })
         ?;
+
+    // Re-seed the done-observer baseline on every start (upstream
+    // startSlackDoneObserver sets slackDoneBaseline = null).
+    reset_slack_done_baseline();
+
+    // The loopback reply rail — agents post {channel,thread_ts,text} WITHOUT
+    // ever seeing the bot token (upstream SlackReplyServer). Per-session
+    // token + the discovery file under the harness home.
+    let app4 = app.clone();
+    match st.slack_reply.start(
+        0,
+        move || secret_get(&app4, "SLACK_BOT_TOKEN"),
+        {
+            let st2 = std::sync::Arc::clone(&st.directly_replied);
+            move |thread_ts| {
+                st2.lock().unwrap().insert(thread_ts);
+            }
+        },
+    ) {
+        Ok(reply_port) => {
+            let cfg_path = crate::misc::harness_home(&app).join("slack-reply.json");
+            let _ = std::fs::write(
+                &cfg_path,
+                serde_json::json!({ "port": reply_port, "token": st.slack_reply.token })
+                    .to_string(),
+            );
+        }
+        Err(e) => eprintln!("[slack] reply endpoint failed to start: {e}"),
+    }
     Ok(true)
 }
 
 #[tauri::command]
 pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
-    state(&app).slack.stop();
+    let st = state(&app);
+    st.slack.stop();
+    st.slack_reply.stop();
+    // The discovery file advertises a dead socket once the rail is down —
+    // drop it so a stale helper doesn't talk to an unrelated listener.
+    let _ = std::fs::remove_file(crate::misc::harness_home(&app).join("slack-reply.json"));
     Ok(true)
 }
 
@@ -1331,6 +1472,7 @@ pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "running": st.slack.is_running(),
         "port": *st.slack.url_port.lock().unwrap(),
+        "replyPort": *st.slack_reply.port.lock().unwrap(),
     }))
 }
 
@@ -1343,6 +1485,129 @@ pub fn slack_reply(app: AppHandle, channel: String, thread_ts: String, text: Str
         .ok_or_else(|| "SLACK_BOT_TOKEN not in credential store".to_string())?;
     crate::slack::post_slack_reply(&token, &channel, &thread_ts, &text)?;
     Ok(true)
+}
+
+/// pollSlackDoneTasks (index.ts:1611) — watch the kanban for Slack-origin
+/// cards that reach 'done' and post ONE summary reply in-thread. The
+/// notified-ledger is persisted so a restart can't double-post; a live
+/// baseline means a summary only fires on a transition observed this
+/// session; threads an agent answered DIRECTLY via the reply rail are
+/// skipped (the poller is a fallback, not a duplicator).
+/// Ids already 'done' when the observer started — baselined (never notified)
+/// so a summary only fires on a live …→done transition (upstream
+/// slackDoneBaseline; re-seeded on every slack_start).
+static SLACK_DONE_BASELINE: std::sync::OnceLock<
+    Mutex<Option<std::collections::HashSet<String>>>,
+> = std::sync::OnceLock::new();
+
+/// Reset the done-observer's baseline — startSlackDoneObserver's
+/// `slackDoneBaseline = null` (re-seeds on the poller's next tick).
+pub(crate) fn reset_slack_done_baseline() {
+    if let Some(m) = SLACK_DONE_BASELINE.get() {
+        *m.lock().unwrap() = None;
+    }
+}
+
+pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
+    let st = state(app);
+    let Some(token) = secret_get(app, "SLACK_BOT_TOKEN") else {
+        return; // can't post without the token — nothing to do
+    };
+    let Ok(doc) = st.hive.read_tasks() else { return };
+    let Some(tasks) = doc["tasks"].as_array() else { return };
+
+    // Exactly-once across re-reads AND restarts — ids only, persisted under
+    // the harness home (out of the repo, out of MemPalace).
+    let notified_path = crate::misc::harness_home(app).join("slack-done-notified.json");
+    let mut notified: std::collections::HashSet<String> = std::fs::read_to_string(&notified_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default();
+    // The tick that seeds the baseline posts nothing — mirroring upstream's
+    // `if (slackDoneBaseline === null) { baseline = …; return; }`.
+    let baseline_cell = SLACK_DONE_BASELINE.get_or_init(|| Mutex::new(None));
+    let baseline = {
+        let mut g = baseline_cell.lock().unwrap();
+        match g.as_ref() {
+            Some(b) => b.clone(),
+            None => {
+                *g = Some(
+                    tasks
+                        .iter()
+                        .filter(|t| t["status"].as_str() == Some("done"))
+                        .filter_map(|t| t["id"].as_str().map(|s| s.to_string()))
+                        .collect(),
+                );
+                return;
+            }
+        }
+    };
+
+    let persist = |set: &std::collections::HashSet<String>| {
+        let v: Vec<&String> = set.iter().collect();
+        let _ = std::fs::write(&notified_path, serde_json::to_string(&v).unwrap_or_default());
+    };
+    for t in tasks {
+        if t["status"].as_str() != Some("done") {
+            continue;
+        }
+        let id = t["id"].as_str().unwrap_or("");
+        if baseline.contains(id) || notified.contains(id) {
+            continue;
+        }
+        let slack = t.get("slack");
+        let (channel, thread_ts) = match slack {
+            Some(s) => (
+                s["channel"].as_str().unwrap_or("").to_string(),
+                s["thread_ts"].as_str().unwrap_or("").to_string(),
+            ),
+            None => continue,
+        };
+        if channel.is_empty() || thread_ts.is_empty() {
+            continue;
+        }
+        // FALLBACK-ONLY: an agent that already posted a direct reply gave the
+        // human its substantive answer — don't double-post.
+        if st.directly_replied.lock().unwrap().contains(&thread_ts) {
+            notified.insert(id.to_string());
+            persist(&notified);
+            continue;
+        }
+        // Never post a bare checkmark with no substance.
+        if t.get("result")
+            .and_then(|r| r.as_str())
+            .or_else(|| t.get("description").and_then(|d| d.as_str()))
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            notified.insert(id.to_string());
+            persist(&notified);
+            continue;
+        }
+        match crate::slack::post_slack_reply(
+            &token,
+            &channel,
+            &thread_ts,
+            &crate::slack::done_summary(t),
+        ) {
+            Ok(()) => {
+                notified.insert(id.to_string());
+                persist(&notified);
+            }
+            Err(e) if crate::slack::is_terminal_slack_error(&e) => {
+                // Permanent config/auth error — record the id so we stop
+                // hammering every tick; fix the bot scope and later posts work.
+                notified.insert(id.to_string());
+                persist(&notified);
+                eprintln!("[slack] done-summary for task {id} — giving up (terminal error: {e})");
+            }
+            Err(e) => {
+                eprintln!("[slack] done-summary for task {id} failed — will retry: {e}");
+            }
+        }
+    }
 }
 
 // ─── closing time (graceful shutdown protocol) ──────────────────────────────
@@ -1385,6 +1650,21 @@ pub(crate) fn emit_closing(app: &AppHandle, phase: &str) {
         "closing-time",
         serde_json::json!({ "phase": phase, "acked": acked, "total": total }),
     );
+}
+
+/// fleet.json heartbeat — upstream's ~8s fleetTimer keeps the snapshot god
+/// is told to Read fresh even when no hook fires. Called from the breaker
+/// beat; identical row shape to hooks.rs's hook-time write.
+pub(crate) fn write_fleet_snapshot(app: &AppHandle) {
+    let st = state(app);
+    let agents = crate::hooks::fleet_rows(&st);
+    let _ = st.hive.write_fleet_snapshot(&serde_json::json!({
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        "agents": agents,
+    }));
 }
 
 // ─── roster mirror (UI floor state on disk) ─────────────────────────────────
