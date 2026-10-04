@@ -15,28 +15,28 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 |---|---|---|
 | `pty.ts`, `ptyEnv.ts` (node-pty) | `pty.rs` (`portable-pty` 0.9) | DONE |
 | `ptyEnv.ts` env layering (strip `CLAUDE*` markers, keep CLAUDE_CONFIG_* allowlist, TERM/COLORTERM/FORCE_COLOR, LANG/LC_CTYPE posix) | `ptyenv.rs` | DONE |
-| `hive.ts` (~3.4k lines: dirs, router, log, git single-committer, hooks socket, hook shims, proxy sidecar, god prompt) | `hive.rs` (dirs+router+log+git2 commit) — hooks socket & shims = PHASE 2 | PARTIAL |
-| `hooks.ts` (HookServer, status, roster context, idle-wake) | `hooks.rs` (TCP loopback) + `src/bin/hive-hook.rs` (native shim — no node dep, replaces cth-hook.cjs + ELECTRON_RUN_AS_NODE wrapper) | DONE (core) |
-| `config.ts` (config.json + ScheduledMission) | `config.rs` (JSON in app_data_dir) | DONE |
-| `memory.ts`, `palaceReap.ts`, `reflect.ts` (memory.md + mempalace CLI) | `memory.rs` (memory.md read/append only; mempalace/condense = TODO) | PARTIAL |
-| `knowledge.ts`, `kg-core.cjs`, `resources/kg.cjs` (KG sidecar) | — decide: Rust port or drop | TODO |
-| `slack.ts`, `webhook.ts`, `slack-trigger.cjs` (HTTP ingress + tunnelmole) | `ingress.rs` (axum) + `tauri-plugin-localhost`? tunnel = external proc | TODO |
+| `hive.ts` (~3.4k lines: dirs, router, log, git single-committer, hooks socket, hook shims, proxy sidecar, god prompt) | `hive.rs` (dirs+router+log+git2 commit) + `hooks.rs` TCP socket + `src/bin/hive-hook.rs` native shim + `bridges.rs`/`proxy.rs` sidecars | DONE |
+| `hooks.ts` (HookServer, status, roster context, idle-wake) | `hooks.rs` (TCP loopback) + `src/bin/hive-hook.rs` (native shim — no node dep, replaces cth-hook.cjs + ELECTRON_RUN_AS_NODE wrapper) | DONE |
+| `config.ts` (config.json + ScheduledMission) | `config.rs` (camelCase JSON + raw-merge preservation) | DONE |
+| `memory.ts`, `palaceReap.ts`, `reflect.ts` (memory.md + mempalace CLI) | `memory_palace.rs` (mine loop, quarantine reap, mempalace CLI) + `reflect.rs` + `cmd_memory.rs` | DONE |
+| `knowledge.ts`, `kg-core.cjs`, `resources/kg.cjs` (KG sidecar) | `kg.rs` + `cmd_kg.rs` (addFiles/ingest/list/get/remove/search/status) | DONE |
+| `slack.ts`, `webhook.ts`, `slack-trigger.cjs` (HTTP ingress + tunnelmole) | `slack.rs` (Events API server + reply helper + autonomous-request preamble) + `webhook.rs` + `slack_tunnel` (upstream tunnelmole start/kill) | DONE |
 | `breaker.ts` (circuit breaker: loop/error-storm/velocity/caps/no-progress) | `breaker.rs` + 30s beat in lib.rs (steer/constrain mail, stop kills PTY; hardStop off caps at constrained) | DONE (api_error source pending telemetry) |
 | `control.ts` (ControlRegistry: pause/halt/steer/tool gates) | `control.rs` + commands + ControlStrip UI; wired into hooks (halt→continue:false, PreToolUse deny, steer→additionalContext) | DONE |
 | `transcript.ts` + `pricing.ts` (Claude transcript usage reconciler, per-model pricing) | `usage.rs` — incremental per-file cache, per-session buckets, per-record pricing | DONE (offline path) |
 | `telemetry.ts` (OTLP/HTTP-JSON collector: token/cost metrics, tool_result spans, api_error) | `telemetry.rs` — per-session accum → per-agent sample (LIVE source #1), 200-span ring, tool_decision, api_error→breaker, OTEL_* env on claude spawn | DONE (waterfall UI + grok/costLifetime fallbacks = TODO) |
-| `index.ts` syncMissions + `config.ts` mission constants | `missions.rs` + 15s scheduler poll in lib.rs; seed-once flags; quiet-gated heartbeat; compact mission → per-agent idle-boundary `/compact` queue | DONE (weekly schedules = TODO) |
-| `updater.ts` (electron-updater) | `tauri-plugin-updater` | TODO |
-| `integrations.ts` (Electron safeStorage secrets) | `keyring` crate or `tauri-plugin-stronghold` | TODO |
-| `modelCatalog.ts`, `ossModels.ts` | `models.rs` | TODO |
-| `cliInstall.ts`, `nodeInstall.ts` (missing-CLI installer ladder) | `install.rs` | TODO |
-| `realtime.ts` (OpenAI realtime ephemeral secrets) | keep frontend-side via `@openai/agents-realtime`, mint secret via a Rust cmd | TODO |
+| `index.ts` syncMissions + `config.ts` mission constants | `missions.rs` + 15s scheduler poll; seed-once flags; quiet-gated heartbeat; weekly schedules (shared/weeklySchedule.ts full port); compact mission → `trigger:context` emit | DONE |
+| `updater.ts` (electron-updater) | `cmd_update.rs` (checkNow/download/openRelease/restartAndInstall/updateState events) | DONE |
+| `integrations.ts` (Electron safeStorage secrets) | `integrations.rs` — OS keyring + broker server + secret env injection | DONE |
+| `modelCatalog.ts`, `ossModels.ts` | `cmd_misc::models_catalog` (baked catalog from upstream's payload, remote fetch cached) | DONE |
+| `cliInstall.ts`, `nodeInstall.ts` (missing-CLI installer ladder) | `misc::install_script` + `PENDING_INSTALLS` + `pty:relaunch:<id>` (upstream rung order npm→node-then-npm→native→manual) | DONE |
+| `realtime.ts` (OpenAI realtime ephemeral secrets) | `cmd_realtime.rs` mint/has-key + `realtime_actions.rs` + `realtime.rs` completion & floor watchers | DONE |
 | `workerWake.ts` (inbox→wake watchdog, edge-triggered + stall rule) | `workerwake.rs` + 10s beat — all holds ported (booting/mid-turn/boot-grace/hitl/announced/cooldown), hold reporting | DONE |
-| `webhook.ts` (secret-gated inbound HTTP → hive) | `webhook.rs` — loopback tiny_http server, constant-time secret + decoy compare (no id enumeration), global/per-endpoint/shared-unknown rate limits, 1MB cap, JSON-Schema validation, auto→god / review→pending-token, GET /status/<token>, hot endpoint swap | DONE (public tunnel = TODO; Slack adapter = TODO) |
-| `slack.ts` webhook server, `workerLaunch/hire/hiddenClaude` | later | TODO |
+| `webhook.ts` (secret-gated inbound HTTP → hive) | `webhook.rs` — loopback tiny_http server, constant-time secret + decoy compare (no id enumeration), global/per-endpoint/shared-unknown rate limits, 1MB cap, JSON-Schema validation, auto→god / review→pending-token, GET /status/<token>, hot endpoint swap | DONE |
+| `slack.ts` webhook server, `workerLaunch/hire/hiddenClaude` | `slack.rs` + `workers.rs` + `hire.rs` | DONE |
 | `useRestoreTeam` / respawn | `respawn_agent` command + ↻ button — registry keeps `command` per agent; claude resumes via `--resume <session_id>` | DONE |
-| `git.ts`, `worktreeDeps.ts` (worktrees, fs/git broker for IDE) | `git2` usage in `hive.rs` covers commit; IDE git rails = TODO | PARTIAL |
-| `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds or `tauri-plugin-fs` + explicit scope check | TODO |
+| `git.ts`, `worktreeDeps.ts` (worktrees, fs/git broker for IDE) | `git_ops.rs` + `cmd_git.rs` (status/log/diff/branches/checkout/aheadBehind/logGraph/mainRepo/showFile/compareRefs/commitFiles/worktrees) + `link_worktree_deps` on isolate spawn | DONE |
+| `fs.ts` (renderer fs w/ path containment) | `fs_ops.rs` — harness-home containment (listDir/readFile/readBinary/writeFile/statAbs/revealPath) | DONE |
 
 | Renderer (React) | Status |
 |---|---|
