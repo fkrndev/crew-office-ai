@@ -38,7 +38,11 @@ const MAX_BINARY_READ: u64 = 2 * 1024 * 1024;
 pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
     let url = url.trim().to_string();
     let lower = url.to_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:"))
+    // Upstream allowlist (index.ts app:openExternal): Settings panes or
+    // https only — the renderer can't shell arbitrary schemes.
+    if !(lower.starts_with("x-apple.systempreferences:")
+        || lower.starts_with("ms-settings:")
+        || lower.starts_with("https://"))
     {
         return Err("blocked url".into());
     }
@@ -191,11 +195,14 @@ pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String>
 /// hooks layer when a native-notification path lands).
 #[tauri::command]
 pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, String> {
-    state(&app)
-        .persist
-        .lock()
-        .unwrap()
-        .set_kv("notifications_enabled", &json!(enabled));
+    // Upstream writeConfig({notifications}) — the toggle lives in typed
+    // config so get_config round-trips it for the Settings UI.
+    let st = state(&app);
+    {
+        let mut cfg = st.config.lock().unwrap();
+        cfg.notifications = enabled;
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
     Ok(true)
 }
 

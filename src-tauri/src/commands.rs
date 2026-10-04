@@ -486,19 +486,38 @@ pub(crate) fn spawn_inner(
                 sock.clone(),
                 None,
             ));
-            if let Ok(port) = bridge.clone().start() {
-                st.proxy_bridges
-                    .lock()
-                    .unwrap()
-                    .insert(id.clone(), bridge);
-                let loopback = format!("http://127.0.0.1:{port}");
-                if args.provider == "qwen" {
-                    agent_env.insert("OPENAI_BASE_URL".into(), loopback);
-                } else if let Ok((cfg, data)) =
-                    crate::bridges::install_crush_config(&agent_dir, &loopback, true)
-                {
-                    agent_env.insert("CRUSH_GLOBAL_CONFIG".into(), cfg.display().to_string());
-                    agent_env.insert("CRUSH_GLOBAL_DATA".into(), data.display().to_string());
+            match bridge.clone().start() {
+                Ok(port) => {
+                    st.proxy_bridges
+                        .lock()
+                        .unwrap()
+                        .insert(id.clone(), bridge);
+                    let loopback = format!("http://127.0.0.1:{port}");
+                    if args.provider == "qwen" {
+                        agent_env.insert("OPENAI_BASE_URL".into(), loopback);
+                    } else if let Ok((cfg, data)) =
+                        crate::bridges::install_crush_config(&agent_dir, &loopback, true)
+                    {
+                        agent_env.insert("CRUSH_GLOBAL_CONFIG".into(), cfg.display().to_string());
+                        agent_env.insert("CRUSH_GLOBAL_DATA".into(), data.display().to_string());
+                    }
+                }
+                Err(e) => {
+                    // Upstream proxy-bind failure (hive.ts): log proxy-degraded
+                    // + emit hive:degraded — the agent still spawns, just
+                    // without hive events.
+                    let msg = format!("proxy bridge failed to bind — agent spawns without hive events: {e}");
+                    let _ = st.hive.log(&serde_json::json!({
+                        "kind": "proxy-degraded", "agentId": id,
+                        "name": args.name, "provider": args.provider,
+                    }));
+                    let _ = app.emit(
+                        "hive:degraded",
+                        serde_json::json!({
+                            "agentId": id, "name": args.name,
+                            "reason": "proxy-bind", "message": msg,
+                        }),
+                    );
                 }
             }
         }

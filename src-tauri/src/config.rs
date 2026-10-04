@@ -61,6 +61,9 @@ pub struct Config {
     /// (the default — wired but never throttles, upstream
     /// defaultWorkerTokenCap).
     pub default_worker_token_cap: u64,
+    /// OS toast notifications for agent idle/blocked events (upstream
+    /// notifications; hooks.ts gates every toast on it).
+    pub notifications: bool,
 }
 
 /// shared/triggers.ts ContextTriggerConfig — {compact, clear} rules.
@@ -144,6 +147,7 @@ impl Default for Config {
             max_concurrent_workers: 4,
             worker_idle_timeout_minutes: 20,
             default_worker_token_cap: 0,
+            notifications: false,
         }
     }
 }

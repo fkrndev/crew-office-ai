@@ -312,19 +312,11 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
 }
 
 /// The OS-toast equivalent — upstream fires `new Notification` gated on the
-/// user's `notifications` setting (hooks.ts:602). No tauri-notification
+/// user's `notifications` config (hooks.ts:602). No tauri-notification
 /// plugin in this port: emit `hive-notify` for the renderer to toast instead,
-/// gated on the same toggle (`notifications_enabled` persist kv, default off
-/// like upstream's `notifications: false`).
+/// gated on the same config toggle (default off like upstream).
 fn notify(app: &AppHandle, st: &AppState, agent_id: &str, body: &str) {
-    let enabled = st
-        .persist
-        .lock()
-        .unwrap()
-        .get_kv("notifications_enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !enabled {
+    if !st.config.lock().unwrap().notifications {
         return;
     }
     let title = if agent_id.is_empty() { "Agent" } else { agent_id };
