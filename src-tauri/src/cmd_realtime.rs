@@ -44,7 +44,7 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
 /// session to dispatch from, so the UI/hive callers register dispatches here.
 /// `dispatch` is upstream's PendingDispatch minus kind (forced "dispatch").
 #[tauri::command]
-pub fn realtime_track_dispatch(app: AppHandle, dispatch: Value) -> Result<Value, String> {
+pub fn realtime_track_dispatch(_app: AppHandle, dispatch: Value) -> Result<Value, String> {
     let mut rec: PendingDispatch = serde_json::from_value(dispatch)
         .map_err(|e| format!("bad dispatch record: {e}"))?;
     rec.kind = crate::realtime::PendingKind::Dispatch;

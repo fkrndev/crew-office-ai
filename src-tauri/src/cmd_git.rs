@@ -80,8 +80,16 @@ pub fn git_main_repo(app: AppHandle, cwd: String) -> Result<Value, String> {
         .ok_or_else(not_repo)
 }
 
+/// git:diff — upstream semantics: the working-tree diff of ONE file
+/// (relPath). The rev-range variant survives as git:diffRefs.
 #[tauri::command]
-pub fn git_diff(
+pub fn git_diff(app: AppHandle, cwd: String, rel_path: String) -> Result<Value, String> {
+    let _ = app;
+    crate::git_ops::diff_file_worktree(Path::new(&cwd), &rel_path).map(Value::from)
+}
+
+#[tauri::command]
+pub fn git_diff_refs(
     app: AppHandle,
     cwd: String,
     rev_a: String,
@@ -94,9 +102,9 @@ pub fn git_diff(
 }
 
 #[tauri::command]
-pub fn git_checkout(app: AppHandle, cwd: String, rev: String) -> Result<Value, String> {
+pub fn git_checkout(app: AppHandle, cwd: String, r#ref: String, detach: Option<bool>) -> Result<Value, String> {
     let _ = app;
-    crate::git_ops::checkout(Path::new(&cwd), &rev)
+    crate::git_ops::checkout(Path::new(&cwd), &r#ref, detach.unwrap_or(false))
 }
 
 #[tauri::command]

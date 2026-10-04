@@ -162,9 +162,12 @@ export const gitLogGraph = (cwd: string, n?: number, skip?: number) => git('git_
 export const gitBranches = (cwd: string) => git('git_branches', { cwd });
 export const gitAheadBehind = (cwd: string) => git('git_ahead_behind', { cwd });
 export const gitMainRepo = (cwd: string) => git('git_main_repo', { cwd });
-export const gitDiff = (cwd: string, revA: string, revB: string, path?: string) =>
-  git('git_diff', { cwd, revA, revB, path });
-export const gitCheckout = (cwd: string, rev: string) => git('git_checkout', { cwd, rev });
+// Upstream git:diff = working-tree diff of ONE file; rev-range diff is git:diffRefs.
+export const gitDiff = (cwd: string, relPath: string) => git('git_diff', { cwd, relPath });
+export const gitDiffRefs = (cwd: string, revA: string, revB: string, path?: string) =>
+  git('git_diff_refs', { cwd, revA, revB, path });
+export const gitCheckout = (cwd: string, ref: string, detach?: boolean) =>
+  git('git_checkout', { cwd, ref, detach });
 export const gitWorktrees = (cwd: string) => git('git_worktrees', { cwd });
 export const gitWorktreeAdd = (cwd: string, path: string, branch?: string, baseRev?: string) =>
   git('git_worktree_add', { cwd, path, branch, baseRev });
@@ -194,11 +197,11 @@ export const fsWriteFile = (root: string, rel: string, content: string) =>
 export const fsRevealPath = (path: string) => invoke('fs_reveal_path', { path });
 export const dialogChooseFolder = () => invoke('dialog_choose_folder');
 export const dialogAttachFiles = () => invoke('dialog_attach_files');
-export const modelsCatalog = () => invoke('models_catalog');
-export const heroPayload = () => invoke('hero_payload');
+export const modelsCatalog = (force?: boolean) => invoke('models_catalog', { force });
+export const heroPayload = (force?: boolean) => invoke('hero_payload', { force });
 export const windowNewFloor = () => invoke('window_new_floor');
 export const configChangeHome = (newHome: string) => invoke('config_change_home', { newHome });
-export const configEnsureHome = () => invoke('config_ensure_home');
+export const configEnsureHome = (path: string) => invoke('config_ensure_home', { path });
 export const configHomeSync = () => invoke<string>('config_home_sync');
 export const configUpdate = (patch: Record<string, unknown>) => invoke('config_update', { patch });
 export const configSetAgentTokenCap = (agentId: string, cap: number | null) =>
@@ -240,8 +243,9 @@ export const orgGetTrigger = () => invoke('org_get_trigger');
 export const orgSetTrigger = (arg: Record<string, unknown>) => invoke('org_set_trigger', { arg });
 export const controlSetBreakerState = (agentId: string, enabled: boolean) =>
   invoke('control_set_breaker_state', { agentId, enabled });
-export const controlAutoDelivery = (agentId: string, enabled: boolean) =>
-  invoke('control_auto_delivery', { agentId, enabled });
+// Upstream polarity is `paused` — the command takes the positive `enabled`.
+export const controlAutoDelivery = (agentId: string, paused: boolean) =>
+  invoke('control_auto_delivery', { agentId, enabled: !paused });
 
 // ─── telemetry / cost / memory ──────────────────────────────────────────────
 export const telemetrySnapshot = () => invoke('telemetry_snapshot');
@@ -259,7 +263,8 @@ export const reflectNow = (agentId?: string) => invoke('reflect_now', { agentId 
 export const skillsLocal = (cwds: string[]) => invoke('skills_local', { cwds });
 export const skillsCatalog = (force?: boolean) => invoke('skills_catalog', { force });
 export const skillsInstall = (url: string, name: string) => invoke('skills_install', { url, name });
-export const skillsUninstall = (id: string) => invoke('skills_uninstall', { id });
+export const skillsUninstall = (path: string, cwds: string[]) =>
+  invoke('skills_uninstall', { path, cwds });
 export const skillsReveal = (id: string) => invoke('skills_reveal', { id });
 export const hireValidate = (url: string) => invoke('hire_validate', { url });
 export const hireFetch = (url: string) => invoke('hire_fetch', { url });
@@ -300,6 +305,13 @@ export const integrationsBrokerStatus = () => invoke('integrations_broker_status
 export const integrationsBrokerToken = (payload: Record<string, unknown>) =>
   invoke('integrations_broker_token', { payload });
 export const githubCiRuns = (repo?: string) => invoke('github_ci_runs', { repo });
+export const updateCheckNow = () => invoke('update_check_now');
+export const updateCurrent = () => invoke('update_current');
+export const updateOpenRelease = (url: string) => invoke('update_open_release', { url });
+export const updateDownload = () => invoke('update_download');
+export const updateRestartAndInstall = () => invoke('update_restart_and_install');
+export const updateSimulate = (version?: string, notes?: string) =>
+  invoke('update_simulate', { version, notes });
 export const githubIssues = (repo?: string) => invoke('github_issues', { repo });
 export const githubSetRepo = (ownerRepo: string) => invoke('github_set_repo', { ownerRepo });
 export const freeflowSetConfig = (patch: Record<string, unknown>) => invoke('freeflow_set_config', { patch });

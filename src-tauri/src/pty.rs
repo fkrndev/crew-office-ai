@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How a program resolved on PATH must be launched.
 pub enum Resolved {
@@ -35,10 +35,28 @@ pub fn resolve_program(prog: &str, path_env: &str) -> Option<Resolved> {
         let p = PathBuf::from(prog);
         return p.exists().then(|| classify(p));
     }
-    let exts: Vec<&str> = if cfg!(windows) {
-        vec![".com", ".exe", ".bat", ".cmd"]
+    // Only a plain command name is resolved (shellEnv isSafeCommandName).
+    if !is_safe_command_name(prog) {
+        return None;
+    }
+    let exts: Vec<String> = if cfg!(windows) {
+        // PATHEXT-eligible extensions — upstream reads the env var and also
+        // requires it on `where` hits; a custom PATHEXT (.ps1 etc.) resolves.
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+            .split(';')
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| {
+                let e = e.trim().to_lowercase();
+                if e.starts_with('.') {
+                    e
+                } else {
+                    format!(".{e}")
+                }
+            })
+            .collect()
     } else {
-        vec![""]
+        vec![String::new()]
     };
     for dir in path_env.split(if cfg!(windows) { ';' } else { ':' }) {
         for ext in &exts {
@@ -206,7 +224,7 @@ pub fn parse_npm_cmd_shim(shim_path: &str, content: &str) -> Option<ShimTarget> 
         }
         i += 1;
     }
-    let &(s_start, s_end, script_tok) = quoted.last()?;
+    let &(s_start, _s_end, script_tok) = quoted.last()?;
     let prog_raw: String;
     if quoted.len() >= 2 {
         let &(_, p_end, p_tok) = &quoted[quoted.len() - 2];
@@ -308,14 +326,112 @@ where
     }
 }
 
-/// Quote one argument for a `cmd /d /s /c` line: wrap in quotes when it has
-/// spaces/quotes, doubling inner quotes (cmd's escaping).
+/// Quote one argument for a `cmd /d /s /c` line — port of upstream
+/// `buildCmdCommandLine`'s quoteToken: quote on whitespace/quote AND on
+/// cmd.exe metacharacters (`& | ^ < > ( ) % !`); an unquoted metachar would
+/// let one token chain a second command once cmd re-parses the line.
+/// Embedded `"` becomes `\"` exactly as upstream emits (the escape only works
+/// because the FINAL program's CRT un-escapes it — cmd itself never sees this
+/// path carrying prompts: shim-decoded spawns use argv).
+///
+/// NOTE: tokens produced here are meant to be passed as SEPARATE argv entries
+/// to `spawn_cmd` — portable-pty CRT-quotes each arg correctly, so a token we
+/// pre-quote must be handed to it with the quotes intact (they round-trip).
 pub fn cmd_quote(arg: &str) -> String {
-    if arg.contains(' ') || arg.contains('"') || arg.is_empty() {
-        format!("\"{}\"", arg.replace('"', "\"\""))
+    if arg.is_empty() || arg.chars().any(|c| " \t\"&|^<>()%!".contains(c)) {
+        format!("\"{}\"", arg.replace('"', "\\\""))
     } else {
         arg.to_string()
     }
+}
+
+/// A bare command name — the only shape resolved against PATH + fallback
+/// dirs (shellEnv.ts isSafeCommandName). Anything else (metachars, separators
+/// handled by the caller first) is refused rather than probed.
+pub fn is_safe_command_name(command: &str) -> bool {
+    !command.is_empty()
+        && command
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+/// Spawn `cmd.exe /d /s /c` with each token as a SEPARATE argv entry.
+/// portable-pty's append_quoted applies MSDN/CRT quoting per arg — tokens
+/// containing spaces or quotes arrive wrapped in `"..."` with inner quotes
+/// backslash-escaped, which is precisely the shape upstream's
+/// buildCmdCommandLine emits verbatim. Passing the whole line as ONE arg (the
+/// old path) made portable-pty wrap + escape it a SECOND time, so cmd saw
+/// literal `\"` sequences and corrupted quoted args.
+pub fn spawn_cmd(
+    id: &str,
+    tokens: &[String],
+    cwd: &str,
+    env: &HashMap<String, String>,
+    cols: u16,
+    rows: u16,
+    app: AppHandle,
+) -> Result<PtyHandle> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .context("openpty")?;
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.args(["/d", "/s", "/c"]);
+        for t in tokens {
+            // Tokens needing quoting (space/quote) are CRT-quoted by
+            // portable-pty — cmd metachars inside "..." are inert. A bare
+            // token with `&`/`|`/`^`/etc. would chain a second command, so
+            // `^`-escape those (upstream neutralizes them by quoting; `^` is
+            // the equivalent once the token reaches cmd unquoted).
+            if t.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+                c.arg(t.as_str());
+            } else {
+                let mut esc = String::with_capacity(t.len() + 4);
+                for ch in t.chars() {
+                    if "&|^<>()%!".contains(ch) {
+                        esc.push('^');
+                    }
+                    esc.push(ch);
+                }
+                c.arg(esc);
+            }
+        }
+        c
+    } else {
+        let mut c = CommandBuilder::new("sh");
+        c.arg("-c");
+        let line = tokens
+            .iter()
+            .map(|t| {
+                if t.chars().any(|c| c == ' ' || c == '\t' || c == '"' || c == '\'') {
+                    format!("'{}'", t.replace('\'', "'\\''"))
+                } else {
+                    t.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        c.arg(line);
+        c
+    };
+    cmd.cwd(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .with_context(|| format!("spawn {}", tokens.join(" ")))?;
+    drop(pair.slave); // keep only the master; the slave side belongs to the child
+    finish(id, pair.master, child, app)
 }
 
 /// Make a value safe inside a double-quoted cmd arg: single line, no double
@@ -324,13 +440,22 @@ pub fn cmd_sanitize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'")
 }
 
+/// How much trailing PTY output to retain per session for crash diagnostics
+/// and `pty:redraw` — upstream TAIL_MAX.
+const TAIL_MAX: usize = 8192;
+
 pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    /// Root process id — ensureKilled's taskkill target on Windows.
+    pub pid: Option<u32>,
     master: Box<dyn MasterPty + Send>,
     /// Epoch-ms of the last byte read — the heartbeat's quiet-floor signal
     /// (an agent printing/thinking counts as activity, same as upstream).
     pub last_output_at: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Trailing output buffer (TAIL_MAX cap) — pty:redraw replays this into a
+    /// freshly-mounted xterm; the exit handler also ships it for diagnostics.
+    tail: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -424,7 +549,7 @@ pub fn spawn_argv(
 fn finish(
     id: &str,
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    mut child: Box<dyn Child + Send + Sync>,
     app: AppHandle,
 ) -> Result<PtyHandle> {
     let mut reader = master.try_clone_reader().context("clone reader")?;
@@ -436,7 +561,10 @@ fn finish(
             .unwrap_or(0),
     ));
     let clock = last_output_at.clone();
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let tail_reader = tail.clone();
     let event_id = id.to_string();
+    let app_reader = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         loop {
@@ -450,30 +578,73 @@ fn finish(
                             .unwrap_or(0),
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    let _ = app.emit(
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    {
+                        let mut t = tail_reader.lock().unwrap();
+                        t.push_str(&data);
+                        if t.len() > TAIL_MAX {
+                            let cut = t.len() - TAIL_MAX;
+                            // Trim on a char boundary so the tail stays valid UTF-8.
+                            let mut idx = cut;
+                            while idx < t.len() && !t.is_char_boundary(idx) {
+                                idx += 1;
+                            }
+                            t.drain(..idx);
+                        }
+                    }
+                    let _ = app_reader.emit(
                         "pty-output",
                         PtyOutputPayload {
                             id: event_id.clone(),
-                            data: String::from_utf8_lossy(&buf[..n]).to_string(),
+                            data,
                         },
                     );
                 }
                 Err(_) => break,
             }
         }
+    });
+    // Separate waiter thread: the reader exits on PTY EOF but the process may
+    // outlive it briefly — upstream's onExit reports the real exitCode, which
+    // a "clean exit 0 vs crash" distinction (auto-install restart) needs. The
+    // killer handle is cloned out first so PtyHandle::kill still works while
+    // the waiter owns the child.
+    let killer = child.clone_killer();
+    let pid = child.process_id();
+    let event_id2 = id.to_string();
+    std::thread::spawn(move || {
+        let code = match child.wait() {
+            Ok(status) => Some(status.exit_code()),
+            Err(_) => None,
+        };
         let _ = app.emit(
             "pty-exit",
             PtyExitPayload {
-                id: event_id,
-                code: None,
+                id: event_id2.clone(),
+                code,
             },
         );
+        // Natural-exit teardown (upstream's exitHandler): a child that exits
+        // on its own gets the same lifecycle cleanup as an explicit kill —
+        // session removed, broker caps revoked, status stamped — so respawn
+        // never reports "already running" for a dead PTY.
+        if let Some(st) = app.try_state::<crate::AppState>() {
+            st.ptys.lock().unwrap().remove(&event_id2);
+            crate::integrations::BROKER.revoke(&event_id2);
+            let _ = st.hive.set_status(&event_id2, "stopped");
+            let _ = app.emit(
+                "agent-status",
+                serde_json::json!({ "id": event_id2, "status": "stopped" }),
+            );
+        }
     });
     Ok(PtyHandle {
         writer,
-        child,
+        killer,
+        pid,
         master,
         last_output_at,
+        tail,
     })
 }
 
@@ -494,9 +665,26 @@ impl PtyHandle {
         Ok(())
     }
 
+    /// Trailing output buffer for `pty:redraw` (upstream PtyManager.redraw
+    /// returns {ok, tail} so a remount replays the last TAIL_MAX bytes).
+    pub fn tail(&self) -> String {
+        self.tail.lock().unwrap().clone()
+    }
+
     pub fn kill(&mut self) -> Result<()> {
-        self.child.kill()?;
-        let _ = self.child.wait(); // reap
+        // The waiter thread reaps; kill only signals. ensureKilled
+        // (procKill.ts): the ConPTY root dies first, then the process TREE is
+        // swept — MCP servers and helper daemons the agent spawned would
+        // otherwise be orphaned.
+        let _ = self.killer.kill();
+        #[cfg(windows)]
+        if let Some(pid) = self.pid {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
         Ok(())
     }
 }

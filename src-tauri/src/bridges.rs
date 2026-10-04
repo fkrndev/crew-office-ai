@@ -25,7 +25,15 @@ function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
-    var c = net.createConnection(SOCK, function () { try { c.end(JSON.stringify(payload) + '\n'); } catch (e) {} });
+    // HIVE_SOCK is a TCP 'host:port' (this port listens on loopback, not a
+    // unix socket path) — split it or createConnection treats the string as
+    // an IPC path and never connects. IPv6-safe: split on the LAST colon and
+    // strip bracket wrapping.
+    var i = SOCK.lastIndexOf(':');
+    var host = i > 0 ? SOCK.slice(0, i) : '127.0.0.1';
+    var port = parseInt(i > 0 ? SOCK.slice(i + 1) : SOCK, 10);
+    if (host.charAt(0) === '[' && host.charAt(host.length - 1) === ']') host = host.slice(1, -1);
+    var c = net.connect(port, host, function () { try { c.end(JSON.stringify(payload) + '\n'); } catch (e) {} });
     c.on('error', function () {});
   } catch (e) {}
 }
@@ -78,7 +86,13 @@ function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
-    const c = createConnection(SOCK, () => { try { c.end(JSON.stringify(payload) + '\n'); } catch (e) {} });
+    // HIVE_SOCK is a TCP 'host:port' here (loopback listener, not a unix
+    // socket path) — split on the LAST colon so IPv6 stays parseable.
+    const i = SOCK.lastIndexOf(':');
+    let host = i > 0 ? SOCK.slice(0, i) : '127.0.0.1';
+    const port = parseInt(i > 0 ? SOCK.slice(i + 1) : SOCK, 10);
+    if (host.charAt(0) === '[' && host.charAt(host.length - 1) === ']') host = host.slice(1, -1);
+    const c = createConnection(port, host, () => { try { c.end(JSON.stringify(payload) + '\n'); } catch (e) {} });
     c.on('error', () => {});
   } catch (e) {}
 }

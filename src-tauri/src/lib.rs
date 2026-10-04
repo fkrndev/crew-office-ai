@@ -15,6 +15,7 @@ mod cmd_github;
 mod realtime;
 mod cmd_realtime;
 mod cmd_misc;
+mod cmd_update;
 mod misc;
 pub mod commands;
 pub mod config;
@@ -123,6 +124,7 @@ pub fn run() {
             let mut state = AppState::new(harness_home.clone()).expect("init app state");
             state.sock_addr = Some(server.addr.clone());
             app.manage(state);
+            app.manage(cmd_update::UpdateState::default());
 
             // bootstrapHiveServices equivalents: the integration broker +
             // the memory palace mine loop start implicitly with the app.
@@ -695,6 +697,7 @@ pub fn run() {
             cmd_git::git_ahead_behind,
             cmd_git::git_main_repo,
             cmd_git::git_diff,
+            cmd_git::git_diff_refs,
             cmd_git::git_checkout,
             cmd_git::git_worktrees,
             cmd_git::git_worktree_add,
@@ -779,6 +782,12 @@ pub fn run() {
             cmd_misc::triggers_set_context,
             cmd_misc::org_get_trigger,
             cmd_misc::org_set_trigger,
+            cmd_update::update_check_now,
+            cmd_update::update_current,
+            cmd_update::update_open_release,
+            cmd_update::update_download,
+            cmd_update::update_restart_and_install,
+            cmd_update::update_simulate,
             commands::config_update,
             commands::webhook_set_config,
             commands::hire_open_file,

@@ -56,8 +56,6 @@ pub(crate) fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
-use uuid::Uuid;
-
 /// FIPA-lite message schema (HIVE.md §4) — field-for-field port.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -92,12 +90,9 @@ impl Message {
     pub fn new(from: &str, to: &str, act: &str, subject: &str, body: &str) -> Self {
         let ts = Utc::now();
         Self {
-            // time-sortable unique id, same shape as the Electron version.
-            id: format!(
-                "{}-{}",
-                ts.format("%Y-%m-%dT%H-%M-%S-%3fZ"),
-                &Uuid::new_v4().simple().to_string()[..4]
-            ),
+            // time-sortable unique id — upstream `${stamp()}-${shortRand()}`:
+            // ISO with colons→dashes + 6 hex.
+            id: format!("{}-{}", stamp(), short_rand()),
             conversation: String::new(),
             in_reply_to: None,
             from: from.into(),
@@ -113,88 +108,599 @@ impl Message {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+fn default_provider() -> String {
+    "claude".into()
+}
+
+/// One row of `registry.json.agents["<id>"]` — upstream RegistryAgent
+/// (AgentMeta + status/lastSeen/archived/onHold/sessionId/cwdValid).
+/// Rust field names stay snake_case for the codebase; serde serializes
+/// camelCase on disk + IPC to match upstream byte-for-byte.
+///
+/// `command`/`created_at` are port-only fields (respawn bookkeeping);
+/// `extra` preserves every key the struct doesn't model (e.g. worker `slack`,
+/// `character`, `tokenCap`) across typed rewrites — upstream's `{...prev}`
+/// spread, which the old sidecar file was standing in for.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RegistryEntry {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_provider")]
     pub provider: String,
-    #[serde(default)]
     pub role: String,
-    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub cwd: String,
-    #[serde(default)]
+    #[serde(alias = "is_god")]
     pub is_god: bool,
-    #[serde(default)]
+    /// The send-only prep assistant — excluded from broadcast fan-out and
+    /// bounced when directly addressed (it drains no inbox).
+    #[serde(alias = "is_assistant")]
+    pub is_assistant: bool,
     pub status: String,
+    /// Epoch-ms — bumped on spawn/rename/archive/session (upstream lastSeen).
+    #[serde(alias = "last_seen")]
+    pub last_seen: u64,
+    /// Terminal/PTY tab closed; record retained, not live. Broadcast + roster
+    /// reads skip archived agents.
+    pub archived: bool,
+    /// Human has this agent 1:1 — do-not-dispatch marker (upstream onHold).
+    #[serde(alias = "on_hold")]
+    pub on_hold: bool,
     /// The CLI's own session id (from hook payloads) — for --resume + cost
     /// dedup, same as upstream's recordSession.
-    #[serde(default)]
+    #[serde(alias = "session_id", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// The spawn command line — kept so respawn/restart can rebuild the PTY
-    /// without asking the UI for the original invocation again.
-    #[serde(default)]
+    /// Whether `cwd` is usable for a (re)spawn — computed at registration.
+    #[serde(alias = "cwd_valid", skip_serializing_if = "Option::is_none")]
+    pub cwd_valid: Option<bool>,
+    /// The spawn command line (port-only) — kept so respawn/restart can
+    /// rebuild the PTY without asking the UI for the invocation again.
     pub command: String,
+    /// Spawn timestamp (port-only).
+    #[serde(alias = "created_at")]
     pub created_at: String,
+    /// Unknown upstream/port fields ride along untouched on rewrite.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
+/// An outbox file the router only half-understands — every field optional,
+/// exactly the shape `normalize` accepts upstream (hive.ts:1619).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartialMessage {
+    pub id: Option<String>,
+    pub conversation: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub act: Option<String>,
+    pub subject: Option<String>,
+    pub body: Option<String>,
+    /// i64 so a negative agent-authored value clamps the way upstream's
+    /// Math.max(0, …) does instead of failing the u32 parse.
+    pub hops: Option<i64>,
+    pub requires_reply: Option<bool>,
+    pub needs_human: Option<bool>,
+    pub created_at: Option<String>,
+}
+
+/// One routed delivery — the `hive-deliver` event payload. Extended with the
+/// upstream `hive:message` envelope fields (id/act/subject/targets/
+/// needsHuman) so the renderer sees the same contract; `from`/`to`/`msg_id`/
+/// `bounced` are the port's existing fields, kept for compat.
 #[derive(Clone, Debug, Serialize)]
 pub struct Delivery {
+    pub id: String,
     pub from: String,
     pub to: String,
     pub msg_id: String,
+    pub act: String,
+    pub subject: String,
+    /// All resolved recipients of the routed message (upstream `targets`).
+    pub targets: Vec<String>,
+    #[serde(rename = "needsHuman")]
+    pub needs_human: bool,
     pub bounced: bool,
 }
 
-const PROTOCOL_MD: &str = r#"# Hive Protocol
+/// What `settle_inbox` did to a released worker's mailbox (upstream
+/// SettledInbox).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SettledInbox {
+    /// Unread messages filed under inbox/.done.
+    pub moved: u64,
+    /// Unread messages left pending because they arrived after the cut-off.
+    pub kept: u64,
+    /// Filed messages that asked for something — their sender never gets an
+    /// answer, so the caller can say so (upstream `unanswered`).
+    pub unanswered: Vec<UnansweredMessage>,
+}
 
-You are an agent inside the office hive. Coordination happens through FILES —
-the harness routes them; you never call git.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnansweredMessage {
+    pub id: String,
+    pub act: String,
+    pub from: String,
+    pub subject: String,
+    pub conversation: String,
+}
 
-Your folder (see env): `$AGENT_DIR`
-- `identity.md` — who you are (written by the harness; do not edit)
-- `memory.md`   — YOUR long-term memory. Read it when you start; append what
-                  you learn. It survives restarts.
-- `inbox/`      — messages delivered to you, one `<ts>-<id>.json` each
-- `inbox/.done/`— move a message here once handled (audit trail)
-- `outbox/`     — drop a message file here to SEND it. The router delivers it.
-- `cursor.json` — `{ "lastProcessed": "<msgid>" }` to track what you handled
+/// Banner stamped at the top of every generated hive doc (upstream
+/// GENERATED_DOC_NOTICE, hive.ts:2924) — verbatim, proper noun included.
+const GENERATED_DOC_NOTICE: &str =
+    "<!-- Generated and managed by Munder Difflin. Local edits may be replaced during hive bootstrap. -->";
+
+/// Spawn-time context for `injected_prompt` — the optional blocks upstream
+/// weaves into the system-prompt prefix (hive.ts injectedPrompt args).
+#[derive(Clone, Debug, Default)]
+pub struct PromptOpts {
+    /// MemPalace is available → the semantic-memory paragraph is included.
+    pub semantic_memory: bool,
+    /// Knowledge Graph is populated → the kg paragraph is included.
+    pub knowledge_graph: bool,
+    /// Path to the kg CLI shown in the knowledge paragraph (upstream's own).
+    pub kg_cli_path: Option<String>,
+    /// The bundled-node path upstream quotes in the kg paragraph
+    /// (`<hive>/bin/runtime/node` or the harness node).
+    pub hive_node: String,
+    /// Orchestrator gets the spawn-requests block when the floor allows it.
+    pub orchestrator_may_spawn: bool,
+    /// RUNNING BUILD line — version + packaging state, when known.
+    pub runtime: Option<RuntimeInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeInfo {
+    pub version: String,
+    pub packaged: bool,
+    pub app_path: Option<String>,
+}
+
+/// shared/agentRole.ts — status captions that must never overwrite the
+/// durable hire role.
+fn is_durable_role(text: &str) -> bool {
+    let v = text.trim();
+    if v.is_empty() {
+        return false;
+    }
+    let l = v.to_lowercase();
+    let l = l.strip_prefix("on ").unwrap_or(&l);
+    !matches!(
+        l,
+        "standby"
+            | "idle"
+            | "awaiting"
+            | "paused"
+            | "resumed"
+            | "working"
+            | "thinking"
+            | "archived"
+            | "starting up"
+            | "reconnecting"
+            | "reconnecting…"
+            | "running the floor"
+            | "a fresh harness"
+    )
+}
+
+/// preferredAgentRole — a real hire role always beats a status-like caption;
+/// when both are durable the candidate (newly-set value) wins.
+fn preferred_agent_role(candidate: Option<&str>, fallback: Option<&str>, is_god: bool) -> String {
+    let incoming = candidate.unwrap_or("").trim().to_string();
+    let existing = fallback.unwrap_or("").trim().to_string();
+    if is_durable_role(&incoming) {
+        return incoming;
+    }
+    if is_durable_role(&existing) {
+        return existing;
+    }
+    if !incoming.is_empty() {
+        return incoming;
+    }
+    if !existing.is_empty() {
+        return existing;
+    }
+    if is_god {
+        "orchestrator (god)".into()
+    } else {
+        "agent".into()
+    }
+}
+
+/// cwdValidity (hive.ts:693) — whether a worker's working directory is usable
+/// for a (re)spawn. Best-effort; a stat error degrades to invalid.
+fn cwd_valid(cwd: &str) -> bool {
+    cwd_issue(cwd).is_none()
+}
+
+fn cwd_issue(cwd: &str) -> Option<&'static str> {
+    if cwd.trim().is_empty() {
+        return Some("missing");
+    }
+    let expanded = crate::misc::expand_tilde(cwd);
+    let p = std::path::Path::new(&expanded);
+    if !p.is_absolute() {
+        return Some("not-absolute");
+    }
+    match std::fs::metadata(p) {
+        Ok(m) if m.is_dir() => None,
+        Ok(_) => Some("not-a-directory"),
+        Err(_) => Some("missing-dir"),
+    }
+}
+
+/// repairLiteralLineBreaksInJsonStrings (hive.ts:315) — agents write message
+/// JSON with raw newlines inside string values; escape them in place so the
+/// envelope parses instead of quarantining. Returns (text, changed).
+fn repair_literal_line_breaks(raw: &str) -> (String, bool) {
+    let mut text = String::with_capacity(raw.len() + 8);
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut changed = false;
+    for ch in raw.chars() {
+        if !in_string {
+            text.push(ch);
+            if ch == '"' {
+                in_string = true;
+            }
+            continue;
+        }
+        if escaped {
+            text.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                text.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                text.push(ch);
+                in_string = false;
+            }
+            '\n' => {
+                text.push_str("\\n");
+                changed = true;
+            }
+            '\r' => {
+                text.push_str("\\r");
+                changed = true;
+            }
+            _ => text.push(ch),
+        }
+    }
+    (text, changed)
+}
+
+/// The full upstream protocol text (hive.ts:2955-3100) — verbatim.
+const PROTOCOL_MD: &str = r##"<!-- Generated and managed by Munder Difflin. Local edits may be replaced during hive bootstrap. -->
+
+# Hive protocol
+
+You are one of several Claude agents sharing this hive. Coordination is entirely
+file-based; the harness (main process) is the only thing that runs git and the
+only thing that moves messages between agents.
+
+## Your workspace — `agents/<your-id>/`
+- `identity.md`  — who you are (read-only; the harness writes it).
+- `memory.md`    — your long-term memory. Read at the start of a task; append to it as you learn.
+- `inbox/`       — messages addressed to you. Read them at the start of a task.
+- `inbox/.done/` — move a message here once you've handled it.
+- `outbox/`      — drop messages here to send them. The harness delivers them.
+
+**Never write into another agent's folder.** Write to your own `outbox/`; the
+orchestrator routes it. This keeps every file single-writer.
 
 ## Sending a message
+Write one JSON file into `outbox/` (any filename ending in `.json`):
 
-Write one JSON file per message into your `outbox/` — via a temp file then
-rename so the router never sees a half-written file:
-
-```jsonc
+```json
 {
-  "id":            "2026-05-30T14-03-11-123Z-a1b2",
-  "conversation":  "conv-7f3",
-  "in_reply_to":   "<prev msgid> | null",
-  "from":          "<your agent id>",
-  "to":            "<agent id> | god | broadcast",
-  "act":           "request | inform | propose | query | agree | refuse | done",
-  "subject":       "short summary",
-  "body":          "free text / markdown",
-  "hops":          0,
-  "requires_reply": true,
-  "needs_human":   false,
-  "created_at":    "ISO-8601"
+  "to": "<agent-id> | god | broadcast",
+  "act": "request | inform | propose | query | agree | refuse | done",
+  "subject": "one-line summary",
+  "body": "the details",
+  "conversation": "carry this across a thread (optional)",
+  "in_reply_to": "<message id you're replying to> (optional)"
 }
 ```
 
-Rules:
-- Only `request` / `query` / `propose` obligate a reply. `inform` / `done` are
-  terminal — do not reply to them.
-- Every reply increments `hops`. Past the hop cap the orchestrator escalates
-  instead of letting two agents loop forever.
-- Address `god` for anything cross-agent you cannot resolve. Address `human`
-  only for spend, destructive ops, or scope changes — it routes through god.
-- Set `needs_human: true` to escalate.
+The harness fills in `id`, `from`, `hops`, and timestamps.
 
-Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.
-"#;
+## Rules of the road
+- Only `request`, `query`, and `propose` expect a reply. `inform` and `done` are terminal —
+  don't reply to them, or two agents will loop forever.
+- For anything ambiguous, cross-cutting, or needing sign-off, message `god` — the
+  god agent clarifies answers for you so you rarely need the human directly.
+- There is NO separate human-approval queue. Human-in-the-loop is native to Claude
+  Code: a tool you run that needs permission prompts in your own session (the human
+  can approve it remotely from their phone via `/remote-control`). If you genuinely
+  need a human decision, raise it with `god` (a message `"to": "human"` is routed to
+  the god/orchestrator, the human's proxy on the floor).
+- `board.md` is the shared plan. Don't edit it directly — `propose` changes to `god`,
+  who is its sole scribe.
+- Re-reading a message you already moved to `.done/` is a no-op. Don't reprocess.
 
-const BOARD_MD: &str = "# Shared board\n\nCo-authored plans live here. Written by the god agent (single scribe).\n";
+## The work: board.md vs tasks.json
+There are two shared surfaces, both in the hive root:
+- `board.md` — the freeform narrative plan. The god agent is its sole scribe; others `propose` edits.
+- `tasks.json` — the structured task ledger (a kanban: `todo / doing / blocked / done`, with title,
+  assignee, priority, deps). Keep the task you're working reflected in its status.
+
+## Asking the human (the ASK ME card)
+When a card can only move with the human — a question to answer, or an action only they can do
+(create an account, approve a spend, hand over credentials, test on their device) — the god sets the
+card `"status": "blocked"` and appends the ask to its `humanQA` array:
+
+```json
+{ "q": "the ask, in markdown", "askedAt": "<iso timestamp>" }
+```
+
+The harness shows the open ask on the ASK ME board and in the ASK ME tab, and the human's reply lands
+in the same entry as `"a"` plus an inbox message to god. Every past entry stays on the card — that
+trail is the decision history.
+
+**Write the ask short, and in markdown.** The card renders it, so plain-text asterisks and backticks
+show up literally, and a card is not a terminal — an ask longer than a short paragraph plus its
+options (roughly 700 characters) is a report, not a question. Cut the narrative and keep the decision:
+- open with ONE **bold** sentence saying exactly what you need from them;
+- `backticks` for paths, commands, values, and identifiers;
+- `-` bullets or `1.` numbering for every option or step;
+- a blank line between paragraphs; a single newline is rendered as a line break, so each option
+  stays on its own line.
+
+When the ask originates in another agent's report, REWRITE it into that shape. Never paste the report
+body in as the question, and never make the human read the investigation to find the decision. Do NOT park human questions in separate files (no `HumanQuestion.md`),
+and never sit idle waiting for a reply — move on to other work and pick the answer up when it arrives.
+
+## Guardrails: circuit breaker & token budgets
+A circuit breaker watches every agent for runaway behavior (looping on the same tool, error storms,
+overspending). It escalates gently: `steer` → `constrain` → `stop`. If a `Circuit breaker: steer`
+or `Circuit breaker: constrain` message lands in your inbox, you ARE the problem it caught — stop
+repeating, summarize what you've tried, and do exactly what the message says (constrain = go read-only
+and get god's sign-off before more tool calls). Be **token-frugal**: the floor has a token budget and
+each agent can have its own token limit; crossing it trips the breaker. Prefer references over pasted
+content, and `/compact` your own session when context gets heavy.
+
+## Fleet monitoring (orchestrator)
+You (god) are responsible for situational awareness. To see the live state of every agent, read
+`fleet.json` in the hive root — it is refreshed continuously with each agent's tokens, cost, status,
+breaker level, last tool, last-active time, and inbox backlog. Pair it with `registry.json` (the roster)
+and `log.jsonl` (the event feed). IMPORTANT: `claude agents` will NOT show your hive's sibling
+sessions (they're spawned independently) — `fleet.json` is your source of truth for them. For a deeper
+look at one agent, read its `agents/<id>/memory.md` and `inbox/`, or send it a `query`. A full
+Claude Code command reference (slash = your own session only; CLI = your shell, can target the fleet)
+is in `COMMANDS.md` in the hive root.
+
+## Spawning a worker (orchestrator)
+You can start an ephemeral worker yourself. Write ONE JSON file into `spawn-requests/<id>.json` in
+the hive root:
+
+```json
+{
+  "objective": "what the worker must do (required)",
+  "cwd": "/absolute/path/to/the/repo (required)",
+  "name": "display name (optional)",
+  "command": "engine CLI (optional; overrides the provider default)",
+  "provider": "claude | codex | cursor | antigravity | … (optional; selects its default CLI when command is omitted)",
+  "model": "model override (optional)",
+  "isolate": true,
+  "tokenCap": 0,
+  "slack": { "channel": "C…", "thread_ts": "…" },
+  "character": "meredith",
+  "accent": "coral"
+}
+```
+
+The harness polls that directory, spawns `worker-<id>`, and moves the request to
+`spawn-requests/.done/` once it starts or to `spawn-requests/.failed/` with a reason. `isolate`
+defaults to true, giving the worker its own git worktree. `slack` routes its failures back to a
+thread. This is the ONLY spawn route you can complete on your own: a hire manifest under
+`research/hires/` needs the human to confirm it in the UI.
+
+`character` and `accent` set how the worker looks on the office floor, and both are optional.
+Naming a worker after a cast member already gets you that avatar, so you only need `character` when
+the name and the face should differ. An unrecognised value falls back rather than failing the spawn.
+
+**It can be switched off.** The operator controls this under Settings → Autonomy & Budgets, and it is
+OFF by default, because every worker you start spends tokens nobody approved. While it is off your
+request is NOT failed or deleted, it waits in `spawn-requests/` and runs if the operator turns it on.
+If a request of yours has sat there without moving, that is why, and it is a decision to raise with the
+human rather than retry. Route work to an agent already on the floor first either way.
+
+## Semantic memory (optional — when `mempalace` is installed)
+When `MEMPALACE_PALACE_PATH` is set in your environment, the hive shares a
+searchable MemPalace and you have the `mempalace` CLI:
+- `mempalace search "<query>"` — recall relevant past knowledge across the whole
+  team by meaning (not just keywords). Add `--wing <agent-id>` to scope to one
+  agent, `--results N` to widen.
+- `mempalace wake-up` — a short digest of what matters, good at the start of a task.
+
+Your `memory.md` is mined into the palace automatically, so the durable facts you
+write there become searchable by every agent. You don't run `mine` yourself.
+"##;
+
+/// One Claude Code command reference row — mirrors shared/claudeCommands.ts
+/// `Cmd` ({cmd, kind, desc, usage?}). The string content is verbatim upstream.
+struct CmdItem {
+    cmd: &'static str,
+    kind: &'static str, // 'slash' | 'cli'
+    desc: &'static str,
+    usage: Option<&'static str>,
+}
+
+/// Upstream COMMAND_GROUPS (shared/claudeCommands.ts) — same source the
+/// renderer cheatsheet is meant to mirror, so COMMANDS.md never drifts.
+const COMMAND_GROUPS: &[(&str, &[CmdItem])] = &[
+    ("SESSION", &[
+        CmdItem { cmd: "/clear", kind: "slash", desc: "Start a fresh conversation and reclaim the full context window. The old one stays in /resume.", usage: None },
+        CmdItem { cmd: "/resume", kind: "slash", desc: "Pick or search a past session to continue.", usage: Some("/resume auth refactor") },
+        CmdItem { cmd: "/rewind", kind: "slash", desc: "Roll code AND conversation back to an earlier checkpoint.", usage: None },
+        CmdItem { cmd: "/compact", kind: "slash", desc: "Summarize the conversation so far to free context without losing the thread.", usage: Some("/compact keep the auth decisions") },
+        CmdItem { cmd: "claude -c", kind: "cli", desc: "Continue the most recent session in this directory.", usage: None },
+        CmdItem { cmd: "claude -r", kind: "cli", desc: "Resume — pick or search a past session.", usage: Some("claude -r auth") },
+        CmdItem { cmd: "claude --fork-session", kind: "cli", desc: "When resuming, branch into a new session id instead of reusing the original.", usage: None },
+    ]),
+    ("CONTEXT & MEMORY", &[
+        CmdItem { cmd: "/context", kind: "slash", desc: "Visualize what is filling the context window, with optimization hints.", usage: None },
+        CmdItem { cmd: "/memory", kind: "slash", desc: "Open the project & user CLAUDE.md memory files for editing.", usage: None },
+        CmdItem { cmd: "/init", kind: "slash", desc: "Scan the repo and generate a CLAUDE.md capturing its conventions.", usage: None },
+        CmdItem { cmd: "# ", kind: "slash", desc: "Quick memory: start a line with # to append a durable note to memory.", usage: Some("# always run prettier before committing") },
+        CmdItem { cmd: "claude --add-dir ../other-repo", kind: "cli", desc: "Grant the session read/write access to an extra directory.", usage: None },
+    ]),
+    ("MODELS & EFFORT", &[
+        CmdItem { cmd: "/model", kind: "slash", desc: "Switch the model for this session (saved as default); arrows tune effort.", usage: Some("/model opus") },
+        CmdItem { cmd: "/effort", kind: "slash", desc: "Set reasoning effort: low / medium / high / xhigh / max.", usage: Some("/effort high") },
+        CmdItem { cmd: "/fast", kind: "slash", desc: "Toggle fast mode — Opus with faster output, no model downgrade.", usage: None },
+        CmdItem { cmd: "claude --model claude-sonnet-4-6[1m]", kind: "cli", desc: "Launch on a specific model. The [1m] suffix selects the 1M-token window (Dwight).", usage: None },
+        CmdItem { cmd: "claude --fallback-model sonnet", kind: "cli", desc: "Auto-fall back to another model when the primary is unavailable.", usage: None },
+    ]),
+    ("PLAN & EXECUTE", &[
+        CmdItem { cmd: "/plan", kind: "slash", desc: "Enter plan mode — design the change before any edits.", usage: Some("/plan refactor the auth module") },
+        CmdItem { cmd: "/goal", kind: "slash", desc: "Set a goal condition; Claude keeps working across turns until it is met.", usage: Some("/goal all tests pass") },
+        CmdItem { cmd: "/batch", kind: "slash", desc: "Decompose a large change into parallel units in git worktrees.", usage: Some("/batch migrate components to v2") },
+        CmdItem { cmd: "/diff", kind: "slash", desc: "Open the interactive diff viewer for the current changes.", usage: None },
+        CmdItem { cmd: "/run", kind: "slash", desc: "Launch and drive the project app to see a change actually working.", usage: None },
+        CmdItem { cmd: "/verify", kind: "slash", desc: "Build, run, and observe to confirm a change does what it should.", usage: None },
+        CmdItem { cmd: "claude --worktree feat/x", kind: "cli", desc: "Start the session in an isolated git worktree.", usage: None },
+    ]),
+    ("REVIEW & GIT", &[
+        CmdItem { cmd: "/code-review", kind: "slash", desc: "Hunt correctness bugs in the diff. --fix applies them, --comment posts inline; \"ultra\" runs a cloud deep review.", usage: Some("/code-review high --fix") },
+        CmdItem { cmd: "/simplify", kind: "slash", desc: "Cleanup-only pass over changed code (reuse/simplify) — no bug hunt.", usage: None },
+        CmdItem { cmd: "/review", kind: "slash", desc: "Review a pull request in this session.", usage: Some("/review 123") },
+        CmdItem { cmd: "/security-review", kind: "slash", desc: "Scan pending changes for security vulnerabilities.", usage: None },
+        CmdItem { cmd: "/ultrareview", kind: "slash", desc: "Multi-agent cloud review of the current branch / a PR.", usage: None },
+    ]),
+    ("SUBAGENTS & BACKGROUND", &[
+        CmdItem { cmd: "claude agents", kind: "cli", desc: "Open the agent view across your live + background Claude sessions.", usage: None },
+        CmdItem { cmd: "claude agents --json", kind: "cli", desc: "Print live sessions as JSON — scriptable fleet status.", usage: None },
+        CmdItem { cmd: "/agents", kind: "slash", desc: "Create and manage custom subagents for delegated work.", usage: None },
+        CmdItem { cmd: "/fork", kind: "slash", desc: "Spawn a background subagent that inherits the full conversation.", usage: Some("/fork implement the perf fix") },
+        CmdItem { cmd: "/background", kind: "slash", desc: "Detach the current session so it keeps running in the background.", usage: None },
+        CmdItem { cmd: "/tasks", kind: "slash", desc: "View and manage everything running in the background.", usage: None },
+        CmdItem { cmd: "/stop", kind: "slash", desc: "Stop the current background session (when attached).", usage: None },
+        CmdItem { cmd: "claude --agent reviewer", kind: "cli", desc: "Start the session using a specific agent configuration.", usage: None },
+    ]),
+    ("TOOLS & PERMISSIONS", &[
+        CmdItem { cmd: "/permissions", kind: "slash", desc: "View and edit which tools are allowed / asked / denied.", usage: None },
+        CmdItem { cmd: "/hooks", kind: "slash", desc: "View the configured lifecycle hooks (PreToolUse, Stop, etc.).", usage: None },
+        CmdItem { cmd: "claude --permission-mode bypassPermissions", kind: "cli", desc: "Run without per-tool approval prompts (this is what \"auto mode\" uses).", usage: None },
+        CmdItem { cmd: "claude --allowedTools \"Bash(git *) Edit Read\"", kind: "cli", desc: "Pre-allow specific tools so they never prompt.", usage: None },
+    ]),
+    ("MCP & PLUGINS", &[
+        CmdItem { cmd: "/mcp", kind: "slash", desc: "List/manage connected MCP servers and authenticate (OAuth).", usage: None },
+        CmdItem { cmd: "/plugin", kind: "slash", desc: "Manage plugins (list, install, enable, disable).", usage: None },
+        CmdItem { cmd: "claude mcp list", kind: "cli", desc: "List configured MCP servers and their health.", usage: None },
+        CmdItem { cmd: "claude mcp add <name> <command>", kind: "cli", desc: "Register a new MCP server (stdio or HTTP).", usage: None },
+    ]),
+    ("USAGE & COST", &[
+        CmdItem { cmd: "/usage", kind: "slash", desc: "Session cost, plan limits, and a breakdown by skill / subagent / MCP.", usage: None },
+        CmdItem { cmd: "/status", kind: "slash", desc: "Account, active model, version, and connection status.", usage: None },
+        CmdItem { cmd: "claude -p \"...\" --max-budget-usd 5", kind: "cli", desc: "Cap the dollar spend for a headless run.", usage: None },
+        CmdItem { cmd: "claude --max-turns 20", kind: "cli", desc: "Limit agentic turns (a coarse runaway guard).", usage: None },
+    ]),
+    ("AUTOMATION (HEADLESS)", &[
+        CmdItem { cmd: "claude -p \"your prompt\"", kind: "cli", desc: "Print mode: run one prompt non-interactively and exit.", usage: Some("cat log | claude -p \"summarize\"") },
+        CmdItem { cmd: "claude -p \"...\" --output-format json", kind: "cli", desc: "Headless with structured JSON (result, usage, cost).", usage: None },
+        CmdItem { cmd: "claude -p \"...\" --output-format stream-json", kind: "cli", desc: "Streaming JSON events for live consumption.", usage: None },
+        CmdItem { cmd: "claude -p \"...\" --json-schema <schema>", kind: "cli", desc: "Force the headless result to match a JSON Schema.", usage: None },
+        CmdItem { cmd: "claude --append-system-prompt \"...\"", kind: "cli", desc: "Append extra instructions to the default system prompt.", usage: None },
+    ]),
+    ("CONFIG", &[
+        CmdItem { cmd: "/config", kind: "slash", desc: "Open Settings: theme, model, output style, preferences.", usage: None },
+        CmdItem { cmd: "/theme", kind: "slash", desc: "Change the color theme (auto / light / dark / colorblind / custom).", usage: None },
+        CmdItem { cmd: "/statusline", kind: "slash", desc: "Configure the Claude Code status line.", usage: None },
+    ]),
+    ("HELP & DIAGNOSTICS", &[
+        CmdItem { cmd: "/help", kind: "slash", desc: "List every available slash command.", usage: None },
+        CmdItem { cmd: "/doctor", kind: "slash", desc: "Diagnose installation / health issues (press f to auto-fix).", usage: None },
+        CmdItem { cmd: "/debug", kind: "slash", desc: "Enable debug logging and troubleshoot the current session.", usage: None },
+        CmdItem { cmd: "/release-notes", kind: "slash", desc: "Browse the Claude Code changelog by version.", usage: None },
+        CmdItem { cmd: "/remote-control", kind: "slash", desc: "Expose this session for control from claude.ai / your phone.", usage: None },
+    ]),
+];
+
+/// renderCommandsMd (hive.ts:2931) — the Claude Code command reference written
+/// to <hive>/COMMANDS.md, byte-identical to upstream's output.
+fn commands_md() -> String {
+    let mut lines: Vec<String> = vec![
+        GENERATED_DOC_NOTICE.to_string(),
+        String::new(),
+        "# Claude Code commands".into(),
+        String::new(),
+        "Reference of the Claude Code commands available to you. Two kinds:".into(),
+        "- **slash** commands act ONLY on your own session — you CANNOT run them on another agent's terminal.".into(),
+        "- **cli** commands run in your shell (Bash) and can target the fleet, spawn, or query.".into(),
+        String::new(),
+        "To MONITOR the other agents in this hive, read `fleet.json` in the hive root (live per-agent tokens, cost, status, last tool, breaker level, inbox backlog) plus `registry.json` — `claude agents` does NOT list your hive siblings. Use `claude -p \"...\" --output-format json` for a one-off headless query.".into(),
+        String::new(),
+    ];
+    for (title, items) in COMMAND_GROUPS {
+        lines.push(format!("## {title}"));
+        lines.push(String::new());
+        for it in *items {
+            let usage = it
+                .usage
+                .map(|u| format!(" e.g. `{u}`"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "- `{}` _({})_ — {}{}",
+                it.cmd.trim(),
+                it.kind,
+                it.desc,
+                usage
+            ));
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
+/// board.md seed — upstream ensureHive text, verbatim.
+const BOARD_MD: &str = "# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n";
 const TASKS_JSON: &str = "{\n  \"tasks\": []\n}\n";
+
+/// Registry seed — upstream `{ godId: null, agents: {} }` (writeJson, pretty).
+const REGISTRY_JSON: &str = "{\n  \"godId\": null,\n  \"agents\": {}\n}";
+
+/// The hop ceiling (upstream HOP_CAP): a bounced message relaying past this
+/// is a real mail loop — drop it rather than let two inboxes ping-pong.
+const HOP_CAP: i64 = 12;
+
+/// Non-memory files `mempalace mine` must not ingest — also the per-agent
+/// .gitignore upstream writes for the same reason (MINE_IGNORE_LINES,
+/// hive.ts:239): a Codex worker's private CODEX_HOME session data once grew
+/// the hive's .git to 7.5GB. Append-only into <agentDir>/.gitignore.
+const MINE_IGNORE_LINES: &[&str] = &["settings.json", "cursor.json", "inbox/", "outbox/", ".codex/"];
+
+/// Churny/ephemeral live files kept out of the hive git repo (upstream
+/// ensureHive's root .gitignore list, hive.ts:656). `crashes/` is deliberately
+/// ignored — raw PTY output can carry secrets and the repo is committed on
+/// every change.
+const HIVE_GITIGNORE_LINES: &[&str] = &["fleet.json", "hooks.sock", "cost-ledger.jsonl", "crashes/", ".DS_Store"];
+
+/// Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z
+/// (upstream stamp(): ISO with `:` and `.` replaced by `-`).
+fn stamp() -> String {
+    Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        .replace([':', '.'], "-")
+}
+
+/// 6 random hex chars (upstream shortRand: 3 bytes → hex).
+fn short_rand() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..6].to_string()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Newest mtime (epoch-ms) of a path — a file's own mtime, or the newest
 /// direct child of a directory (one level: enough for inbox/outbox dirs).
@@ -228,17 +734,24 @@ pub struct Hive {
 }
 
 impl Hive {
-    /// Create (if missing) and return the hive rooted at `root`.
+    /// Create (if missing) and return the hive rooted at `root` — upstream
+    /// ensureHive: agents/, generated docs (PROTOCOL.md + COMMANDS.md),
+    /// registry/board/tasks/log seeds, the root .gitignore, and the git repo.
+    /// Idempotent.
     pub fn ensure(root: &Path) -> Result<Self> {
         fs::create_dir_all(root.join("agents"))?;
         Self::seed(&root.join("PROTOCOL.md"), PROTOCOL_MD)?;
+        Self::seed(&root.join("COMMANDS.md"), &commands_md())?;
         Self::seed(&root.join("board.md"), BOARD_MD)?;
         Self::seed(&root.join("tasks.json"), TASKS_JSON)?;
-        Self::seed(&root.join("registry.json"), "{\n  \"agents\": []\n}\n")?;
+        Self::seed(&root.join("registry.json"), REGISTRY_JSON)?;
         Self::seed(&root.join("log.jsonl"), "")?;
+        // Keep the churny/ephemeral live files out of the hive git repo —
+        // append-only, same missing-lines policy as the per-agent .gitignore.
         let hive = Self {
             root: root.to_path_buf(),
         };
+        hive.ensure_gitignore_lines(&root.join(".gitignore"), HIVE_GITIGNORE_LINES);
         hive.commit("hive: init");
         Ok(hive)
     }
@@ -253,33 +766,135 @@ impl Hive {
         Ok(())
     }
 
+    /// Idempotently append any missing lines to a .gitignore (upstream's
+    /// append-only policy — existing entries are never reordered or removed).
+    fn ensure_gitignore_lines(&self, path: &Path, want: &[&str]) {
+        let existing = fs::read_to_string(path).unwrap_or_default();
+        let have: HashSet<&str> = existing.lines().map(|l| l.trim()).collect();
+        let missing: Vec<&&str> = want.iter().filter(|l| !have.contains(**l)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        let mut out = if !existing.is_empty() && !existing.ends_with('\n') {
+            format!("{existing}\n")
+        } else {
+            existing
+        };
+        for l in missing {
+            out.push_str(l);
+            out.push('\n');
+        }
+        let _ = fs::write(path, out); // best-effort
+    }
+
     pub fn agent_dir(&self, id: &str) -> PathBuf {
         self.root.join("agents").join(id)
     }
 
-    pub fn registry(&self) -> Vec<RegistryEntry> {
+    /// The raw registry document: {godId, agents}. Upstream stores `agents`
+    /// as a MAP keyed by agent id; reads stay tolerant of the port's original
+    /// array shape so an old registry keeps working.
+    fn read_registry_doc(&self) -> (Option<String>, Vec<RegistryEntry>) {
         let path = self.root.join("registry.json");
         let text = fs::read_to_string(&path).unwrap_or_default();
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v.get("agents").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return (None, Vec::new());
+        };
+        let god_id = doc
+            .get("godId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let agents = match doc.get("agents") {
+            Some(Value::Object(map)) => map
+                .iter()
+                .filter_map(|(k, v)| {
+                    let mut e: RegistryEntry = serde_json::from_value(v.clone()).ok()?;
+                    if e.id.is_empty() {
+                        e.id = k.clone();
+                    }
+                    Some(e)
+                })
+                .collect(),
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| serde_json::from_value::<RegistryEntry>(v.clone()).ok())
+                .collect(),
+            _ => Vec::new(),
+        };
+        (god_id, agents)
     }
 
-    fn write_registry(&self, agents: &[RegistryEntry]) -> Result<()> {
-        let v = serde_json::json!({ "agents": agents });
+    pub fn registry(&self) -> Vec<RegistryEntry> {
+        self.read_registry_doc().1
+    }
+
+    /// The registry's recorded godId — falls back to the is_god row for
+    /// registries written before the field existed.
+    pub fn god_id(&self) -> Option<String> {
+        let (god_id, agents) = self.read_registry_doc();
+        god_id.or_else(|| agents.iter().find(|a| a.is_god).map(|a| a.id.clone()))
+    }
+
+    fn write_registry_doc(&self, god_id: &Option<String>, agents: &[RegistryEntry]) -> Result<()> {
+        let map: serde_json::Map<String, Value> = agents
+            .iter()
+            .filter_map(|a| {
+                serde_json::to_value(a)
+                    .ok()
+                    .and_then(|v| Some((a.id.clone(), v)))
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "godId": god_id,
+            "agents": Value::Object(map),
+        });
         self.atomic_write(
             &self.root.join("registry.json"),
-            serde_json::to_string_pretty(&v)?.as_bytes(),
+            serde_json::to_string_pretty(&doc)?.as_bytes(),
         )
     }
 
-    pub fn god_id(&self) -> Option<String> {
-        self.registry()
-            .into_iter()
-            .find(|a| a.is_god)
-            .map(|a| a.id)
+    /// Rewrite the registry preserving the existing godId.
+    fn write_registry(&self, agents: &[RegistryEntry]) -> Result<()> {
+        let (god_id, _) = self.read_registry_doc();
+        self.write_registry_doc(&god_id, agents)
+    }
+
+    /// Raw-json registry patch — like write_registry but on the untyped doc,
+    /// so keys no field models are never dropped. Used by hive_admin.
+    pub(crate) fn patch_registry_json(
+        &self,
+        id: &str,
+        patch: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let path = self.root.join("registry.json");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let mut doc: Value =
+            serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({ "godId": null, "agents": {} }));
+        // Tolerate a legacy array-shaped agents list by converting to a map.
+        if let Some(Value::Array(arr)) = doc.get("agents").cloned() {
+            let mut map = serde_json::Map::new();
+            for e in arr {
+                if let Some(k) = e.get("id").and_then(|v| v.as_str()) {
+                    map.insert(k.to_string(), e);
+                }
+            }
+            doc["agents"] = Value::Object(map);
+        }
+        let Some(agents) = doc.get_mut("agents").and_then(|a| a.as_object_mut()) else {
+            anyhow::bail!("registry.json is not an object");
+        };
+        let Some(entry) = agents.get_mut(id) else {
+            return Ok(false);
+        };
+        let Some(obj) = entry.as_object_mut() else {
+            anyhow::bail!("agent {id} is not an object");
+        };
+        for (k, v) in patch {
+            obj.insert(k.clone(), v.clone());
+        }
+        self.atomic_write(&path, serde_json::to_string_pretty(&doc)?.as_bytes())?;
+        Ok(true)
     }
 
     pub fn is_god(&self, id: &str) -> bool {
@@ -288,16 +903,140 @@ impl Hive {
 
     /// Store the CLI's own session id (Claude `session_id` from every hook
     /// payload) on the registry entry — cheap write-only-on-change, used for
-    /// --resume and cost dedup. Port of hive.recordSession.
+    /// --resume and cost dedup. Port of hive.recordSession (bumps lastSeen).
     pub fn record_session(&self, id: &str, session_id: &str) -> Result<()> {
-        let mut agents = self.registry();
+        let (god_id, mut agents) = self.read_registry_doc();
         if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
             if a.session_id.as_deref() != Some(session_id) {
                 a.session_id = Some(session_id.into());
-                self.write_registry(&agents)?;
+                a.last_seen = now_ms();
+                self.write_registry_doc(&god_id, &agents)?;
             }
         }
         Ok(())
+    }
+
+    /// Count undrained inbox messages for an agent (upstream inboxBacklog —
+    /// cheap, feeds the fleet snapshot).
+    pub fn inbox_backlog(&self, id: &str) -> u64 {
+        let dir = self.agent_dir(id).join("inbox");
+        fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    }
+
+    /// writeFleetSnapshot — the live fleet.json god reads (gitignored).
+    pub fn write_fleet_snapshot(&self, snapshot: &serde_json::Value) -> Result<()> {
+        fs::write(
+            self.root.join("fleet.json"),
+            serde_json::to_string_pretty(snapshot)?,
+        )?;
+        Ok(())
+    }
+
+    /// rosterContext (hive.ts:2588) — the one-shot LIVE ROSTER line injected
+    /// into god's context on SessionStart/UserPromptSubmit. `agents` is the
+    /// fleet.json rows already built by the caller; `ctx_of` layers the LIVE
+    /// context-window occupancy (`ctx NN%`) the disk snapshot can't carry.
+    /// None when there is nothing to say.
+    pub fn roster_context<F>(
+        &self,
+        agents: &[serde_json::Value],
+        snapshot_ts_ms: Option<u64>,
+        ctx_of: F,
+    ) -> Option<String>
+    where
+        F: Fn(&str) -> Option<(u64, u64)>,
+    {
+        if agents.is_empty() {
+            return None;
+        }
+        let now = now_ms();
+        let ago = |s: Option<u64>| -> String {
+            match s {
+                None => "unknown".into(),
+                Some(s) if s < 90 => format!("{s}s ago"),
+                Some(s) if s < 5400 => format!("{}m ago", s / 60 + (s % 60 >= 30) as u64),
+                Some(s) => format!("{}h ago", s / 3600 + (s % 3600 >= 1800) as u64),
+            }
+        };
+        const MAX: usize = 24;
+        let shown = &agents[..agents.len().min(MAX)];
+        let mut any_ctx = false;
+        let mut any_hold = false;
+        let rows: Vec<String> = shown
+            .iter()
+            .map(|a| {
+                let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let mut bits: Vec<String> =
+                    vec![a.get("role").and_then(|v| v.as_str()).unwrap_or("agent").into()];
+                match a.get("lastActiveSecAgo").and_then(|v| v.as_u64()) {
+                    Some(s) => bits.push(format!("active {}", ago(Some(s)))),
+                    None => bits.push("no activity yet".into()),
+                }
+                if let Some(t) = a.get("tokens").and_then(|v| v.as_u64()) {
+                    if t > 0 {
+                        bits.push(format!("{}k tok", (t + 500) / 1000));
+                    }
+                }
+                if let Some(u) = a.get("usd").and_then(|v| v.as_f64()) {
+                    if u > 0.0 {
+                        bits.push(format!("${u:.2}"));
+                    }
+                }
+                if let Some(b) = a.get("inboxBacklog").and_then(|v| v.as_u64()) {
+                    if b > 0 {
+                        bits.push(format!("inbox {b}"));
+                    }
+                }
+                if let Some(b) = a.get("breaker").and_then(|v| v.as_str()) {
+                    if b != "ok" && b != "none" {
+                        bits.push(format!("breaker {b}"));
+                    }
+                }
+                if a.get("isGod").and_then(|v| v.as_bool()) == Some(true) {
+                    bits.push("you".into());
+                }
+                if a.get("onHold").and_then(|v| v.as_bool()) == Some(true) {
+                    bits.push("ON HOLD — 1:1 with the human".into());
+                    any_hold = true;
+                }
+                if let Some((tok, lim)) = ctx_of(id) {
+                    if lim > 0 {
+                        let pct = ((tok * 100) / lim).min(100);
+                        bits.push(format!("ctx {pct}%"));
+                        any_ctx = true;
+                    }
+                }
+                format!(
+                    "{id}{}{}",
+                    if name.is_empty() { String::new() } else { format!(" \"{name}\"") },
+                    format!(" ({})", bits.join(", "))
+                )
+            })
+            .collect();
+        let more = if agents.len() > shown.len() {
+            format!(" +{} more", agents.len() - shown.len())
+        } else {
+            String::new()
+        };
+        let age = snapshot_ts_ms
+            .map(|ts| ago(Some(now.saturating_sub(ts) / 1000)))
+            .unwrap_or_else(|| "unknown".into());
+        Some(format!(
+            "[LIVE ROSTER — auto-injected from {}, snapshot {age}] {} ACTIVE agent(s): {}.{more} This is the CURRENT floor and it SUPERSEDES any roster earlier in this conversation — agents you remember that are absent here have been archived or killed, so do not message them. {}{}{}",
+            self.root.join("fleet.json").display(),
+            agents.len(),
+            rows.join("; "),
+            if any_ctx { "`ctx NN%` = live window occupancy; absent = not yet reported (unknown, not empty). " } else { "" },
+            if any_hold { "An agent marked `ON HOLD — 1:1 with the human` is UNAVAILABLE: the human is working with them directly. Do NOT message them, do NOT dispatch to them, and do NOT count them when picking an owner. Route to someone else, or say the work is waiting. They are still running and their terminal is alive, so this is not a reason to archive them or spawn a replacement. The human flips it off when they are done. " } else { "" },
+            "Route work to someone on this list before spawning anyone new."
+        ))
     }
 
     /// Newest coordination-file mtime for one agent (index.ts
@@ -845,61 +1584,220 @@ impl Hive {
         }
     }
 
-    /// The system-prompt prefix injected into every spawn. Port of
-    /// hive.injectedPrompt — interpolates only lifetime-stable values so the
-    /// prompt-cache invariant holds (no dates/UUIDs/volatile state).
-    pub fn injected_prompt(&self, entry: &RegistryEntry) -> String {
+    /// The identity.md content — upstream identityText (hive.ts:1494),
+    /// verbatim. Written on EVERY spawn (and on role patch), never seeded
+    /// once: a rename/role change must land in the file the agent reads.
+    pub fn identity_text(entry: &RegistryEntry) -> String {
+        let caps = if entry.capabilities.is_empty() {
+            "—".to_string()
+        } else {
+            entry.capabilities.join(", ")
+        };
+        let role = if entry.role.trim().is_empty() {
+            if entry.is_god { "orchestrator (god)" } else { "agent" }.to_string()
+        } else {
+            entry.role.clone()
+        };
+        let mut lines: Vec<String> = vec![
+            format!("# {} ({})", entry.name, entry.id),
+            String::new(),
+            format!("- Role: {role}"),
+            format!("- Capabilities: {caps}"),
+            format!("- Working directory: {}", entry.cwd),
+        ];
+        if entry.is_god {
+            lines.push("- You are the **god / orchestrator**. You run the floor — keep awareness of the whole team, delegate execution, and personally own only the important calls (decomposition, sign-offs, conflicts, integration), not the grunt work.".into());
+            lines.push("- Monitor the team with `fleet.json` (live per-agent status/tokens/cost/breaker) and `registry.json`; full command reference in `COMMANDS.md`. `claude agents` does NOT list your hive siblings.".into());
+        }
+        lines.join("\n")
+    }
+
+    /// God's display name for prompt text — upstream resolveGodName: the
+    /// persisted registry name, falling back to the app default.
+    fn resolve_god_name(&self) -> String {
+        let (god_id, agents) = self.read_registry_doc();
+        let name = god_id
+            .as_deref()
+            .and_then(|g| agents.iter().find(|a| a.id == g))
+            .or_else(|| agents.iter().find(|a| a.is_god))
+            .map(|a| a.name.trim().to_string())
+            .filter(|n| !n.is_empty());
+        name.unwrap_or_else(|| "Michael".into())
+    }
+
+    /// The system-prompt prefix injected into every spawn — verbatim port of
+    /// hive.injectedPrompt (hive.ts:1530-1614). Interpolates only
+    /// lifetime-stable values so the prompt-cache invariant holds (no
+    /// dates/UUIDs/volatile state).
+    pub fn injected_prompt(&self, entry: &RegistryEntry, opts: &PromptOpts) -> String {
         let dir = self.agent_dir(&entry.id);
-        let god_line = if entry.is_god {
-            " You are the ORCHESTRATOR: read every routed request, resolve routine ones yourself, keep the floor autonomous, escalate only spend/destructive/scope items to the human via messages to \"human\"."
+        let in_dir = |parts: &[&str]| parts.iter().fold(dir.clone(), |p, s| p.join(s)).display().to_string();
+        let in_root = |parts: &[&str]| parts.iter().fold(self.root.clone(), |p, s| p.join(s)).display().to_string();
+        let god_name = self.resolve_god_name();
+
+        let ctx_line = "LIVE CONTEXT: each agent row in the LIVE ROSTER carries a `ctx NN%` tag — its live context-window occupancy. Treat it as the real headroom signal when routing: prefer an agent with a LOW `ctx` for a big task; treat a HIGH `ctx` (near 100%) as busy rather than idle, even if the cumulative token count looks modest.";
+
+        let memory_line = if opts.semantic_memory {
+            "Semantic memory: the whole hive shares a searchable MemPalace at the path in your MEMPALACE_PALACE_PATH environment variable. To recall relevant past knowledge across the team, run `mempalace search \"<query>\"`; run `mempalace wake-up` at the start of a task for a memory digest. Your notes in memory.md are mined into the palace automatically — write durable facts there."
         } else {
             ""
         };
-        format!(
-            "You are {name} (id `{id}`), an agent inside an office hive. \
-             Your folder is {dir}; the hive root is {root}. Coordination is file-based: \
-             read {dir}/identity.md and {dir}/memory.md at start, check {dir}/inbox/ for \
-             messages, drop reply files into {dir}/outbox/ — the router delivers them. \
-             The full contract is in {root}/PROTOCOL.md.{god} \
-             Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.",
-            name = entry.name,
-            id = entry.id,
-            dir = dir.display(),
-            root = self.root.display(),
-            god = god_line
-        )
+
+        let kg_cli = opts
+            .kg_cli_path
+            .clone()
+            .unwrap_or_else(|| if cfg!(windows) { "%KG_CLI%".into() } else { "$KG_CLI".into() });
+        let knowledge_line = if opts.knowledge_graph {
+            format!("Enterprise knowledge: this organisation has a private Knowledge Graph of its own documents, policies, and business context. When a task needs that context — company-specific facts, house style, internal processes — query it instead of guessing: run `\"{}\" \"{}\" search \"<query>\"` for ranked passages, `\"{}\" \"{}\" list` to see what is available, and `\"{}\" \"{}\" get <id>` for a full document. (That first path is the harness's bundled Node — use it instead of bare `node`, which may not be on your PATH.)",
+                opts.hive_node, kg_cli, opts.hive_node, kg_cli, opts.hive_node, kg_cli)
+        } else {
+            String::new()
+        };
+
+        let runtime_line = match &opts.runtime {
+            Some(rt) => {
+                let from = rt
+                    .app_path
+                    .as_ref()
+                    .map(|p| format!(", from {p}"))
+                    .unwrap_or_default();
+                format!("RUNNING BUILD: Munder Difflin v{}, {}{}. Say this version if asked which one is running, and do not assume behaviour from an older one. A local dev build inherits the launching shell's environment (umask included) where a packaged app does not, so file modes and inherited env can legitimately differ between the two. `log.jsonl` records an `app-start` event on every launch, which is how you spot a restart or a build switch.",
+                    rt.version,
+                    if rt.packaged { "packaged app" } else { "local dev build" },
+                    from)
+            }
+            None => String::new(),
+        };
+
+        let spawn_queue_line = if entry.is_god && opts.orchestrator_may_spawn {
+            format!("SPAWNING A WORKER: you can start an ephemeral worker yourself by writing ONE JSON file into {}/<id>.json. Required: `objective` (what the worker must do) and `cwd` (the repo it runs in). Optional: `name`, `command` (overrides the provider default), `provider` (selects its default CLI when command is omitted), `model`, `isolate` (default true = its own git worktree), `tokenCap`, and `slack` ({{channel, thread_ts}}) to route its failures back to a thread. The harness polls that directory, spawns `worker-<id>`, and moves the request to `spawn-requests/.done/` on success or `.failed/` with a reason. This is the ONLY way you can spawn; a hire manifest under research/hires/ needs the human to confirm it in the UI, so it is not a route you can complete on your own. Reuse an existing agent first, as above — a worker is a fresh spend every time.",
+                in_root(&["spawn-requests"]))
+        } else {
+            String::new()
+        };
+
+        let god_line = if entry.is_god {
+            format!("{}{}", concat!(
+                "You are the GOD / ORCHESTRATOR of this hive — your job is to ORCHESTRATE, not to implement: maintain live situational awareness and delegate the work. (1) AWARENESS — always know what is going on: keep an accurate picture of every agent (active vs archived/idle), the task board, and all in-flight work; drain your inbox continually and triage every other agent's requests, answering clarifications so the team runs autonomously. (2) DELEGATE — decompose work and fan it out to the hive agents via their inboxes (route messages and assign owners; do not do their jobs); do NOT take on grunt implementation yourself. Stay aware of who is already on the floor and delegate OPPORTUNISTICALLY: BEFORE you spawn anything, CHECK THE LIVE ROSTER (active agents in registry.json + their state in fleet.json) and prefer routing to an EXISTING agent that fits — above all when the request names one (\"ask Pam to…\", \"have Jim…\"), route to that agent instead of reflexively creating a new one. Reuse an idle or already-running agent whose role matches; only spawn a fresh agent when no existing one is a sensible fit, and say that you checked. One capable owner beats a duplicate. (3) OWN ONLY THE IMPORTANT, high-leverage things — task decomposition, dispatch decisions, sign-offs, conflict resolution, branch integration, and final QA — and remain the sole scribe of board.md. You are otherwise fully autonomous — there is NO separate approval queue. For the genuinely critical (destructive actions, spending real money, scope changes, unresolvable conflicts), ask the human directly in your own session and let the tool-permission prompt gate the action; the human approves natively, including remotely from their phone via /remote-control. Keep the team unblocked. When you DISPATCH a task, write it as a 4-part contract so the agent can run autonomously: (1) OBJECTIVE — the concrete goal; (2) OUTPUT — the expected deliverable/format; (3) TOOLS — what to use or avoid, and any references to read instead of re-deriving; (4) BOUNDARIES — scope limits + the definition of done. Pass references (file paths, message ids, board sections), not pasted content — keep dispatches short.",
+                " MONITOR the floor by reading {fleet} (live per-agent tokens, cost, status, last tool, breaker level, inbox backlog) and {registry} — note that running 'claude agents' will NOT list your hive's sibling agents. A full Claude Code command reference is at {commands} (slash commands act ONLY on your own session; CLI commands run in your shell and can target the fleet). You periodically receive scheduler / \"Heartbeat\" standup requests — on each, review every agent via fleet.json, re-engage anyone stalled, over-budget, or breaker-armed, and keep board.md and tasks.json accurate. In tasks.json, ALWAYS set each task's \"assignee\" to the worker's agent id the moment you dispatch it, and NEVER clear it on status changes — a done card must still say who did the work (the human reads the board by who-did-what). HUMAN FEEDBACK is first-class in the ledger: when a task can only proceed with the human's input — a QUESTION to answer OR an ACTION only the human can perform (create an account, approve a purchase, provide credentials/screenshots, test on their device) — set its status to \"blocked\" and append the concrete ask to the card's \"humanQA\" array (push {{\"q\":\"...\",\"askedAt\":\"<iso>\"}}; phrase actions as clear to-dos; keep every past entry — the history documents the card's decisions). WRITE THE ASK SHORT AND IN MARKDOWN. The human reads it on a CARD, not in a terminal, so an ask longer than a short paragraph plus its options (roughly 700 characters) is a report, not a question — cut the narrative, keep the decision. Open with ONE **bold** sentence saying exactly what you need from them; put paths, commands, values and identifiers in `backticks`; give each option or step its own \"-\" bullet or \"1.\" number; leave a blank line between paragraphs (a single newline is a line break, so each option stays on its own line). When the ask originates in another agent's report, REWRITE it into that shape — never paste the report body in as the question, and never make the human read the investigation to find the decision. The harness surfaces open questions on the office floor's ASK ME board; the human's answer lands in the same entry (\"a\") AND arrives as an inbox message to you — read it, act on it, and unblock the card so work continues. Do NOT park human questions in separate files (no HumanQuestion.md) and never sit waiting on the human in your own session. Steward the token budget."
+            ), "")
+            .replace("{fleet}", &in_root(&["fleet.json"]))
+            .replace("{registry}", &in_root(&["registry.json"]))
+            .replace("{commands}", &in_root(&["COMMANDS.md"]))
+        } else if entry.is_assistant {
+            format!("You are {god_name}'s PREP ASSISTANT. You will be handed short, possibly vague instructions (each begins with \"ENRICH TASK:\"). For each one: (1) figure out which project it concerns and cd into the most relevant repo — you start in {god_name}'s home directory; (2) gather concrete context READ-ONLY (exact file paths, current state, relevant code, conventions, active branch, gotchas) — NEVER modify, create, or delete files; (3) rewrite the instruction into ONE clear, self-contained prompt that {god_name} can execute autonomously, preserving the user's original intent without inventing scope. Then deliver it: write ONE message JSON into your outbox with \"to\":\"god\", \"act\":\"request\", a short subject, and the finished prompt as the body. Do NOT perform the task yourself — your only output is the improved prompt sent to {god_name}.")
+        } else {
+            "For anything ambiguous, cross-cutting, or needing sign-off, address a message to \"god\".".to_string()
+        };
+
+        let guardrails_line = "Guardrails: a circuit breaker watches the floor — a \"Circuit breaker: steer/constrain\" message means you are looping or overspending, so STOP repeating, summarize what you tried, and follow it. Be token-frugal (a floor-wide or per-agent token budget can pause you). The shared plan has two parts: board.md (freeform; god is the sole scribe) and tasks.json (structured kanban — todo/doing/blocked/done).";
+
+        let slack_line = if entry.is_god {
+            "SLACK REPLIES: When composing a Slack reply (or writing the `result` field of a Slack-origin kanban card), you MUST: (1) directly address what the user asked — never a bare \"done\"; (2) include the relevant specifics, outcome, and details; (3) format for Slack mrkdwn — open with a short *bold* headline, use bullet points for multiple items, wrap code/paths in `backtick` blocks, keep it concise (no walls of text). When finishing a Slack-origin task, always write a complete, user-facing, well-formatted `result` on the kanban card — the system posts it verbatim to Slack as the done reply.".to_string()
+        } else {
+            format!("SLACK REPLIES: If god dispatches you a task that came from Slack, it will include an exact `\"{}\" \"<helper>\" --channel … --thread … --text \"…\"` reply command — when you finish, run it VERBATIM to post your result back to that thread yourself. The reply must be SUBSTANTIVE Slack mrkdwn (a short *bold* headline + the actual outcome/specifics/links), NEVER a bare \"done\".", opts.hive_node)
+        };
+
+        [
+            format!("You are \"{}\" ({}), an autonomous agent in a collaborating hive of Claude agents.", entry.name, entry.id),
+            format!("Your private workspace is {}. The shared hive is {}. Full protocol: {}.", dir.display(), self.root.display(), in_root(&["PROTOCOL.md"])),
+            String::new(),
+            "HIVE PROTOCOL — follow it every task:".to_string(),
+            format!("1. At the START of a task, read {} and EVERY file in {} (messages other agents sent you). After handling an inbox message, move its file into {}.", in_dir(&["memory.md"]), in_dir(&["inbox"]), in_dir(&["inbox", ".done"])),
+            format!("2. Record durable facts, decisions, and context by appending to {}.", in_dir(&["memory.md"])),
+            format!("3. To ask another agent for something or share information, write ONE message JSON into {} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.", in_dir(&["outbox"])),
+            "4. At the END of a task, append what you learned to memory.md so future-you remembers.".to_string(),
+            guardrails_line.to_string(),
+            memory_line.to_string(),
+            knowledge_line,
+            god_line,
+            spawn_queue_line,
+            runtime_line,
+            slack_line,
+            ctx_line.to_string(),
+            "Env vars available to you: AGENT_ID, AGENT_NAME, HIVE_ROOT, AGENT_DIR.".to_string(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// Create the agent's hive folder + identity/memory files and record it in
-    /// the registry. Mirrors hive.ts `ensureAgent`'s file side (spawn injection
-    /// stays in commands.rs).
+    /// the registry — the file side of hive.ts `ensureAgent` (spawn injection
+    /// stays in commands.rs). Runs on EVERY spawn: identity.md is rewritten
+    /// (not seeded), and the registry upsert merges over the prior entry so a
+    /// respawn keeps sessionId/createdAt while clearing `archived`.
     pub fn register_agent(&self, entry: &RegistryEntry) -> Result<()> {
         let dir = self.agent_dir(&entry.id);
-        for sub in ["inbox", "inbox/.done", "outbox"] {
+        for sub in ["inbox", "inbox/.done", "outbox", "outbox/.sent"] {
             fs::create_dir_all(dir.join(sub))?;
         }
         Self::seed(&dir.join("cursor.json"), "{\n  \"lastProcessed\": null\n}\n")?;
-        Self::seed(
-            &dir.join("identity.md"),
-            &format!(
-                "# {}\n\n- id: `{}`\n- provider: `{}`\n- role: {}\n- cwd: `{}`\n",
-                entry.name, entry.id, entry.provider, entry.role, entry.cwd
-            ),
-        )?;
+
+        // Merge over the prior registry row (upstream `{...prev, ...meta}`):
+        // spawn-time fields win, lifetime fields (sessionId, createdAt) are
+        // preserved when the new entry doesn't carry them.
+        let (mut god_id, mut agents) = self.read_registry_doc();
+        let prev = agents.iter().find(|a| a.id == entry.id).cloned();
+        let mut merged = entry.clone();
+        if let Some(p) = &prev {
+            if merged.session_id.is_none() {
+                merged.session_id = p.session_id.clone();
+            }
+            if merged.created_at.is_empty() {
+                merged.created_at = p.created_at.clone();
+            }
+            if merged.capabilities.is_empty() {
+                merged.capabilities = p.capabilities.clone();
+            }
+            if merged.command.is_empty() {
+                merged.command = p.command.clone();
+            }
+            let prev_keys: serde_json::Map<String, Value> = p
+                .extra
+                .clone()
+                .into_iter()
+                .filter(|(k, _)| !merged.extra.contains_key(k))
+                .collect();
+            merged.extra.extend(prev_keys);
+        }
+        // Resolve the durable role before writing identity.md — a restart can
+        // pass a status caption; the registry keeps the last real hire role.
+        merged.role = preferred_agent_role(Some(&merged.role), prev.as_ref().map(|p| p.role.as_str()), merged.is_god);
+        // A (re)spawn always means a live terminal — clear the archived flag
+        // and stamp the cwd-validity probe, same as upstream.
+        merged.archived = false;
+        merged.last_seen = now_ms();
+        merged.cwd_valid = Some(cwd_valid(&merged.cwd));
+
+        // identity.md is refreshed on each spawn (upstream: not a seed).
+        fs::write(dir.join("identity.md"), Self::identity_text(&merged))?;
         Self::seed(
             &dir.join("memory.md"),
-            &format!("# Memory — {}\n\n(append what you learn; this file survives restarts)\n", entry.name),
+            &format!("# Memory — {} ({})\n\n_Append durable facts, decisions, and context below._\n", merged.name, merged.id),
         )?;
+        // Keep settings/cursor/mail out of mempalace's index AND out of git.
+        self.ensure_gitignore_lines(&dir.join(".gitignore"), MINE_IGNORE_LINES);
 
-        let mut agents = self.registry();
-        if !agents.iter().any(|a| a.id == entry.id) {
-            agents.push(entry.clone());
-            self.write_registry(&agents)?;
+        match agents.iter_mut().find(|a| a.id == merged.id) {
+            Some(a) => *a = merged.clone(),
+            None => agents.push(merged.clone()),
         }
+        if merged.is_god {
+            god_id = Some(merged.id.clone());
+        }
+        self.write_registry_doc(&god_id, &agents)?;
+
         self.log(&serde_json::json!({
-            "event": "register", "agent": entry.id, "provider": entry.provider
+            "kind": "spawn", "agentId": merged.id, "name": merged.name, "isGod": merged.is_god
         }))?;
-        self.commit(&format!("hive: register {}", entry.id));
+        if merged.cwd_valid == Some(false) {
+            self.log(&serde_json::json!({
+                "kind": "cwd_invalid", "agentId": merged.id, "cwd": merged.cwd, "issue": cwd_issue(&merged.cwd)
+            }))?;
+        }
+        self.commit(&format!("hive: register {}", merged.id));
         Ok(())
     }
 
@@ -913,16 +1811,17 @@ impl Hive {
     }
 
     /// Atomic temp-file + rename write — the contract that lets the router
-    /// never see a half-written message (HIVE.md §3 design rule).
+    /// never see a half-written message. Temp name is upstream's
+    /// `${p}.tmp-<rand>` (a fixed `.tmp` would collide two writers on one file).
     fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        let tmp = path.with_extension("tmp");
+        let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), short_rand()));
         fs::write(&tmp, bytes)?;
         fs::rename(&tmp, path)?;
         Ok(())
     }
 
-    /// Write a message into `sender`'s outbox (the only path agents/humans use
-    /// to send — the router does the rest).
+    /// Write a message into `sender`'s outbox (the only path agents use to
+    /// send — the router does the rest).
     pub fn send(&self, msg: &Message) -> Result<()> {
         let out = self.agent_dir(&msg.from).join("outbox");
         fs::create_dir_all(&out)?;
@@ -932,9 +1831,69 @@ impl Hive {
         )
     }
 
-    /// A virtual sender ('breaker', 'hive') has no outbox on disk — its
-    /// message is delivered to the resolved inboxes immediately, same target
-    /// resolution the router applies.
+    /// Upstream normalize (hive.ts:1619): fill every harness-owned field the
+    /// agent left out. `hops` is harness-owned, so an agent-authored value is
+    /// only a carried count — clamp into [0, HOP_CAP] (a copied-forward
+    /// `hops: 13` must not read as a runaway loop, and a negative would just
+    /// buy free bounces). `requires_reply` defaults from the act.
+    pub fn normalize(&self, partial: &PartialMessage, from: &str) -> Message {
+        let act = partial
+            .act
+            .clone()
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| "inform".into());
+        let hops = partial.hops.unwrap_or(0).clamp(0, HOP_CAP) as u32;
+        Message {
+            id: partial
+                .id
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}-{}", stamp(), short_rand())),
+            conversation: partial
+                .conversation
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("conv-{}", short_rand())),
+            in_reply_to: partial.in_reply_to.clone(),
+            from: partial
+                .from
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| from.to_string()),
+            to: partial
+                .to
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "god".into()),
+            requires_reply: partial
+                .requires_reply
+                .unwrap_or_else(|| matches!(act.as_str(), "request" | "query" | "propose")),
+            act,
+            subject: partial.subject.clone().unwrap_or_default(),
+            body: partial.body.clone().unwrap_or_default(),
+            hops,
+            needs_human: partial.needs_human.unwrap_or(false),
+            created_at: partial
+                .created_at
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+        }
+    }
+
+    /// Inject a message directly — upstream `send(partial, from)`: normalize,
+    /// route synchronously, commit. For synthetic senders ('human', 'system',
+    /// 'breaker', 'slack', 'webhook') that have no outbox on disk.
+    pub fn send_message(&self, partial: &PartialMessage, from: &str) -> Result<Message> {
+        let msg = self.normalize(partial, from);
+        self.route_message(&msg)?;
+        self.commit(&format!("hive: msg {}→{} ({})", msg.from, msg.to, msg.act));
+        Ok(msg)
+    }
+
+    /// A virtual sender ('breaker', 'hive', 'slack', 'webhook', 'human') has
+    /// no outbox on disk — normalize + route immediately, same path upstream's
+    /// send() takes. Never creates agent dirs for the sender.
     pub fn send_virtual(
         &self,
         from: &str,
@@ -943,53 +1902,197 @@ impl Hive {
         subject: &str,
         body: &str,
     ) -> Result<Vec<Delivery>> {
-        let msg = Message::new(from, to, act, subject, body);
-        let delivered = self.deliver(&msg, &serde_json::to_string_pretty(&msg)?)?;
+        let partial = PartialMessage {
+            from: Some(from.to_string()),
+            to: Some(to.to_string()),
+            act: Some(act.to_string()),
+            subject: Some(subject.to_string()),
+            body: Some(body.to_string()),
+            ..Default::default()
+        };
+        let msg = self.normalize(&partial, from);
+        let delivered = self.route_message(&msg)?;
         if !delivered.is_empty() {
             self.commit(&format!("hive: deliver {}", msg.id));
         }
         Ok(delivered)
     }
 
-    /// Resolve targets and write the message into recipient inboxes — the
-    /// inner loop the outbox router and send_virtual share.
-    fn deliver(&self, msg: &Message, raw: &str) -> Result<Vec<Delivery>> {
-        let known: HashSet<String> = self.registry().iter().map(|a| a.id.clone()).collect();
-        let god = self.god_id();
-        let mut out = Vec::new();
-        for (target_id, bounced) in self.resolve_targets(msg, &known, &god, &msg.from) {
-            let inbox = self.agent_dir(&target_id).join("inbox");
-            let _ = fs::create_dir_all(&inbox);
-            let dest = inbox.join(format!("{}.json", msg.id));
-            let payload = if bounced {
-                let mut m = msg.clone();
-                m.subject = format!("[bounced] {}", m.subject);
-                m.needs_human = true;
-                serde_json::to_string_pretty(&m)?
-            } else {
-                raw.to_string()
-            };
-            self.atomic_write(&dest, payload.as_bytes())?;
-            out.push(Delivery {
-                from: msg.from.clone(),
-                to: target_id,
-                msg_id: msg.id.clone(),
-                bounced,
-            });
+    /// Atomically deliver a message into a recipient agent's inbox.
+    /// Returns false when the recipient has no inbox — the caller bounces
+    /// and logs the drop rather than letting the mail vanish (upstream
+    /// deliver(): NO create_dir_all on an unknown id).
+    fn deliver_to(&self, msg: &Message, to_id: &str) -> bool {
+        let inbox = self.agent_dir(to_id).join("inbox");
+        if !inbox.is_dir() {
+            return false;
         }
-        if !out.is_empty() {
-            self.log(&serde_json::json!({
-                "event": "deliver", "from": msg.from, "to": msg.to,
-                "msg_id": msg.id, "act": msg.act
-            }))?;
-        }
-        Ok(out)
+        self.atomic_write(
+            &inbox.join(format!("{}.json", msg.id)),
+            serde_json::to_string_pretty(msg).unwrap_or_default().as_bytes(),
+        )
+        .is_ok()
     }
 
-    /// One router pass: drain every outbox into recipient inboxes.
-    /// Returns the deliveries made (for frontend events).
+    /// One harness bounce of `msg` to god: bump the hop counter, rewrite the
+    /// recipient AND subject, and log the drop once the counter passes
+    /// HOP_CAP. Agents can't move hops past the cap themselves (normalize
+    /// clamps what they wrote), so this fuse can only fire on a real relay
+    /// loop — a bounced mail that keeps coming back undeliverable.
+    fn bounce_to_god(&self, msg: &Message, god_id: &str, subject: &str) {
+        let hops = msg.hops as i64 + 1;
+        if hops > HOP_CAP {
+            // Loop guard — drop a runaway message. There is no human queue to
+            // fall back on; the god agent owns conflicts.
+            let _ = self.log(&serde_json::json!({
+                "kind": "drop", "reason": "hop-cap",
+                "from": msg.from, "to": msg.to, "id": msg.id
+            }));
+            return;
+        }
+        let mut bounced = msg.clone();
+        bounced.hops = hops as u32;
+        bounced.to = god_id.to_string(); // recipient rewritten, not just subject
+        bounced.subject = subject.to_string();
+        self.deliver_to(&bounced, god_id);
+    }
+
+    /// Upstream routeMessage (hive.ts:1678): resolve `to`, deliver per-target
+    /// with the archived/assistant/missing-inbox rules, log the `message`
+    /// event with what ACTUALLY took delivery, and return the deliveries for
+    /// the `hive:message`/`hive-deliver` event payload.
+    fn route_message(&self, msg: &Message) -> Result<Vec<Delivery>> {
+        let (god_opt, agents) = self.read_registry_doc();
+        let god_id = god_opt
+            .or_else(|| agents.iter().find(|a| a.is_god).map(|a| a.id.clone()))
+            .unwrap_or_else(|| "god".to_string());
+        let find = |id: &str| agents.iter().find(|a| a.id == id);
+        // The hive has no separate human-approval queue — approvals are native
+        // to each agent's session. A message aimed at "human" is handled by
+        // the god/orchestrator, the human's proxy here.
+        let resolve_to = |to: &str| -> String {
+            if to == "human" || to == "god" { god_id.clone() } else { to.to_string() }
+        };
+        // Broadcast fans out over the ACTIVE registry: skip the sender, the
+        // send-only prep assistant, and archived agents (upstream
+        // selectBroadcastTargets — hookless providers are NOT skipped here).
+        let targets: Vec<String> = if msg.to.trim() == "broadcast" {
+            agents
+                .iter()
+                .filter(|a| a.id != msg.from && !a.is_assistant && !a.archived)
+                .map(|a| a.id.clone())
+                .collect()
+        } else {
+            // Never deliver to self — guards a god → "human" loop back to god.
+            vec![resolve_to(msg.to.trim())]
+                .into_iter()
+                .filter(|t| t != &msg.from)
+                .collect()
+        };
+        let mut delivered: Vec<String> = Vec::new();
+        for t in &targets {
+            let agent = find(t);
+            // The send-only prep assistant must never be a delivery target —
+            // mail to it would rot unread. Bounce to god so the sender's
+            // intent surfaces immediately.
+            if agent.map(|a| a.is_assistant).unwrap_or(false) {
+                self.bounce_to_god(
+                    msg,
+                    &god_id,
+                    &format!(
+                        "[bounced — \"{t}\" is the send-only prep assistant; route work to a real agent] {}",
+                        msg.subject
+                    ),
+                );
+                continue;
+            }
+            // An ARCHIVED recipient (its terminal is gone) still has an inbox:
+            // file the mail there — a re-hired worker reads it on its first
+            // turn — and, when the message expects an answer, tell the sender
+            // at once that no one is there to answer it. Inform-only mail is
+            // filed quietly.
+            if t != &god_id && agent.map(|a| a.archived).unwrap_or(false) {
+                if self.deliver_to(msg, t) {
+                    delivered.push(t.clone());
+                }
+                let _ = self.log(&serde_json::json!({
+                    "kind": "archived-recipient",
+                    "from": msg.from, "to": t, "id": msg.id, "act": msg.act
+                }));
+                let sender_live = find(&msg.from).map(|s| !s.archived).unwrap_or(false);
+                if msg.requires_reply && sender_live {
+                    let inform = PartialMessage {
+                        to: Some(msg.from.clone()),
+                        act: Some("inform".into()),
+                        in_reply_to: Some(msg.id.clone()),
+                        conversation: Some(msg.conversation.clone()),
+                        hops: Some(msg.hops as i64 + 1),
+                        requires_reply: Some(false),
+                        subject: Some(format!(
+                            "[no one is there to answer — \"{t}\" is archived] {}",
+                            msg.subject
+                        )),
+                        body: Some(format!(
+                            "Your {} to {} was filed in its inbox, but {} has no live terminal (archived), \
+                             so it will only be read if {} is restored or re-hired under the same id. \
+                             If you need this done now, route it to an agent on the live roster or hire one.",
+                            msg.act, t, t, t
+                        )),
+                        ..Default::default()
+                    };
+                    let _ = self.route_message(&self.normalize(&inform, "system"));
+                }
+                continue;
+            }
+            if self.deliver_to(msg, t) {
+                delivered.push(t.clone());
+                continue;
+            }
+            // No agents/<t>/inbox — an id that isn't on the floor. Record the
+            // drop beside the hop-cap one and bounce to god so the mail can't
+            // silently cease to exist.
+            let _ = self.log(&serde_json::json!({
+                "kind": "drop", "reason": "no-inbox",
+                "from": msg.from, "to": t, "id": msg.id
+            }));
+            if t != &god_id {
+                self.bounce_to_god(
+                    msg,
+                    &god_id,
+                    &format!(
+                        "[undeliverable — no agent \"{t}\" on this floor; check the id against the roster] {}",
+                        msg.subject
+                    ),
+                );
+            }
+        }
+        let _ = self.log(&serde_json::json!({
+            "kind": "message", "from": msg.from, "to": msg.to, "act": msg.act,
+            "subject": msg.subject, "id": msg.id, "delivered": delivered
+        }));
+        Ok(targets
+            .iter()
+            .map(|t| Delivery {
+                id: msg.id.clone(),
+                from: msg.from.clone(),
+                to: t.clone(),
+                msg_id: msg.id.clone(),
+                act: msg.act.clone(),
+                subject: msg.subject.clone(),
+                targets: targets.clone(),
+                needs_human: msg.to.trim() == "human",
+                bounced: !delivered.iter().any(|d| d == t),
+            })
+            .collect())
+    }
+
+    /// One router pass: drain every outbox into recipient inboxes (upstream
+    /// routeOnce). Success → the file moves to `outbox/.sent/`; malformed →
+    /// attempt the literal-line-break repair, log `outbox-repair`, and
+    /// quarantine as `.sent/bad-<file>` — never deleted, never in .done.
     pub fn router_tick(&self) -> Result<Vec<Delivery>> {
         let mut delivered = Vec::new();
+        let mut routed = 0u64;
         let agents_dir = self.root.join("agents");
 
         let senders: Vec<PathBuf> = match fs::read_dir(&agents_dir) {
@@ -998,8 +2101,14 @@ impl Hive {
         };
 
         for sender_dir in senders {
+            let owner = sender_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             let outbox = sender_dir.join("outbox");
             let Ok(rd) = fs::read_dir(&outbox) else { continue };
+            let sent_dir = outbox.join(".sent");
+            let _ = fs::create_dir_all(&sent_dir); // hives predating .sent
             let mut files: Vec<PathBuf> = rd
                 .flatten()
                 .map(|e| e.path())
@@ -1008,60 +2117,141 @@ impl Hive {
             files.sort();
 
             for file in files {
+                let fname = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let Ok(text) = fs::read_to_string(&file) else { continue };
-                let Ok(msg) = serde_json::from_str::<Message>(&text) else {
-                    // malformed: quarantine into sender's inbox/.done so the
-                    // router can't wedge on it (same policy as the tests).
-                    let done = sender_dir.join("inbox").join(".done");
-                    let _ = fs::create_dir_all(&done);
-                    if let Some(name) = file.file_name() {
-                        let _ = fs::rename(&file, done.join(name));
+                let mut partial = serde_json::from_str::<PartialMessage>(&text).ok();
+                if partial.is_none() {
+                    // Malformed JSON — attempt the narrow repair (literal
+                    // CR/LF inside strings), then quarantine either way.
+                    let (repaired_text, changed) = repair_literal_line_breaks(&text);
+                    if !changed {
+                        let _ = self.log(&serde_json::json!({
+                            "kind": "drop", "reason": "malformed-json",
+                            "from": owner, "file": fname
+                        }));
+                        let _ = fs::rename(&file, sent_dir.join(format!("bad-{fname}")));
+                        continue;
                     }
-                    continue;
-                };
-                delivered.extend(self.deliver(&msg, &text)?);
-                let _ = fs::remove_file(&file);
+                    match serde_json::from_str::<PartialMessage>(&repaired_text) {
+                        Ok(p) => {
+                            partial = Some(p);
+                            let _ = self.log(&serde_json::json!({
+                                "kind": "outbox-repair", "from": owner,
+                                "file": fname, "repair": "literal-line-break"
+                            }));
+                        }
+                        Err(_) => {
+                            let _ = self.log(&serde_json::json!({
+                                "kind": "drop", "reason": "malformed-json",
+                                "from": owner, "file": fname
+                            }));
+                            let _ = fs::rename(&file, sent_dir.join(format!("bad-{fname}")));
+                            continue;
+                        }
+                    }
+                }
+                let Some(p) = partial else { continue };
+                let mut msg = self.normalize(&p, &owner);
+                // The outbox OWNER is authoritative for `from` — an agent
+                // can't spoof another sender (upstream: msg.from = id).
+                msg.from = owner.clone();
+                delivered.extend(self.route_message(&msg)?);
+                let _ = fs::rename(&file, sent_dir.join(&fname)); // archive
+                routed += 1;
             }
         }
 
-        if !delivered.is_empty() {
-            self.commit("hive: route");
+        if routed > 0 {
+            self.commit(&format!("hive: routed {routed} message(s)"));
         }
         Ok(delivered)
     }
 
-    /// `to` resolution (HIVE.md §5): broadcast → everyone but sender;
-    /// god/human/unknown → the god agent; agent.<id> | <id> → that inbox.
-    /// When there is no god and the target is unknown, bounce back to sender.
-    fn resolve_targets(
-        &self,
-        msg: &Message,
-        known: &HashSet<String>,
-        god: &Option<String>,
-        sender_id: &str,
-    ) -> Vec<(String, bool)> {
-        let to = msg.to.trim();
-        if to == "broadcast" {
-            return known
-                .iter()
-                .filter(|id| id.as_str() != sender_id)
-                .map(|id| (id.clone(), false))
-                .collect();
+    /// Move every unread message in an agent's inbox to inbox/.done — the
+    /// agent has finished with the whole mailbox (an ephemeral worker that
+    /// signaled done), so nothing left in it is pending any more (upstream
+    /// settleInbox, hive.ts:1078).
+    ///
+    /// Only mail that was already there at `before_ms` is finished with: a
+    /// message created after the cut-off (a follow-up that crossed the
+    /// worker's done) is left pending for whoever picks the mailbox up next.
+    /// `created_at` falls back to the file's mtime when unreadable.
+    /// Best-effort — never throws into a release path.
+    pub fn settle_inbox(&self, id: &str, before_ms: u64) -> SettledInbox {
+        let mut out = SettledInbox::default();
+        let inbox = self.agent_dir(id).join("inbox");
+        if !inbox.is_dir() {
+            return out;
         }
-        if to == "god" || to == "human" {
-            return match god {
-                Some(g) => vec![(g.clone(), false)],
-                None => vec![(sender_id.to_string(), true)],
-            };
+        let files: Vec<PathBuf> = match fs::read_dir(&inbox) {
+            Ok(rd) => rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .collect(),
+            Err(_) => return out,
+        };
+        if files.is_empty() {
+            return out;
         }
-        let id = to.strip_prefix("agent.").unwrap_or(to);
-        if known.contains(id) {
-            vec![(id.to_string(), false)]
-        } else if let Some(g) = god {
-            vec![(g.clone(), true)]
-        } else {
-            vec![(sender_id.to_string(), true)]
+        let done = inbox.join(".done");
+        if fs::create_dir_all(&done).is_err() {
+            return out;
         }
+        for fp in files {
+            let fname = fp
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let msg: PartialMessage = fs::read_to_string(&fp)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default(); // half-written: file it by mtime
+            let mut at = msg
+                .created_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.timestamp_millis() as u64)
+                .unwrap_or(0);
+            if at == 0 {
+                at = fp
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+            }
+            if at > before_ms {
+                out.kept += 1;
+                continue;
+            }
+            // A failed rename leaves the message pending — the pre-settle state.
+            if fs::rename(&fp, done.join(&fname)).is_err() {
+                continue;
+            }
+            out.moved += 1;
+            let act = msg.act.clone().unwrap_or_default();
+            if act == "request" || act == "query" {
+                out.unanswered.push(UnansweredMessage {
+                    id: msg.id.clone().unwrap_or_else(|| fname.clone()),
+                    act,
+                    from: msg.from.clone().unwrap_or_else(|| "unknown".into()),
+                    subject: msg.subject.clone().unwrap_or_default(),
+                    conversation: msg.conversation.clone().unwrap_or_default(),
+                });
+            }
+        }
+        if out.moved > 0 {
+            let _ = self.log(&serde_json::json!({
+                "kind": "inbox-settled", "agentId": id, "count": out.moved
+            }));
+            self.commit(&format!("hive: settle inbox of {id} ({} unread)", out.moved));
+        }
+        out
     }
 
     pub fn inbox(&self, id: &str) -> Result<Vec<Message>> {
@@ -1092,7 +2282,7 @@ impl Hive {
         fs::create_dir_all(&done)?;
         fs::rename(&src, done.join(format!("{msg_id}.json")))?;
         self.log(&serde_json::json!({
-            "event": "done", "agent": agent_id, "msg_id": msg_id
+            "kind": "done", "agentId": agent_id, "msg_id": msg_id
         }))?;
         Ok(())
     }
@@ -1104,6 +2294,30 @@ impl Hive {
     pub fn read_tasks(&self) -> Result<serde_json::Value> {
         let t = fs::read_to_string(self.root.join("tasks.json")).unwrap_or_default();
         Ok(serde_json::from_str(&t).unwrap_or(serde_json::json!({"tasks": []})))
+    }
+
+    /// Append one card against the latest on-disk ledger — port of hive.ts
+    /// `addTask`. Callers must use this instead of re-writing a collection they
+    /// read before another source (webhook, Slack, god, voice) added work.
+    /// Idempotent by task id: returns false (no write) when a card with that
+    /// id already exists.
+    pub fn add_task(&self, card: &serde_json::Value) -> Result<bool> {
+        let mut doc = self.read_tasks()?;
+        let tasks = doc["tasks"]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("tasks.json is not an object"))?;
+        let id = card["id"].as_str().unwrap_or("");
+        if tasks.iter().any(|t| t["id"].as_str() == Some(id)) {
+            return Ok(false);
+        }
+        tasks.push(card.clone());
+        let count = tasks.len();
+        fs::write(
+            self.root.join("tasks.json"),
+            serde_json::to_string_pretty(&doc)?,
+        )?;
+        self.commit(&format!("hive: tasks ({count})"));
+        Ok(true)
     }
 
     /// patchTaskInLedger (taskLedger.ts): edit the RAW ledger entry, leaving
@@ -1137,9 +2351,12 @@ impl Hive {
         Ok(out)
     }
 
-    /// Answer the card's last OPEN humanQA entry — the god prompt contract:
-    /// the answer lands in the entry's `a` AND arrives as an inbox message to
-    /// god, so work can unblock. Returns the patched card.
+    /// Answer the card's last OPEN humanQA entry — upstream's ASK ME answer
+    /// flow (AskMeTab sendAnswer): the answer lands in the entry's `a` +
+    /// `answeredAt` AND arrives as an `inform` inbox message to god. The
+    /// status is NOT touched — god reads the answer and unblocks the card.
+    /// A dismissed entry (`dismissedAt`, no `a`) is closed, not open.
+    /// Returns the patched card.
     pub fn task_answer(&self, id: &str, answer: &str) -> Result<Value> {
         let now = chrono::Utc::now().to_rfc3339();
         let doc = self.read_tasks()?;
@@ -1152,29 +2369,29 @@ impl Hive {
         };
         let qi = asks
             .iter()
-            .rposition(|q| q.get("a").is_none())
+            .rposition(|q| q.get("a").is_none() && q.get("dismissedAt").is_none())
             .ok_or_else(|| anyhow::anyhow!("no open question on {id}"))?;
+        let open_q = asks[qi].get("q").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let mut patch = serde_json::Map::new();
         let mut qa = asks.clone();
         qa[qi]["a"] = Value::String(answer.to_string());
         qa[qi]["answeredAt"] = Value::String(now);
         patch.insert("humanQA".into(), Value::Array(qa));
-        if doc["tasks"]
-            .as_array()
-            .and_then(|ts| ts.iter().find(|e| e["id"].as_str() == Some(id)))
-            .and_then(|e| e["status"].as_str())
-            == Some("blocked")
-        {
-            patch.insert("status".into(), Value::String("in-progress".into()));
-        }
         let card = self.update_task(id, &patch)?;
-        let title = card["title"].as_str().unwrap_or(id);
+        let title = card["title"].as_str().unwrap_or(id).to_string();
+        // 2) Tell the god, so the card gets unblocked and work continues —
+        // upstream's exact envelope + body.
         let _ = self.send_virtual(
             "human",
             "god",
-            "request",
-            &format!("Human answered on {title}"),
-            &format!("On task {id} ({title}), the human answered: {answer}"),
+            "inform",
+            &format!("HUMAN ANSWER on task \"{title}\""),
+            &format!(
+                "The human answered the open question on task {id} (\"{title}\"):\n\
+                 Q: {open_q}\n\
+                 A: {answer}\n\
+                 The answer is also recorded in the card's humanQA. Act on it, unblock the card, and continue the work."
+            ),
         );
         Ok(card)
     }
@@ -1190,16 +2407,17 @@ impl Hive {
         let mut f = fs::OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(f, "\n{entry}")?;
         self.log(&serde_json::json!({
-            "event": "memory_append", "agent": agent_id
+            "kind": "memory_append", "agentId": agent_id
         }))?;
         Ok(())
     }
 
-    /// Append an event line to log.jsonl — pub so the webhook gateway can
-    /// record inbound traffic on the same ledger every routed message uses.
+    /// Append an event line to log.jsonl — upstream appendLog:
+    /// `{ts: <epoch-ms NUMBER>, kind: '<kind>', ...}`. Pub so the webhook
+    /// gateway can record inbound traffic on the same ledger.
     pub fn log(&self, event: &serde_json::Value) -> Result<()> {
         use std::io::Write;
-        let mut v = serde_json::json!({ "ts": Utc::now().to_rfc3339() });
+        let mut v = serde_json::json!({ "ts": now_ms() });
         if let (Some(a), Some(b)) = (v.as_object_mut(), event.as_object()) {
             a.extend(b.clone());
         }
@@ -1351,6 +2569,7 @@ mod tests {
             session_id: None,
             command: String::new(),
             created_at: Utc::now().to_rfc3339(),
+            ..Default::default()
         })
         .unwrap();
     }
@@ -1368,7 +2587,9 @@ mod tests {
         // The LAST open ask gets the answer; earlier answered/skipped asks untouched.
         assert_eq!(card["humanQA"][1]["a"], "yes");
         assert!(card["humanQA"][1].get("answeredAt").is_some());
-        assert_eq!(card["status"], "in-progress"); // blocked → unblocked
+        // Upstream patches ONLY the humanQA entry + mails god — the card
+        // stays "blocked" until god unblocks it himself (AskMeTab.tsx).
+        assert_eq!(card["status"], "blocked");
         // The answer also lands in god's inbox (the two-channel contract).
         let inbox = hive.inbox("god").unwrap();
         assert!(inbox.iter().any(|m| m.body.contains("yes")), "answer mails god");

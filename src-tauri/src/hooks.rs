@@ -56,8 +56,33 @@ fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
     if BufReader::new(&stream).read_line(&mut line).is_err() {
         return;
     }
-    let Ok(env) = serde_json::from_str::<HookEnvelope>(line.trim()) else {
+    let Ok(raw) = serde_json::from_str::<Value>(line.trim()) else {
         return;
+    };
+    // Two wire shapes share this socket (hooks.ts handle() reads the
+    // UNWRAPPED cth-hook payload — `hook_event_name` is the event):
+    //   - native hive-hook binary wraps:   { agent_id, event, payload }
+    //   - bundled JS bridges (Pi extension, OpenCode plugin) post the raw
+    //     cth-hook-shaped payload directly: { hook_event_name, agent_id, … }
+    // For the latter, event = hook_event_name and the payload IS the whole
+    // line (upstream's HookPayload — tool_name/session_id/etc. at top level).
+    let env = if raw.get("hook_event_name").is_some() {
+        HookEnvelope {
+            agent_id: raw
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            event: raw
+                .get("hook_event_name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            payload: raw,
+        }
+    } else {
+        let Ok(env) = serde_json::from_value::<HookEnvelope>(raw) else {
+            return;
+        };
+        env
     };
     let response = handle(&app, &env);
     let mut out = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
@@ -87,9 +112,21 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     let event = env.event.clone().unwrap_or_else(|| "Unknown".into());
     let p = &env.payload;
 
+    // Upstream's hive:hookEvent payload (hooks.ts emit()) — additive fields
+    // from the envelope payload; the channel name stays `hook-event` (the
+    // frontend already listens on it). `blocked` is always false here —
+    // upstream's emit never sets it true in hooks.ts either.
     let _ = app.emit(
         "hook-event",
-        json!({ "agentId": agent_id, "event": event }),
+        json!({
+            "agentId": agent_id,
+            "event": event,
+            "tool": p.get("tool_name").and_then(|v| v.as_str()),
+            "notificationType": p.get("notification_type").and_then(|v| v.as_str()),
+            "source": p.get("source").and_then(|v| v.as_str()),
+            "message": p.get("message").and_then(|v| v.as_str()),
+            "blocked": false,
+        }),
     );
 
     // Status-line telemetry (context_window) — pure telemetry, early {} exactly
@@ -169,7 +206,11 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             }
             if !agent_id.is_empty() {
                 emit_status(app, &agent_id, "idle", None);
-                schedule_idle_delivery(app.clone(), agent_id);
+                // Upstream hooks.ts:497 — a finished agent toasts the
+                // operator. No forced Stop-time inbox delivery (upstream
+                // removed it at 490-499): the workerwake watchdog's guarded
+                // idle path is the sole delivery channel.
+                notify(app, &st, &agent_id, "finished — idle");
             }
             json!({})
         }
@@ -205,18 +246,37 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             emit_status(app, &agent_id, "working", None);
             // 7C.2 — mid-run steering: a queued operator note rides back as
             // additionalContext once, merged with the god roster below.
-            injected_context(&st, &agent_id, &event)
+            injected_context(&st, &agent_id, &event, p)
         }
         "UserPromptSubmit" => {
             emit_status(app, &agent_id, "working", None);
-            injected_context(&st, &agent_id, &event)
+            injected_context(&st, &agent_id, &event, p)
         }
         "SessionStart" => {
             emit_status(app, &agent_id, "idle", None);
-            injected_context(&st, &agent_id, &event)
+            injected_context(&st, &agent_id, &event, p)
         }
         "Notification" => {
             emit_status(app, &agent_id, "waiting", None);
+            // hooks.ts:586-592 — an idle-type Notification ("waiting for your
+            // input") is "blocked on the human", worth a toast; a permission
+            // request surfaces natively in the agent's own session instead.
+            let idle_notify = p
+                .get("notification_type")
+                .and_then(|v| v.as_str())
+                == Some("idle")
+                || p.get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains("waiting for your input");
+            if idle_notify {
+                let body = p
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("needs your attention");
+                notify(app, &st, &agent_id, body);
+            }
             json!({})
         }
         "PreCompact" => {
@@ -231,33 +291,190 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     }
 }
 
+/// The OS-toast equivalent — upstream fires `new Notification` gated on the
+/// user's `notifications` setting (hooks.ts:602). No tauri-notification
+/// plugin in this port: emit `hive-notify` for the renderer to toast instead,
+/// gated on the same toggle (`notifications_enabled` persist kv, default off
+/// like upstream's `notifications: false`).
+fn notify(app: &AppHandle, st: &AppState, agent_id: &str, body: &str) {
+    let enabled = st
+        .persist
+        .lock()
+        .unwrap()
+        .get_kv("notifications_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    let title = if agent_id.is_empty() { "Agent" } else { agent_id };
+    let _ = app.emit(
+        "hive-notify",
+        json!({ "agentId": agent_id, "title": title, "body": body }),
+    );
+}
+
+/// Standing goal from the shared roster file — port of index.ts
+/// `standingGoalFromRoster` (reads `roster.json` agents[].goal; Edit Agent
+/// saves land there via roster:write, so a re-read each hook picks changes up
+/// without a worker restart).
+fn standing_goal(st: &AppState, agent_id: &str) -> Option<String> {
+    let snap = st.roster.read()?;
+    for a in snap.get("agents")?.as_array()? {
+        if a.get("id").and_then(|v| v.as_str()) != Some(agent_id) {
+            continue;
+        }
+        let g = a.get("goal").and_then(|v| v.as_str()).unwrap_or("").trim();
+        return if g.is_empty() { None } else { Some(g.to_string()) };
+    }
+    None
+}
+
+/// hooks.ts:552-570 — the durable standing-goal injection. Delivered once per
+/// session (a fresh session_id re-delivers), then only when the roster value
+/// changes; clearing it injects the explicit revocation so the old briefing
+/// doesn't silently keep steering the model.
+fn goal_context(
+    st: &AppState,
+    agent_id: &str,
+    event: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let goal_raw = standing_goal(st, agent_id);
+    let session = session_id.map(str::to_string);
+    let mut delivered_map = st.delivered_goal.lock().unwrap();
+    let delivered = delivered_map.get(agent_id).cloned();
+    let new_session = delivered.as_ref().map(|d| d.0 != session).unwrap_or(true);
+    let changed = delivered
+        .as_ref()
+        .is_some_and(|d| d.0 == session && d.1 != goal_raw);
+    if event == "SessionStart" || new_session || changed {
+        delivered_map.insert(agent_id.to_string(), (session, goal_raw.clone()));
+        if let Some(g) = goal_raw {
+            return Some(format!("<goal>\n{g}\n</goal>"));
+        }
+        if changed && delivered.as_ref().and_then(|d| d.1.clone()).is_some() {
+            // Silence would leave the old briefing alive in the model's
+            // context — revoke it explicitly (upstream verbatim).
+            return Some(
+                "<goal>\n[Cleared by the operator. Stop following the previous standing goal.]\n</goal>"
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// Assemble the live fleet rows roster_context formats — upstream reads the
+/// beat-written fleet.json (index.ts writeFleetSnapshot); this port keeps no
+/// fleet cache, so the same row shape is built live and a best-effort
+/// fleet.json is dropped alongside for agents told to Read it.
+fn fleet_rows(st: &AppState) -> Vec<Value> {
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let extras = crate::hive_admin::all_extras(&st.hive);
+    // Lifetime usd (reset-corrected fold) first; session usd is the cold
+    // fallback — upstream's exact preference (index.ts:1305-1315).
+    let mut totals = crate::cost_lifetime::CostLedgerTotals::default();
+    totals.refresh_fully(&st.hive.cost_ledger_path());
+    st.hive
+        .registry()
+        .iter()
+        .filter(|a| {
+            extras
+                .get(&a.id)
+                .and_then(|e| e.get("archived"))
+                .and_then(|v| v.as_bool())
+                != Some(true)
+        })
+        .map(|a| {
+            let sample = st
+                .telemetry
+                .sample(&a.id)
+                .or_else(|| st.hive.usage_sample(&a.id))
+                .or_else(|| st.usage.sample(&a.cwd, a.session_id.as_deref()));
+            let tokens = sample
+                .map(|s| s.input + s.output + s.cache_read + s.cache_creation)
+                .unwrap_or(0);
+            let session_usd = (sample.map(|s| s.usd).unwrap_or(0.0) * 10_000.0).round() / 10_000.0;
+            let usd = totals
+                .usd_for(&a.id)
+                .map(|u| (u * 10_000.0).round() / 10_000.0)
+                .unwrap_or(session_usd);
+            let last_tool = st
+                .telemetry
+                .spans(&a.id)
+                .last()
+                .map(|s| s.tool.clone());
+            let breaker = serde_json::to_value(st.breaker.lock().unwrap().level_for(&a.id))
+                .unwrap_or_else(|_| json!("healthy"));
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "role": if a.role.is_empty() {
+                    if a.is_god { "orchestrator" } else { "agent" }
+                } else {
+                    a.role.as_str()
+                },
+                "cwd": a.cwd,
+                "isGod": a.is_god,
+                "breaker": breaker,
+                "tokens": tokens,
+                "usd": usd,
+                "sessionUsd": session_usd,
+                "lastTool": last_tool,
+                "lastActiveSecAgo": sample
+                    .map(|s| (now_ms.saturating_sub(s.ts)) / 1000),
+                "inboxBacklog": st.hive.inbox_backlog(&a.id),
+                "onHold": extras
+                    .get(&a.id)
+                    .and_then(|e| e.get("onHold"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
 /// additionalContext injection — merged into ONE value because a hook can only
-/// return a single additionalContext (hooks.ts:523): god's live roster
-/// (SessionStart/UserPromptSubmit, hooks.ts:530) + a queued operator steer
-/// (UserPromptSubmit/PostToolUse, hooks.ts:526).
-fn injected_context(st: &AppState, agent_id: &str, event: &str) -> Value {
+/// return a single additionalContext (hooks.ts:523). Order matches upstream's
+/// `[roster, goal, steer].filter(Boolean).join('\n\n')`: god's live roster
+/// (SessionStart/UserPromptSubmit), the standing goal (same events, once per
+/// session or on change), a queued operator steer (UserPromptSubmit/
+/// PostToolUse).
+fn injected_context(st: &AppState, agent_id: &str, event: &str, p: &Value) -> Value {
     if agent_id.is_empty() {
         return json!({});
     }
     let mut parts: Vec<String> = Vec::new();
 
     if (event == "SessionStart" || event == "UserPromptSubmit") && st.hive.is_god(agent_id) {
-        let roster = st
+        let agents = fleet_rows(st);
+        // Best-effort fleet.json — the roster text points agents at it, and
+        // upstream's fleetTimer contract is "fresh when god looks".
+        let _ = st.hive.write_fleet_snapshot(&json!({
+            "ts": chrono::Utc::now().timestamp_millis() as u64,
+            "agents": agents,
+        }));
+        let ctx_map = st.context_usage.lock().unwrap().clone();
+        if let Some(r) = st
             .hive
-            .registry()
-            .iter()
-            .map(|a| {
-                format!(
-                    "{}{}{}({})",
-                    a.name,
-                    if a.is_god { " [god] " } else { " " },
-                    a.id,
-                    a.status
-                )
+            .roster_context(&agents, Some(chrono::Utc::now().timestamp_millis() as u64), |id| {
+                ctx_map.get(id).copied()
             })
-            .collect::<Vec<_>>()
-            .join(" | ");
-        parts.push(format!("Live floor roster: {roster}"));
+        {
+            parts.push(r);
+        }
+    }
+
+    if event == "SessionStart" || event == "UserPromptSubmit" {
+        if let Some(g) = goal_context(
+            st,
+            agent_id,
+            event,
+            p.get("session_id").and_then(|v| v.as_str()),
+        ) {
+            parts.push(g);
+        }
     }
 
     if event == "UserPromptSubmit" || event == "PostToolUse" {
@@ -272,55 +489,8 @@ fn injected_context(st: &AppState, agent_id: &str, event: &str) -> Value {
         json!({
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": parts.join("\n")
+                "additionalContext": parts.join("\n\n")
             }
         })
     }
-}
-
-/// The guarded idle-only delivery path: after a Stop, if the agent is still
-/// idle and has unread hive mail, type a work-order into its PTY — the
-/// renderer-nudge equivalent. Never fires mid-work; the status check at
-/// delivery time is the guard.
-fn schedule_idle_delivery(app: AppHandle, agent_id: String) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        let Some(st) = app.try_state::<AppState>() else {
-            return;
-        };
-        let still_idle = st
-            .hive
-            .registry()
-            .iter()
-            .any(|a| a.id == agent_id && a.status == "idle");
-        if !still_idle {
-            return;
-        }
-        // A queued /compact drains at the idle boundary — compacts between
-        // steps, never mid-step (upstream's renderer-side queue, backend-side).
-        if st.compact_queue.lock().unwrap().remove(&agent_id) {
-            let mut ptys = st.ptys.lock().unwrap();
-            if let Some(h) = ptys.get_mut(&agent_id) {
-                let _ = h.write("/compact\r");
-            }
-            drop(ptys);
-        }
-        let Ok(inbox) = st.hive.inbox(&agent_id) else {
-            return;
-        };
-        if inbox.is_empty() {
-            return;
-        }
-        let dir = st.hive.agent_dir(&agent_id);
-        let nudge = format!(
-            "You have {} unread hive message(s) in {}/inbox — read each one, act on it, \
-             move it to inbox/.done when handled, and reply via your outbox/.",
-            inbox.len(),
-            dir.display()
-        );
-        let mut ptys = st.ptys.lock().unwrap();
-        if let Some(h) = ptys.get_mut(&agent_id) {
-            let _ = h.write(&format!("{nudge}\r"));
-        }
-    });
 }

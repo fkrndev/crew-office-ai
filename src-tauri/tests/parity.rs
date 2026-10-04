@@ -47,6 +47,7 @@ fn reg(hive: &Hive, id: &str, god: bool, dir: &Path) {
         session_id: None,
         command: String::new(),
         created_at: chrono_now(),
+        ..Default::default()
     })
     .unwrap();
 }
@@ -98,13 +99,14 @@ fn routing_contract_god_human_broadcast_bounce() {
     h.send(&Message::new("w1", "human", "request", "s", "b")).unwrap();
     // broadcast → everyone but the sender.
     h.send(&Message::new("god", "broadcast", "inform", "s", "b")).unwrap();
-    // unknown id → bounces to god (alive god ⇒ not back to sender).
+    // unknown id → bounces to god (alive god ⇒ not back to sender) — upstream
+    // subject is "[undeliverable — no agent ...]" (hive.ts:1771).
     h.send(&Message::new("w2", "nonexistent", "request", "s", "b")).unwrap();
 
     let ds = h.router_tick().unwrap();
     let god_in = h.inbox("god").unwrap();
     assert!(god_in.iter().any(|m| m.from == "w1")); // human → god
-    assert!(god_in.iter().any(|m| m.subject.starts_with("[bounced]"))); // unknown → bounced to god
+    assert!(god_in.iter().any(|m| m.subject.starts_with("[undeliverable"))); // unknown → bounced to god
     assert_eq!(h.inbox("w1").unwrap().len(), 1); // broadcast skip sender=god
     assert_eq!(h.inbox("w2").unwrap().len(), 1);
     assert!(ds.len() >= 3);
@@ -116,16 +118,18 @@ fn malformed_outbox_message_quarantines_not_wedges() {
     let d = tmp("quar");
     let h = hive_at(&d);
     reg(&h, "w1", false, &d);
-    // Garbage in the outbox must not jam the router — upstream policy:
-    // quarantine into inbox/.done so the file can't re-trip every tick.
+    // Garbage in the outbox must not jam the router — upstream policy
+    // (hive.ts:1863): quarantine into outbox/.sent as `bad-<file>` so the
+    // file can't re-trip every tick.
     let bad = d.join("hive/agents/w1/outbox/bad.json");
     std::fs::write(&bad, "not json at all").unwrap();
     let ds = h.router_tick().unwrap();
     assert!(ds.is_empty());
     assert!(!bad.exists());
-    assert!(d.join("hive/agents/w1/inbox/.done/bad.json").exists());
-    // And a valid message afterwards still routes.
-    h.send(&Message::new("w1", "w1", "inform", "s", "b")).unwrap();
+    assert!(d.join("hive/agents/w1/outbox/.sent/bad-bad.json").exists());
+    // And a valid message afterwards still routes. (Not a self-send —
+    // upstream's never-deliver-to-self guard drops w1→w1.)
+    h.send(&Message::new("w1", "god", "inform", "s", "b")).unwrap();
     assert_eq!(h.router_tick().unwrap().len(), 1);
     std::fs::remove_dir_all(&d).ok();
 }
@@ -182,7 +186,8 @@ fn task_patch_preserves_unknown_fields_and_clears_with_null() {
     // Answering t2's ask keeps t1's card byte-identical in spirit.
     let c2 = h.task_answer("t2", "yes").unwrap();
     assert_eq!(c2["humanQA"][0]["a"], "yes");
-    assert_eq!(c2["status"], "in-progress");
+    // Answer patches only humanQA — status stays "blocked" until god unblocks.
+    assert_eq!(c2["status"], "blocked");
     let doc = h.read_tasks().unwrap();
     assert_eq!(doc["tasks"][0]["dependsOn"], json!(["t0"]));
     std::fs::remove_dir_all(&d).ok();

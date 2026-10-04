@@ -125,18 +125,27 @@ fn patch_registry_entry(hive: &Hive, id: &str, patch: &Map<String, Value>) -> Re
     let path = hive.root.join("registry.json");
     let text = fs::read_to_string(&path).unwrap_or_default();
     let mut doc: Value =
-        serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": [] }));
-    let Some(agents) = doc.get_mut("agents").and_then(|a| a.as_array_mut()) else {
+        serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": {} }));
+    let Some(agents) = doc.get_mut("agents") else {
         anyhow::bail!("registry.json is not an object");
     };
-    let Some(entry) = agents
-        .iter_mut()
-        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
-    else {
-        return Ok(false);
+    // Upstream stores `agents` as a map keyed by id; tolerate the port's
+    // original array shape for registries written before the migration.
+    let obj = match agents {
+        Value::Object(map) => map
+            .iter_mut()
+            .find(|(k, v)| {
+                k.as_str() == id
+                    || v.get("id").and_then(|v| v.as_str()) == Some(id)
+            })
+            .map(|(_, v)| v),
+        Value::Array(arr) => arr
+            .iter_mut()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)),
+        _ => anyhow::bail!("registry.json is not an object"),
     };
-    let Some(obj) = entry.as_object_mut() else {
-        anyhow::bail!("agent {id} is not an object");
+    let Some(obj) = obj.and_then(|e| e.as_object_mut()) else {
+        return Ok(false);
     };
     for (k, v) in patch {
         obj.insert(k.clone(), v.clone());
@@ -376,61 +385,49 @@ pub fn hive_messages(hive: &Hive, agent_id: &str, limit: usize) -> Vec<Value> {
 /// text files under hive/ (*.md, *.txt, *.json). Skips .git, anything
 /// non-UTF-8/binary, and files over 256KB. Rows are {path, line, text}
 /// (path relative to the hive root, line 1-based), capped at 100.
+/// hive:textSearch (index.ts:4025) — board.md, tasks.json, and each agent's
+/// memory.md, max 3 hits per file, ~40 chars of context either side of the
+/// match. NOT a tree walk: inbox/outbox/registry are deliberately out of
+/// scope (the memory-search surface is a curated set).
 pub fn text_search(hive: &Hive, query: &str, limit: usize) -> Vec<Value> {
-    const MAX_FILE: u64 = 256 * 1024;
     const MAX_ROWS: usize = 100;
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
     }
     let cap = limit.min(MAX_ROWS);
-    let mut out = Vec::new();
-    let mut stack = vec![hive.root.clone()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = fs::read_dir(&dir) else { continue };
+    let mut targets: Vec<(PathBuf, String)> = vec![
+        (hive.root.join("board.md"), "board.md".into()),
+        (hive.root.join("tasks.json"), "tasks.json".into()),
+    ];
+    let agents_dir = hive.root.join("agents");
+    if let Ok(rd) = fs::read_dir(&agents_dir) {
         for e in rd.flatten() {
-            let p = e.path();
-            let name = e.file_name().to_string_lossy().to_string();
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                if name != ".git" {
-                    stack.push(p);
-                }
-                continue;
+                let id = e.file_name().to_string_lossy().to_string();
+                targets.push((e.path().join("memory.md"), format!("{id}/memory.md")));
             }
-            let is_text = p
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "md" | "txt" | "json"));
-            if !is_text {
-                continue;
+        }
+    }
+    let mut out = Vec::new();
+    for (path, source) in targets {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let mut hits = 0;
+        for line in text.lines() {
+            if hits >= 3 {
+                break;
             }
-            let Ok(meta) = p.metadata() else { continue };
-            if meta.len() > MAX_FILE {
-                continue;
-            }
-            // Binary check: a NUL in the first 8KB means skip (jsonl/message
-            // blobs never legitimately carry one).
-            let Ok(bytes) = fs::read(&p) else { continue };
-            if bytes.iter().take(8192).any(|b| *b == 0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            for (i, line) in text.lines().enumerate() {
-                if line.to_lowercase().contains(&needle) {
-                    let rel = p
-                        .strip_prefix(&hive.root)
-                        .unwrap_or(&p)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    out.push(json!({
-                        "path": rel,
-                        "line": i + 1,
-                        "text": line.trim(),
-                    }));
-                    if out.len() >= cap {
-                        return out;
-                    }
-                }
+            let lower = line.to_lowercase();
+            let Some(idx) = lower.find(&needle) else { continue };
+            let start = idx.saturating_sub(40);
+            let end = (idx + needle.len() + 40).min(line.len());
+            // Don't slice mid-UTF8 — the line is what it is, but the needle
+            // boundaries are char-safe so only the padding needs a guard.
+            let excerpt = line[start.min(line.len())..end].trim();
+            out.push(json!({ "source": source, "excerpt": excerpt }));
+            hits += 1;
+            if out.len() >= cap {
+                return out;
             }
         }
     }
@@ -478,6 +475,7 @@ mod tests {
             session_id: None,
             command: "claude".into(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            ..Default::default()
         }
     }
 
@@ -563,11 +561,11 @@ mod tests {
         let (_r, hive) = tmp_hive("search");
         let dir = hive.agent_dir("w-3");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("notes.md"), "nothing here\nThe QUICK brown fox\nbye\n").unwrap();
+        fs::write(dir.join("memory.md"), "nothing here\nThe QUICK brown fox\nbye\n").unwrap();
         let hits = text_search(&hive, "quick", 100);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0]["line"], json!(2));
-        assert!(hits[0]["path"].as_str().unwrap().ends_with("notes.md"));
+        assert_eq!(hits[0]["source"], json!("w-3/memory.md"));
+        assert_eq!(hits[0]["excerpt"], json!("The QUICK brown fox"));
         assert!(text_search(&hive, "absent-token", 100).is_empty());
         assert!(text_search(&hive, "  ", 100).is_empty());
     }

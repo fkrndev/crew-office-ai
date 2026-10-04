@@ -177,16 +177,19 @@ pub fn pty_list(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 /// pty:redraw — the buffered scrollback for one id.
-///
-/// DEVIATION: this port's PtyHandle keeps NO output buffer (pty.rs streams
-/// bytes straight to `pty-output` events; nothing is retained main-side, so
-/// there is nothing to replay). Returns "" — live and dead ids alike — until a
-/// scrollback buffer lands in pty.rs.
+/// pty:redraw — replay the retained tail (TAIL_MAX) into a remounting xterm;
+/// "" for unknown/dead ids, same as upstream's {ok, tail} minus the flag.
 #[tauri::command]
 pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
     let st = state(&app);
-    let _ = st.ptys.lock().unwrap().get(&id);
-    Ok(String::new())
+    let tail = st
+        .ptys
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|h| h.tail())
+        .unwrap_or_default();
+    Ok(tail)
 }
 
 /// workers:list — every registry entry joined with its live-PTY flag and the

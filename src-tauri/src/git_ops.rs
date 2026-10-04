@@ -273,6 +273,42 @@ pub fn diff(cwd: &Path, rev_a: &str, rev_b: &str, path: Option<&str>) -> Result<
     Ok(buf)
 }
 
+/// Upstream git:diff — the working-tree diff of ONE file (index vs workdir
+/// with HEAD baseline), not a rev-range diff. Untracked files diff as
+/// /dev/null → new file.
+pub fn diff_file_worktree(cwd: &Path, rel_path: &str) -> Result<String, String> {
+    let rel = safe_rel_path(rel_path).ok_or_else(|| "path escapes repository root".to_string())?;
+    let repo = git2::Repository::discover(cwd).map_err(|e| map_err(&e))?;
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(&rel)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
+    let head_tree = repo
+        .head()
+        .and_then(|h| h.peel_to_tree())
+        .ok();
+    let mut d = repo
+        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+        .map_err(|e| map_err(&e))?;
+    d.find_similar(None).map_err(|e| map_err(&e))?;
+    let mut buf = String::new();
+    let mut too_big = false;
+    let res = d.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let bytes = line.content();
+        if buf.len() + bytes.len() > MAX_GIT_TEXT_BYTES {
+            too_big = true;
+            return false;
+        }
+        buf.push_str(&String::from_utf8_lossy(bytes));
+        true
+    });
+    if too_big {
+        return Err("diff exceeds the 2 MB limit".into());
+    }
+    res.map_err(|e| map_err(&e))?;
+    Ok(buf)
+}
+
 /// Is `branch` currently checked out in a linked worktree? `git switch` would
 /// fail with "already checked out"; libgit2 won't — so we check ourselves and
 /// name the holder like upstream does.
@@ -306,8 +342,8 @@ fn branch_checked_out_elsewhere(repo: &git2::Repository, branch: &str) -> Option
 
 /// Guarded checkout — upstream checkoutRef(): refuse an unsafe rev, refuse a
 /// dirty tree (staged+unstaged; untracked alone doesn't block), then switch.
-/// A local branch name attaches HEAD to the branch; anything else detaches.
-pub fn checkout(cwd: &Path, rev: &str) -> Result<Value, String> {
+/// `detach=true` forces detached HEAD even for a local branch name.
+pub fn checkout(cwd: &Path, rev: &str, detach: bool) -> Result<Value, String> {
     if !is_safe_rev(rev) {
         return Err("invalid revision".into());
     }
@@ -322,7 +358,9 @@ pub fn checkout(cwd: &Path, rev: &str) -> Result<Value, String> {
     }
     let obj = repo.revparse_single(rev).map_err(|e| map_err(&e))?;
     let commit = obj.peel_to_commit().map_err(|e| map_err(&e))?;
-    let branch_ref = repo.find_branch(rev, git2::BranchType::Local).ok();
+    let branch_ref = (!detach)
+        .then(|| repo.find_branch(rev, git2::BranchType::Local).ok())
+        .flatten();
     if branch_ref.is_some() {
         if let Some(holder) = branch_checked_out_elsewhere(&repo, rev) {
             return Err(format!("'{rev}' is checked out in another worktree: {holder}"));

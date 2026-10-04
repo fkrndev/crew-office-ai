@@ -68,6 +68,10 @@ pub struct AppState {
     pub slack: std::sync::Arc<crate::slack::SlackServer>,
     /// Durable harness state (db.rs) — kv + command history in SQLite/WAL.
     pub persist: Mutex<crate::db::PersistStore>,
+    /// The (session_id, goal) last injected per agent — upstream's
+    /// deliveredGoalByAgent: the durable standing goal is re-sent on a new
+    /// session or a roster change, not every prompt (transcript bloat).
+    pub delivered_goal: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
 }
 
 impl AppState {
@@ -108,6 +112,7 @@ impl AppState {
             roster: crate::roster::RosterStore::new(harness_home.clone()),
             closing: crate::closing_time::ClosingTime::default(),
             slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
+            delivered_goal: Mutex::new(HashMap::new()),
             persist: {
                 let mut s = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
                 let _ = s.open(); // best-effort — a DB failure can't crash startup
@@ -239,6 +244,7 @@ fn spawn_inner(
         session_id: None,
         command: args.command.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
+        ..Default::default()
     };
     // New agents get the full folder+registry bootstrap; a respawn reuses the
     // existing entry and just re-stamps its status.
@@ -404,6 +410,7 @@ fn spawn_inner(
     }
     if is_claude {
         if let Some(ep) = st.otel_endpoint.get() {
+            agent_env.insert("CLAUDE_CODE_ENABLE_TELEMETRY".into(), "1".into());
             agent_env.insert("OTEL_METRICS_EXPORTER".into(), "otlp".into());
             agent_env.insert("OTEL_LOGS_EXPORTER".into(), "otlp".into());
             agent_env.insert("OTEL_EXPORTER_OTLP_PROTOCOL".into(), "http/json".into());
@@ -418,23 +425,72 @@ fn spawn_inner(
     }
 
     let parent: HashMap<String, String> = std::env::vars().collect();
-    let path = parent.get("PATH").cloned().unwrap_or_default();
+    // withHiveRuntimeFallback: the hive's bundled-runtime dir (if any) is
+    // APPENDED to the child PATH so provider subprocesses that shell out to
+    // `node` work even on machines without a system install.
+    let mut path = parent.get("PATH").cloned().unwrap_or_default();
+    let runtime_dir = st.hive.root.join("bin").join("runtime");
+    if runtime_dir.is_dir()
+        && !path
+            .split(if cfg!(windows) { ';' } else { ':' })
+            .any(|d| d == runtime_dir.display().to_string())
+    {
+        if !path.is_empty() {
+            path.push(if cfg!(windows) { ';' } else { ':' });
+        }
+        path.push_str(&runtime_dir.display().to_string());
+    }
     let env = build_pty_env(&parent, &path, Some(&agent_env), cfg!(windows));
 
-    let cwd = if args.cwd.is_empty() || !std::path::Path::new(&args.cwd).is_dir() {
-        // A stale/missing workspace must not fail CreateProcessW (os error
-        // 267) — fall back to the agent's own folder, which always exists
-        // after register_agent.
+    // cwd: expand `~` first (existsSync never expands it — pty.ts:559), then
+    // upstream's hard error on a missing workspace rather than a silent
+    // reroute; an EMPTY cwd falls back to the agent's own folder.
+    let cwd = if args.cwd.is_empty() {
         agent_dir.display().to_string()
     } else {
-        args.cwd.clone()
+        let expanded = crate::misc::expand_tilde(&args.cwd);
+        if !std::path::Path::new(&expanded).is_dir() {
+            return Err(format!("cwd does not exist: {expanded}"));
+        }
+        expanded
     };
 
     // ── hive wiring per provider class (hive.ts spawnAgentCore, condensed) ──
     // hiveAware (claude): per-session settings.json + --append-system-prompt.
     // Others: the same prompt rides in as the typed first turn — the uniform
     // 'type-into-tui' delivery, which also covers flag/positional providers.
-    let injected = st.hive.injected_prompt(&entry);
+    let prompt_opts = crate::hive::PromptOpts {
+        semantic_memory: crate::memory_palace::instance(&st.hive.root).available(),
+        knowledge_graph: crate::kg::status(&st.hive.root)["docs"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        kg_cli_path: Some(
+            st.hive
+                .root
+                .join("bin")
+                .join("kg.cjs")
+                .display()
+                .to_string(),
+        ),
+        hive_node: st
+            .hive
+            .root
+            .join("bin")
+            .join("runtime")
+            .join(if cfg!(windows) { "node.exe" } else { "node" })
+            .display()
+            .to_string(),
+        orchestrator_may_spawn: true,
+        runtime: Some(crate::hive::RuntimeInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            packaged: !cfg!(debug_assertions),
+            app_path: std::env::current_exe()
+                .ok()
+                .map(|p| p.display().to_string()),
+        }),
+    };
+    let injected = st.hive.injected_prompt(&entry, &prompt_opts);
     let mut command_line = args.command.clone();
     let mut seed = args.seed_prompt.clone();
 
@@ -502,34 +558,37 @@ fn spawn_inner(
                 }
                 pty::spawn_argv(&id, &exe, &av, &cwd, &env, args.cols, args.rows, app.clone())
             } else {
-            let mut parts = vec![pty::cmd_quote(&prog.display().to_string())];
-            for a in command_line.split_whitespace().skip(1) {
-                parts.push(pty::cmd_quote(a));
-            }
+            // Fallback when the shim can't be decoded: route through cmd.exe
+            // as RAW tokens — portable-pty CRT-quotes each arg, which is the
+            // same line shape upstream's buildCmdCommandLine emits verbatim.
+            // (cmd_sanitize still applies: cmd cannot carry a literal newline
+            // at all — upstream truncates at it; collapsing is strictly less
+            // destructive.)
+            let mut parts = vec![prog.display().to_string()];
+            parts.extend(command_line.split_whitespace().skip(1).map(String::from));
             if is_claude {
                 parts.push("--append-system-prompt".into());
-                parts.push(pty::cmd_quote(&pty::cmd_sanitize(&injected)));
+                parts.push(pty::cmd_sanitize(&injected));
             }
             if let Some(sid) = &resume_session {
                 parts.push("--resume".into());
-                parts.push(pty::cmd_quote(sid));
+                parts.push(sid.clone());
             }
-            command_line = parts.join(" ");
-            pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
+            pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
             }
         }
         None => {
+            let mut parts: Vec<String> =
+                command_line.split_whitespace().map(String::from).collect();
             if is_claude {
-                command_line = format!(
-                    "{} --append-system-prompt {}",
-                    command_line,
-                    pty::cmd_quote(&pty::cmd_sanitize(&injected))
-                );
+                parts.push("--append-system-prompt".into());
+                parts.push(pty::cmd_sanitize(&injected));
             }
             if let Some(sid) = &resume_session {
-                command_line = format!("{} --resume {}", command_line, pty::cmd_quote(sid));
+                parts.push("--resume".into());
+                parts.push(sid.clone());
             }
-            pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
+            pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
         }
     }
     .map_err(err_str)?;
@@ -976,9 +1035,32 @@ pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<Config,
     Ok(cfg.clone())
 }
 
-/// webhook:setConfig — port + enable toggle; the port applies on next boot.
+/// webhook:setConfig — secret + port + enable toggle; the port applies on
+/// next boot. `secret` rotates the legacy endpoint's shared secret.
 #[tauri::command]
-pub fn webhook_set_config(app: AppHandle, port: Option<u16>, enabled: Option<bool>) -> Result<bool, String> {
+pub fn webhook_set_config(
+    app: AppHandle,
+    secret: Option<String>,
+    port: Option<u16>,
+    enabled: Option<bool>,
+) -> Result<bool, String> {
+    if let Some(sec) = secret {
+        let st = state(&app);
+        let mut cfg = st.config.lock().unwrap();
+        if let Some(ep) = cfg.webhooks.iter_mut().find(|e| e.id == "legacy") {
+            ep.secret = sec.clone();
+        } else {
+            cfg.webhooks.push(crate::webhook::WebhookEndpoint {
+                id: "legacy".into(),
+                name: "legacy".into(),
+                secret: sec,
+                schema: String::new(),
+                mode: "strict".into(),
+                enabled: true,
+            });
+        }
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
     let st = state(&app);
     if let Some(p) = port {
         let mut cfg = st.config.lock().unwrap();

@@ -24,6 +24,37 @@ use serde_json::Value;
 /// Ledger cap — oldest entries drop past this (TRIGGER_HISTORY_LIMIT).
 pub const TRIGGER_HISTORY_LIMIT: usize = 500;
 
+/// TriggerMode — how much an external sender is trusted (shared/triggers.ts).
+///   strict              — every inbound message waits for the operator.
+///   allow-all           — everything flows straight through.
+///   communication-only  — chatter flows; directives wait for approval.
+/// `DEFAULT_TRIGGER_MODE` upstream is 'strict' — an endpoint that vanishes or
+/// carries an unrecognised mode falls back to the STRICTEST gate, never the
+/// most permissive one.
+pub const DEFAULT_TRIGGER_MODE: &str = "strict";
+
+/// Normalise a stored/incoming mode string into the upstream allowlist.
+/// Migration: the port's pre-rename modes map forward ('auto' → 'allow-all',
+/// 'review' → 'strict'); anything else unrecognised is strict.
+pub fn normalize_trigger_mode(mode: &str) -> String {
+    match mode.trim() {
+        "allow-all" | "communication-only" | "strict" => mode.trim().to_string(),
+        "auto" => "allow-all".into(),
+        _ => DEFAULT_TRIGGER_MODE.into(), // 'review' and unknown → strict
+    }
+}
+
+/// isAutoAllowed — resolve a mode + kind into whether the message may be
+/// routed without a human. Anything not allow-all/communication-only behaves
+/// as strict, so a malformed mode can never widen the gate.
+pub fn is_auto_allowed(mode: &str, kind: &str) -> bool {
+    match mode {
+        "allow-all" => true,
+        "communication-only" => kind == "communication",
+        _ => false, // strict
+    }
+}
+
 /// classifyInboundKind — best-effort intent guess when the payload doesn't
 /// declare `kind`. Deliberately conservative: anything we aren't confident is
 /// chatter is a DIRECTIVE, because mis-labelling a directive as communication

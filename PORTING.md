@@ -401,3 +401,28 @@ mirrored by tauri commands. New this pass:
   poll on the router tick.
 - api.ts â€” frontend invoke wrappers for the full surface.
 - 102 tests green (83 lib + 11 parity + 8 shim); cargo build + tsc clean.
+
+- 2026-10-04 (8): hive.rs full-parity rewrite + sibling fixes. registry.json
+  upstream map shape ({godId, agents:{id:entry}}) with array-shape read
+  tolerance; RegistryEntry gains archived/onHold/sessionId/cwdValid/
+  capabilities + extra flatten spread (survives unknown keys on rewrite);
+  merge-over-prev upsert, preferredAgentRole, cwdValidity probe,
+  repairLiteralLineBreaks quarantine to outbox/.sent/bad-<f>, routeMessage
+  verbatim (assistant bounce, archived-recipient [no one is there] inform,
+  no-inbox [undeliverable] bounce, hop-cap drop, delivered-vs-intent log,
+  hive:message event payload), rosterContext LIVE ROSTER injection with
+  ctx% + ON HOLD rows, inboxBacklog, writeFleetSnapshot, verbatim
+  injectedPrompt via PromptOpts (mempalace/kg/runtime/spawn-queue blocks),
+  task_answer (humanQA patch + HUMAN ANSWER mail to god, status untouched —
+  god unblocks), COMMANDS.md/PROTOCOL.md verbatim. hooks.rs: accepts BOTH
+  envelope shapes (hive-hook wrapped {agent_id,event,payload} AND unwrapped
+  cth-hook {hook_event_name,...}); injected_context merges roster+goal+steer;
+  fleet.json rows with breaker/usd/inboxBacklog/onHold/lastActiveSecAgo.
+  bridges.rs JS: HIVE_SOCK parsed as TCP host:port (last-colon split,
+  IPv6-safe) — was treating it as an IPC path. cmd_update.rs: notify-only
+  updater surface (checkNow/current/openRelease/download/restartAndInstall/
+  simulate). git:diff = working-tree single-file diff (rev-range moved to
+  git:diffRefs); checkout detach flag; pty:redraw replays retained tail.
+  hive_admin: registry patch map-tolerant, text_search = upstream contract
+  (board.md+tasks.json+agents/*/memory.md, 3 hits/file, {source,excerpt}).
+  108 tests green (89 lib + 11 parity + 8 shim); cargo build + tsc clean.
