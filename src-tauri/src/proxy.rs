@@ -43,6 +43,9 @@ pub struct ProxyBridge {
     /// Generation counter for the Stop debounce: each arming bumps it; the
     /// sleeper emits only if the generation is still current after 800ms.
     stop_gen: Arc<AtomicU64>,
+    /// Teardown flag — set by stop() so the accept loop exits and the
+    /// listener dies with its agent.
+    stopped: Arc<AtomicU64>,
 }
 
 /// Per-model context-window size for the Status gauge — port of ctxSize().
@@ -77,7 +80,14 @@ impl ProxyBridge {
             upstream: upstream.trim_end_matches('/').to_string(),
             sock,
             stop_gen: Arc::new(AtomicU64::new(0)),
+            stopped: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// hive.stopProxyBridge — the teardown half upstream runs on every dead
+    /// PTY so a killed agent can't leave an orphan loopback listener.
+    pub fn stop(&self) {
+        self.stopped.store(1, Ordering::SeqCst);
     }
 
     /// Bind loopback:0 and serve — one std thread per connection. Returns the
@@ -91,6 +101,9 @@ impl ProxyBridge {
             _ => 0,
         };
         std::thread::spawn(move || loop {
+            if self.stopped.load(Ordering::SeqCst) != 0 {
+                return; // teardownPty → drop the listener
+            }
             let req = match server.recv_timeout(Duration::from_millis(500)) {
                 Ok(Some(r)) => r,
                 _ => continue,

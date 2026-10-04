@@ -552,8 +552,14 @@ fn webhook_listening(port: u16) -> bool {
     .is_ok()
 }
 
+/// The public tunnel (upstream tunnelmole) — kept so its process stays alive;
+/// stopped with the server. Slack keeps a parallel latch below.
+static WEBHOOK_TUNNEL: std::sync::Mutex<Option<(String, std::process::Child)>> =
+    std::sync::Mutex::new(None);
+
 /// webhook:start — bind the loopback gateway against the configured endpoints
-/// and port (upstream reconcileWebhookServer). No enabled endpoints → no bind.
+/// and port (upstream reconcileWebhookServer), then open the public tunnel.
+/// The tunnel is non-fatal — the loopback handler is the security boundary.
 #[tauri::command]
 pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String> {
     if WEBHOOK_LATCHED.load(Ordering::SeqCst) {
@@ -582,8 +588,20 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
             eprintln!("[webhook] server stopped: {e:#}");
         }
         WEBHOOK_BOUND.store(false, Ordering::SeqCst);
+        if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
+            let _ = child.kill();
+        }
     });
-    Ok(json!({ "running": true, "port": port }))
+    // Public tunnel (openTunnel, non-fatal) — mint AFTER the bind so the URL
+    // is never forwarded at a dead port.
+    if WEBHOOK_TUNNEL.lock().unwrap().is_none() {
+        match crate::misc::start_tunnel(port) {
+            Ok((url, child)) => *WEBHOOK_TUNNEL.lock().unwrap() = Some((url, child)),
+            Err(e) => eprintln!("[webhook] tunnel unavailable: {e}"),
+        }
+    }
+    let tunnel_url = WEBHOOK_TUNNEL.lock().unwrap().as_ref().map(|(u, _)| u.clone());
+    Ok(json!({ "running": true, "port": port, "url": tunnel_url }))
 }
 
 /// webhook:stop — signal the serve loop to exit (one-way latch; the port
@@ -593,6 +611,9 @@ pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
     state(&app).webhook.stop();
     WEBHOOK_BOUND.store(false, Ordering::SeqCst);
     WEBHOOK_LATCHED.store(true, Ordering::SeqCst);
+    if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
+        let _ = child.kill();
+    }
     Ok(true)
 }
 
@@ -605,9 +626,14 @@ pub fn webhook_status(app: AppHandle) -> Result<Value, String> {
     let cfg_port = st.config.lock().unwrap().webhook_port;
     let bound = WEBHOOK_PORT.load(Ordering::SeqCst);
     let port = if bound != 0 { bound } else { cfg_port };
+    let tunnel_url = WEBHOOK_TUNNEL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(u, _)| u.clone());
     Ok(json!({
         "running": webhook_listening(port),
-        "url": format!("http://127.0.0.1:{port}"),
+        "url": tunnel_url.unwrap_or_else(|| format!("http://127.0.0.1:{port}")),
         "endpoints": st.webhook.endpoint_ids(),
     }))
 }

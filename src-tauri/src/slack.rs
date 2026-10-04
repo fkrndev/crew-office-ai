@@ -358,6 +358,285 @@ pub fn post_slack_reply(
     }
 }
 
+/// SlackReplyServer — port of upstream's loopback reply rail (slack.ts:425).
+/// Agents post {channel, thread_ts, text} and the server applies the bot
+/// token itself, so the token NEVER enters a worker's environment. Binds
+/// 127.0.0.1 only; every request must echo the per-session `x-md-reply-token`
+/// header. Main writes `{port, token}` to <harness>/slack-reply.json so the
+/// bundled helper can find this socket.
+pub struct SlackReplyServer {
+    stop: Arc<AtomicBool>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    pub token: String,
+    pub port: std::sync::Mutex<Option<u16>>,
+}
+
+impl SlackReplyServer {
+    pub fn new() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: Mutex::new(None),
+            // Per-session shared secret the helper echoes in the header.
+            token: format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )[..48]
+                .to_string(),
+            port: Mutex::new(None),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.handle.lock().unwrap().is_some()
+    }
+
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.lock().unwrap().take() {
+            let _ = h.join();
+        }
+        *self.port.lock().unwrap() = None;
+    }
+
+    /// Bind a loopback port (0 ⇒ OS-assigned) and serve. `bot_token` is read
+    /// lazily via the closure at reply time so a credential rotation is picked
+    /// up without a restart. `on_replied` fires with the thread_ts after a
+    /// successful DIRECT post so the done-summary poller can skip the thread.
+    pub fn start<G, R>(
+        &self,
+        preferred_port: u16,
+        bot_token: G,
+        on_replied: R,
+    ) -> Result<u16, String>
+    where
+        G: Fn() -> Option<String> + Send + 'static,
+        R: Fn(String) + Send + 'static,
+    {
+        if self.is_running() {
+            return Err("already running".into());
+        }
+        let server = tiny_http::Server::http(("127.0.0.1", preferred_port))
+            .map_err(|e| format!("reply server bind :{preferred_port}: {e}"))?;
+        let port = server
+            .server_addr()
+            .to_ip()
+            .map(|a| a.port())
+            .unwrap_or(preferred_port);
+        let stop = self.stop.clone();
+        stop.store(false, Ordering::Relaxed);
+        let session_token = self.token.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let Ok(Some(mut req)) =
+                    server.recv_timeout(std::time::Duration::from_millis(400))
+                else {
+                    continue;
+                };
+                let respond = |req: tiny_http::Request, code: u16, body: &str| {
+                    let _ = req.respond(
+                        tiny_http::Response::from_string(body.to_string())
+                            .with_status_code(code)
+                            .with_header(
+                                "Content-Type: application/json"
+                                    .parse::<tiny_http::Header>()
+                                    .unwrap(),
+                            ),
+                    );
+                };
+                // Defense in depth: even bound loopback-only, refuse any
+                // non-loopback peer.
+                let remote = req.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+                let loopback = {
+                    let a = remote.strip_prefix("::ffff:").unwrap_or(&remote);
+                    a == "::1" || a.starts_with("127.")
+                };
+                if !loopback {
+                    respond(req, 403, "");
+                    continue;
+                }
+                if req.method().as_str() != "POST"
+                    || req.url().split('?').next() != Some("/reply")
+                {
+                    respond(req, 404, "");
+                    continue;
+                }
+                let given = req
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("x-md-reply-token"))
+                    .map(|h| h.value.as_str().to_string())
+                    .unwrap_or_default();
+                if !crate::webhook::secret_eq(&given, &session_token) {
+                    respond(req, 401, "");
+                    continue;
+                }
+                let mut body = Vec::new();
+                let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
+                if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
+                    respond(req, 413, "");
+                    continue;
+                }
+                let Ok(p) = serde_json::from_slice::<Value>(&body) else {
+                    respond(req, 400, r#"{"ok":false,"error":"bad json"}"#);
+                    continue;
+                };
+                let Some(token) = bot_token() else {
+                    respond(req, 503, r#"{"ok":false,"error":"no bot token"}"#);
+                    continue;
+                };
+                let (channel, thread_ts, text) = (
+                    p["channel"].as_str().unwrap_or(""),
+                    p["thread_ts"].as_str().unwrap_or(""),
+                    p["text"].as_str().unwrap_or(""),
+                );
+                if channel.is_empty() || thread_ts.is_empty() || text.is_empty() {
+                    respond(
+                        req,
+                        400,
+                        r#"{"ok":false,"error":"channel, thread, text required"}"#,
+                    );
+                    continue;
+                }
+                let thread_owned = thread_ts.to_string();
+                match post_slack_reply(&token, channel, thread_ts, text) {
+                    Ok(()) => {
+                        on_replied(thread_owned);
+                        respond(req, 200, r#"{"ok":true}"#);
+                    }
+                    Err(e) => {
+                        respond(req, 502, &json!({ "ok": false, "error": e }).to_string());
+                    }
+                }
+            }
+        });
+        *self.handle.lock().unwrap() = Some(handle);
+        *self.port.lock().unwrap() = Some(port);
+        Ok(port)
+    }
+}
+
+/* ── attachment downloads (index.ts downloadSlackFile) ───────────────────── */
+
+/// Per-file download size cap — reject files larger than 10 MB before writing.
+const SLACK_FILE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Sanitize a Slack filename: basename only, non-safe chars → `_`, prefixed
+/// with a random tag to stop collisions and path-traversal (index.ts:1476).
+fn sanitize_filename(name: Option<&str>, tag: &str) -> String {
+    let base = name
+        .and_then(|n| std::path::Path::new(n).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let safe: String = base
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let safe = safe.trim_start_matches('.');
+    let safe = if safe.is_empty() { "file" } else { safe };
+    let safe = &safe[..safe.len().min(200)];
+    format!("{tag}-{safe}")
+}
+
+/// Download a Slack file_share attachment into `dest_dir` using the bot
+/// token (Authorization header only — never logged). Returns the local
+/// {path,name,mimetype} or None on any failure; a partial list is still
+/// useful to the agent.
+pub fn download_slack_file(file: &Value, bot_token: &str, dest_dir: &std::path::Path) -> Option<Value> {
+    let url = file["url_private"].as_str()?;
+    if !url.starts_with("https://") {
+        return None;
+    }
+    let tag = format!("{}", uuid::Uuid::new_v4().simple())[..8].to_string();
+    let filename = sanitize_filename(file["name"].as_str(), &tag);
+    let dest = dest_dir.join(&filename);
+    std::fs::create_dir_all(dest_dir).ok()?;
+    let resp = ureq::get(url)
+        .header("authorization", &format!("Bearer {bot_token}"))
+        .call()
+        .ok()?;
+    let mut reader = resp.into_body().into_reader();
+    let mut buf = Vec::new();
+    let mut take = reader.by_ref().take(SLACK_FILE_MAX_BYTES + 1);
+    take.read_to_end(&mut buf).ok()?;
+    if buf.len() as u64 > SLACK_FILE_MAX_BYTES {
+        let _ = std::fs::remove_file(&dest);
+        return None;
+    }
+    std::fs::write(&dest, &buf).ok()?;
+    Some(json!({
+        "path": dest.display().to_string(),
+        "name": file["name"].as_str().unwrap_or(&filename),
+        "mimetype": file["mimetype"].as_str().unwrap_or("application/octet-stream"),
+    }))
+}
+
+/// Download every raw file from a file_share event — silently dropping the
+/// failures (index.ts downloadSlackFiles).
+pub fn download_slack_files(raw_files: &[Value], bot_token: Option<&str>, dest_dir: &std::path::Path) -> Vec<Value> {
+    let Some(token) = bot_token else { return Vec::new() };
+    raw_files
+        .iter()
+        .filter_map(|f| download_slack_file(f, token, dest_dir))
+        .collect()
+}
+
+/* ── the AUTONOMOUS REQUEST PROTOCOL (index.ts buildAutonomousRequestProtocol) ── */
+
+/// Built PER MESSAGE so the protocol block carries THIS request's concrete
+/// channel, thread_ts, and the resolved helper path. Prepended to god's
+/// working instruction only — the kanban title stays the user's raw text.
+pub fn autonomous_request_protocol(channel: &str, thread_ts: &str, helper_path: &str) -> String {
+    format!("[AUTONOMOUS REQUEST PROTOCOL — this request arrived via Slack; no interactive human is watching] Handle it under this protocol:
+1. ROUTE FAST — triage and hand this to the single most-relevant agent right away. CHECK THE LIVE ROSTER FIRST (active agents in registry.json + their state in fleet.json) and prefer an EXISTING agent that fits — especially when the request names one (\"ask Pam…\", \"have Jim…\"): route to that agent and only spawn a new one if none is a sensible fit. Decompose only if it genuinely needs several. Don't sit on it.
+2. DELEGATE WITH THE REPLY HANDLE — tell that agent to do the work autonomously AND to post its result back to THIS Slack thread itself when done, using exactly: \"{helper_path}\" --channel {channel} --thread {thread_ts} --text \"<substantive result>\" (the helper resolves its endpoint + token from the slack-reply.json the app writes — pass the path verbatim.)
+3. AUTONOMOUS EXECUTION — no interactive questions. PAUSE/ask ONLY for high-severity actions: pushing to main or any remote; buying or spawning infrastructure or paid services; deleting an existing repo, file, or folder it did not create. Stay READ-ONLY at critical infrastructure and git-push-type changes unless explicitly approved.
+4. DIRECT, SUBSTANTIVE REPLY — the agent posts a real Slack-mrkdwn answer (short *bold* headline + the actual outcome/specifics/links), NEVER a bare \"done\"/\":white_check_mark:\".
+5. REPORT TO GOD — the agent then tells you (the orchestrator) what it did.
+6. ASYNC QUESTIONS — if a decision is genuinely needed, don't block: post the question + numbered OPTIONS to the thread via that reply command, and record {{q, options, askedAt (ISO + day & time), thread_ts {thread_ts}}} so the threaded human reply correlates back and resumes.
+The user's message starts now: ")
+}
+
+/// The done-summary text for a finished Slack-origin task (index.ts
+/// slackDoneSummary) — result → description → title, Slack-friendly ≤2800.
+pub fn done_summary(task: &Value) -> String {
+    let body = task
+        .get("result")
+        .and_then(|r| r.as_str())
+        .or_else(|| task.get("description").and_then(|d| d.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let title = task["title"].as_str().unwrap_or("");
+    let head = format!(":white_check_mark: *{title}*");
+    let text = if body.is_empty() { head } else { format!("{head}\n\n{body}") };
+    if text.chars().count() > 2800 {
+        format!("{}…", text.chars().take(2799).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// Slack `chat.postMessage` errors that are permanent for this config —
+/// retrying can never make them succeed (index.ts TERMINAL_SLACK_ERRORS).
+pub fn is_terminal_slack_error(err: &str) -> bool {
+    matches!(
+        err,
+        "missing_scope"
+            | "invalid_auth"
+            | "not_authed"
+            | "account_inactive"
+            | "token_revoked"
+            | "token_expired"
+            | "no_permission"
+            | "channel_not_found"
+            | "not_in_channel"
+            | "is_archived"
+            | "restricted_action"
+            | "org_login_required"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

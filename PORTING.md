@@ -107,12 +107,6 @@ retry+backoff on index.lock).
   markers, `sample` = cumulative cost.jsonl fold per agent.
 - Virtual senders ('breaker') deliver directly to inboxes via
   `hive.send_virtual` — no outbox dir for non-agents.
-- fleet.json refresh cadence: upstream's always-on ~8s fleetTimer → this
-  port refreshes on the 30s breaker beat + god-hook writes. Agents told to
-  Read it still see fresh rows, just coarser.
-- Worker worktree isolation (`isolate: true` → git worktree per worker) and
-  the preserved-worktree GC sweep are NOT ported — workers spawn in the
-  request's cwd directly; `workers:list`'s `preserved` is always [].
 - redactSecrets: upstream's closing-quote backreference (\3) has no regex
   crate equivalent — the value char-class already stops at quotes, so an
   optional trailing quote is left in place (cosmetic only).
@@ -314,9 +308,9 @@ retry+backoff on index.lock).
   channel:ts dedup (dual app_mention+message deliveries), subtype/
   self-loop filters, 1MB body cap, post_slack_reply (chat.postMessage,
   CLAUSE-1 explicit-thread guard), keychain-held SLACK_SIGNING_SECRET /
-  SLACK_BOT_TOKEN. Not ported: the tunnelmole public tunnel — the local
-  listener is the security boundary; point any tunnel at it. Commands:
-  slack_start/stop/status/reply. 55 tests green.
+  SLACK_BOT_TOKEN. Commands:
+  slack_start/stop/status/reply. 55 tests green. (tunnelmole ported later —
+  see session (10).)
 - 2026-10-04 (28): hire.rs — shareable hire manifests (spec
   munderdifflin/hire@1): validator ported verbatim (capped strings, agy
   alias, MODEL_RE/FLAG_RE metachar rejection, default-deny safe-flag
@@ -475,3 +469,23 @@ mirrored by tauri commands. New this pass:
   token-cap + idle reaps; workers:list = upstream {live, preserved,
   maxWorkers} snapshot (registry join moved to workers:registry).
   112 tests green (93 lib + 11 parity + 8 shim); cargo build + tsc clean.
+
+- 2026-10-05 (10): worktree isolation, proxy teardown, tunnels, realtime
+  mint, fleet timer. SpawnArgs.isolate (spawn + worker default true):
+  <harness>/worktrees/<slug> via agent_branch_for + add_worktree, slug +
+  path-safety verbatim, link_worktreeDeps node_modules junction.
+  finalize_teardown in kill_agent: worker → gated finalizeWorkerWorktree
+  (unintegrated → PRESERVE + preservedWorktrees entry + informGod;
+  clean → remove + register for deferred scratch GC); regular agent →
+  immediate remove. gc_preserved_worktrees runs the 60s GC sweep
+  (gone-from-disk → scratch reclaim; worktree_integrated_against =
+  clean + (ahead==0 OR diff-empty vs base) → remove + reclaim + god mail);
+  workers:list surfaces real `preserved` rows; hive-agent-archived emitted
+  for dead workers. ProxyBridge gains stop() + per-agent sidecar map —
+  teardown kills the qwen/crush loopback listener (upstream
+  stopProxyBridge). fleet.json moved to its own 8s timer (upstream
+  fleetTimer). realtime:hasKey + realtime:mintToken — GA client_secrets
+  mint w/ legacy-sessions 404 fallback, apikey:openai keyring, key never
+  crosses IPC. misc::start_tunnel — `npx tunnelmole <port>` URL scrape,
+  wired into webhook:start and slack:start; the child dies on stop.
+  114 tests green (95 lib + 11 parity + 8 shim).

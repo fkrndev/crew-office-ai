@@ -287,6 +287,63 @@ pub fn load_hero(cache_path: &Path, force: bool) -> Value {
     }
 }
 
+// ─── public tunnel ──────────────────────────────────────────────────────────
+
+/// openTunnel (webhook.ts/slack.ts) — upstream imports `tunnelmole`; the port
+/// shells the equivalent CLI (`npx --yes tunnelmole <port>`) and scrapes the
+/// minted https URL from its stdout. Best-effort: a missing npx or a mint
+/// timeout surfaces as Err — the local server stays up regardless. The
+/// returned Child keeps the tunnel alive; kill it to drop the tunnel
+/// (upstream's teardown is equally best-effort).
+pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> {
+    let exe = if cfg!(windows) { "npx.cmd" } else { "npx" };
+    let mut child = std::process::Command::new(exe)
+        .args(["--yes", "tunnelmole", &port.to_string()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("tunnelmole spawn failed ({exe}): {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    // TUNNEL_TIMEOUT_MS — upstream caps the wait at ~45s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut url = String::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                for tok in line.split_whitespace() {
+                    if tok.starts_with("https://") {
+                        url = tok.trim_end_matches(|c: char| c == '.' || c == ',').to_string();
+                        break;
+                    }
+                }
+                if !url.is_empty() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if url.is_empty() {
+        let _ = child.kill();
+        return Err("tunnelmole returned no URL within 45s".into());
+    }
+    Ok((url, child))
+}
+
 // ─── slack reply helper script ──────────────────────────────────────────────
 
 /// Write (idempotently) the `<harness>/bin/slack-reply.<ext>` helper and return

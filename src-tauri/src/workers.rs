@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
-use crate::commands::{state, SpawnArgs};
+use crate::commands::{state, AppState, SpawnArgs};
 
 /// One live god-triggered ephemeral worker (upstream WorkerRec).
 pub struct WorkerRec {
@@ -41,6 +41,21 @@ pub struct WorkerRec {
 
 /// liveWorkers — populated by the watcher; consulted by teardown paths.
 pub type LiveWorkers = Mutex<HashMap<String, WorkerRec>>;
+
+/// A worker worktree that teardown PRESERVED because it held unintegrated
+/// work (upstream PreservedWorktree). The GC sweep reclaims it (+ the
+/// worker's hive scratch dir) once its work lands in base — or when the
+/// worktree is already gone from disk (clean teardown still registers here
+/// so scratch removal is deferred past the memory miner).
+pub struct PreservedWorktree {
+    pub worker_id: String,
+    pub wt_path: PathBuf,
+    pub orig_cwd: PathBuf,
+    pub base_branch: String,
+    pub scratch_dir: Option<PathBuf>,
+    pub slack: Option<(String, String)>,
+    pub preserved_at: u64,
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -156,6 +171,165 @@ fn worker_tokens_used(app: &AppHandle, worker_id: &str) -> u64 {
         })
         .map(|s| s.input + s.output + s.cache_read + s.cache_creation)
         .unwrap_or(0)
+}
+
+/// removeWorkerScratch — delete ONLY a dead worker's hive agent dir, never a
+/// live one's (path-safety: resolved dir must sit directly under agents/).
+fn remove_worker_scratch(st: &AppState, worker_id: &str) {
+    if st.live_workers.lock().unwrap().contains_key(worker_id) {
+        return;
+    }
+    let dir = st.hive.agent_dir(worker_id);
+    let agents_root = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    if dir.parent() != Some(agents_root.as_path())
+        || dir.file_name().map(|n| n.to_string_lossy().into_owned()).as_deref() != Some(worker_id)
+    {
+        return;
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// finalizeWorkerWorktree (index.ts:528) — remove a dead worker's worktree
+/// ONLY when it holds no unintegrated work; otherwise PRESERVE it and ping
+/// god, the sole integrator. Either way the hive scratch dir is registered
+/// for the deferred GC sweep (memory miner races an immediate delete).
+fn finalize_worker_worktree(
+    st: &AppState,
+    wt_path: &Path,
+    orig_cwd: &Path,
+    rec: &WorkerRec,
+) {
+    if let Err(e) = crate::git_ops::unlink_worktree_deps(orig_cwd, wt_path) {
+        eprintln!("[worktree] dependency unlink failed: {e}");
+    }
+    let keep = crate::git_ops::worktree_unintegrated_details(wt_path, &rec.base_branch);
+    let register = |st: &AppState| {
+        st.preserved_worktrees.lock().unwrap().insert(
+            wt_path.to_path_buf(),
+            PreservedWorktree {
+                worker_id: format!("worker-{}", rec.req_id),
+                wt_path: wt_path.to_path_buf(),
+                orig_cwd: orig_cwd.to_path_buf(),
+                base_branch: rec.base_branch.clone(),
+                scratch_dir: Some(st.hive.agent_dir(&format!("worker-{}", rec.req_id))),
+                slack: rec.slack.clone(),
+                preserved_at: now_ms(),
+            },
+        );
+    };
+    match keep {
+        Some((true, detail, branch)) => {
+            eprintln!("[worker] PRESERVING worktree with unintegrated work: {}", wt_path.display());
+            register(st);
+            inform_god(
+                &st.hive,
+                &format!("[worker worktree preserved] worker-{}", rec.req_id),
+                &format!(
+                    "Ephemeral worker worker-{} ended but its worktree holds unintegrated work, so it was NOT auto-removed (you are the sole integrator).\nWorktree: {}\nBranch: {branch}\nState: {detail}\nReview/merge it — it will be auto-reclaimed once its work lands in {}, or remove it now with: git -C \"{}\" worktree remove \"{}\"",
+                    rec.req_id,
+                    wt_path.display(),
+                    rec.base_branch,
+                    orig_cwd.display(),
+                    wt_path.display(),
+                ),
+                rec.slack.as_ref(),
+            );
+        }
+        _ => {
+            // Clean/integrated (or undeterminable-as-clean after unlink):
+            // remove the worktree but still register the scratch for the
+            // deferred GC sweep — upstream does the same so the memory miner
+            // can ingest memory.md before the dir is reclaimed.
+            if keep.is_none() {
+                eprintln!("[worker] unintegrated check failed; keeping worktree {}", wt_path.display());
+                register(st);
+                return;
+            }
+            if let Err(e) = crate::git_ops::remove_worktree(wt_path) {
+                eprintln!("[worker] removeWorktree failed: {e}");
+            }
+            register(st);
+        }
+    }
+}
+
+/// teardownPty step 2 — the worktree half of kill_agent: workers get the
+/// safety-gated finalize; regular isolated agents keep upstream's immediate
+/// force-remove. Called for EVERY teardown route (kill, done-release, reap,
+/// crash) so a worktree can never orphan silently.
+pub fn finalize_teardown(st: &AppState, id: &str) {
+    let worker = st.live_workers.lock().unwrap().remove(id);
+    if let Some((wt_path, orig_cwd)) = st.worktree_paths.lock().unwrap().remove(id) {
+        match worker {
+            Some(rec) => finalize_worker_worktree(st, &wt_path, &orig_cwd, &rec),
+            None => {
+                if let Err(e) = crate::git_ops::remove_worktree(&wt_path) {
+                    eprintln!("[worktree] removeWorktree failed: {e}");
+                }
+            }
+        }
+    }
+}
+
+/// gcPreservedWorktrees — throttled sweep (GC_SWEEP_MS): reclaim a preserved
+/// worktree ONLY when its work is provably integrated (or the tree is gone).
+/// Any doubt KEEPS it — god is the sole integrator.
+pub fn gc_preserved_worktrees(st: &AppState) {
+    let keys: Vec<PathBuf> = st.preserved_worktrees.lock().unwrap().keys().cloned().collect();
+    for key in keys {
+        let e = {
+            let p = st.preserved_worktrees.lock().unwrap();
+            match p.get(&key) {
+                Some(e) => PreservedWorktree {
+                    worker_id: e.worker_id.clone(),
+                    wt_path: e.wt_path.clone(),
+                    orig_cwd: e.orig_cwd.clone(),
+                    base_branch: e.base_branch.clone(),
+                    scratch_dir: e.scratch_dir.clone(),
+                    slack: e.slack.clone(),
+                    preserved_at: e.preserved_at,
+                },
+                None => continue,
+            }
+        };
+        // A worker id that is live again (reqId reuse) → never GC out from
+        // under the new run.
+        if st.live_workers.lock().unwrap().contains_key(&e.worker_id) {
+            continue;
+        }
+        // (a) Worktree already gone (clean teardown, or removed by hand) →
+        //     reclaim the scratch dir + drop tracking.
+        if !e.wt_path.exists() {
+            remove_worker_scratch(st, &e.worker_id);
+            st.preserved_worktrees.lock().unwrap().remove(&key);
+            continue;
+        }
+        // (b) Still on disk → reclaim ONLY when provably integrated + clean.
+        if let Err(err) = crate::git_ops::unlink_worktree_deps(&e.orig_cwd, &e.wt_path) {
+            eprintln!("[worker gc] dependency unlink failed (keeping): {err}");
+            continue;
+        }
+        match crate::git_ops::worktree_integrated_against(&e.wt_path, &e.base_branch) {
+            Some(true) => {}
+            _ => continue, // keep — fail-safe
+        }
+        if let Err(err) = crate::git_ops::remove_worktree(&e.wt_path) {
+            eprintln!("[worker gc] removeWorktree failed (keeping {}): {err}", e.worker_id);
+            continue;
+        }
+        remove_worker_scratch(st, &e.worker_id);
+        st.preserved_worktrees.lock().unwrap().remove(&key);
+        inform_god(
+            &st.hive,
+            &format!("[worker worktree reclaimed] {}", e.worker_id),
+            &format!(
+                "The preserved worktree for {} is now integrated, so it and its scratch dir were garbage-collected.\nWorktree: {}",
+                e.worker_id,
+                e.wt_path.display(),
+            ),
+            e.slack.as_ref(),
+        );
+    }
 }
 
 /// processSpawnRequest — validate, spawn, register, dispatch. Terminal
@@ -278,6 +452,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             cwd: cwd.clone(),
             command: command.clone(),
             seed_prompt: None,
+            isolate: raw["isolate"].as_bool().unwrap_or(true), // upstream default
             is_god: false,
             cols: 120,
             rows: 32,
@@ -469,6 +644,26 @@ pub fn tick(app: &AppHandle) {
         }
     }
 
+    // (3) GC preserved worktrees whose work has since integrated. Throttled
+    // to GC_SWEEP_MS; a no-op when nothing is preserved (the common case).
+    {
+        static LAST_SWEEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let prev = LAST_SWEEP.load(std::sync::atomic::Ordering::Relaxed);
+        if !st.preserved_worktrees.lock().unwrap().is_empty()
+            && now.saturating_sub(prev) >= 60_000
+            && LAST_SWEEP
+                .compare_exchange(
+                    prev,
+                    now,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            gc_preserved_worktrees(&st);
+        }
+    }
+
     // (2) Intake — gated on orchestratorMaySpawn (default OFF). Declining
     // also means declining to CONSUME: a request stays queued and runs when
     // the toggle turns on.
@@ -584,9 +779,23 @@ pub fn list(app: &AppHandle) -> Value {
             })
         })
         .collect();
+    let preserved: Vec<Value> = st
+        .preserved_worktrees
+        .lock()
+        .unwrap()
+        .values()
+        .map(|e| {
+            json!({
+                "workerId": e.worker_id,
+                "wtPath": e.wt_path.display().to_string(),
+                "baseBranch": e.base_branch,
+                "preservedAt": e.preserved_at,
+            })
+        })
+        .collect();
     json!({
         "live": live,
-        "preserved": [],
+        "preserved": preserved,
         "maxWorkers": cfg.max_concurrent_workers.max(1),
     })
 }

@@ -81,6 +81,18 @@ pub struct AppState {
     /// Live god-triggered ephemeral workers (workers.rs spawn-request
     /// watcher) — release-on-done + idle/token reaping state.
     pub live_workers: crate::workers::LiveWorkers,
+    /// id → (worktreePath, origCwd) for agents spawned `isolate: true`
+    /// (upstream worktreePaths/worktreeOrigins — torn down on kill).
+    pub worktree_paths: Mutex<HashMap<String, (PathBuf, PathBuf)>>,
+    /// Preserved worker worktrees awaiting integration-GC (upstream
+    /// preservedWorktrees — the GC sweep drains it every ~60s).
+    pub preserved_worktrees: Mutex<HashMap<PathBuf, crate::workers::PreservedWorktree>>,
+    /// Live proxy-bridge sidecars per agent (qwen/crush) — stopped on
+    /// teardown so a dead PTY never leaves an orphan listener.
+    pub proxy_bridges: Mutex<HashMap<String, std::sync::Arc<crate::proxy::ProxyBridge>>>,
+    /// The Slack public tunnel (upstream tunnelmole openTunnel) — killed on
+    /// slack_stop; a None means the rail is loopback-only this session.
+    pub slack_tunnel: Mutex<Option<(String, std::process::Child)>>,
 }
 
 impl AppState {
@@ -125,6 +137,10 @@ impl AppState {
             directly_replied: std::sync::Arc::new(Mutex::new(std::collections::HashSet::new())),
             delivered_goal: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            worktree_paths: Mutex::new(HashMap::new()),
+            preserved_worktrees: Mutex::new(HashMap::new()),
+            proxy_bridges: Mutex::new(HashMap::new()),
+            slack_tunnel: Mutex::new(None),
             persist: {
                 let mut s = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
                 let _ = s.open(); // best-effort — a DB failure can't crash startup
@@ -171,6 +187,12 @@ pub struct SpawnArgs {
     /// non-hiveAware providers still get the hive prompt typed automatically.
     #[serde(default)]
     pub seed_prompt: Option<String>,
+    /// Git isolation (upstream AgentSpawnOptions.isolate): give the agent its
+    /// own `agent/<id>` worktree under <harness>/worktrees/ so it can't
+    /// clobber other agents' (or the user's) working tree. Best-effort — a
+    /// failure falls back to the shared cwd rather than blocking the spawn.
+    #[serde(default)]
+    pub isolate: bool,
     #[serde(default)]
     pub is_god: bool,
     #[serde(default = "default_cols")]
@@ -218,6 +240,7 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         cwd: entry.cwd.clone(),
         command: entry.command.clone(),
         seed_prompt: None,
+        isolate: false,
         is_god: entry.is_god,
         cols: 120,
         rows: 30,
@@ -245,12 +268,54 @@ pub(crate) fn spawn_inner(
         )
     });
 
+    // Git isolation (index.ts:2730): when requested and the cwd is a real
+    // repo, give the agent its own `agent/<id>` worktree under
+    // <harness>/worktrees/ — it can't clobber other agents' (or the user's)
+    // working tree. Best-effort: a failure falls back to the shared cwd.
+    let mut effective_cwd = args.cwd.clone();
+    if args.isolate && crate::git_ops::is_repo(std::path::Path::new(&args.cwd)) {
+        let seg: String = id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+            .collect();
+        let wt_root = st.hive.root.parent().unwrap_or(&st.hive.root).join("worktrees");
+        let wt_path = wt_root.join(&seg);
+        // Path-safety: the resolved worktree path must stay under wt_root.
+        if wt_path.starts_with(&wt_root) {
+            let base = crate::git_ops::branch(std::path::Path::new(&args.cwd))
+                .and_then(|b| b["current"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "main".into());
+            let branch = crate::git_ops::agent_branch_for(&wt_path);
+            match crate::git_ops::add_worktree(
+                std::path::Path::new(&args.cwd),
+                &wt_path,
+                Some(&branch),
+                Some(&base),
+            ) {
+                Ok(_) => {
+                    effective_cwd = wt_path.display().to_string();
+                    st.worktree_paths.lock().unwrap().insert(
+                        id.clone(),
+                        (wt_path.clone(), PathBuf::from(&args.cwd)),
+                    );
+                    if let Err(e) = crate::git_ops::link_worktree_deps(
+                        std::path::Path::new(&args.cwd),
+                        &wt_path,
+                    ) {
+                        eprintln!("[worktree] dependency link failed: {e}");
+                    }
+                }
+                Err(e) => eprintln!("[worktree] addWorktree failed: {e}"),
+            }
+        }
+    }
+
     let entry = RegistryEntry {
         id: id.clone(),
         name: args.name.clone(),
         provider: args.provider.clone(),
         role: args.role.clone().unwrap_or_default(),
-        cwd: args.cwd.clone(),
+        cwd: effective_cwd.clone(),
         is_god: args.is_god,
         status: "idle".into(),
         session_id: None,
@@ -406,6 +471,10 @@ pub(crate) fn spawn_inner(
                 None,
             ));
             if let Ok(port) = bridge.clone().start() {
+                st.proxy_bridges
+                    .lock()
+                    .unwrap()
+                    .insert(id.clone(), bridge);
                 let loopback = format!("http://127.0.0.1:{port}");
                 if args.provider == "qwen" {
                     agent_env.insert("OPENAI_BASE_URL".into(), loopback);
@@ -455,10 +524,10 @@ pub(crate) fn spawn_inner(
     // cwd: expand `~` first (existsSync never expands it — pty.ts:559), then
     // upstream's hard error on a missing workspace rather than a silent
     // reroute; an EMPTY cwd falls back to the agent's own folder.
-    let cwd = if args.cwd.is_empty() {
+    let cwd = if effective_cwd.is_empty() {
         agent_dir.display().to_string()
     } else {
-        let expanded = crate::misc::expand_tilde(&args.cwd);
+        let expanded = crate::misc::expand_tilde(&effective_cwd);
         if !std::path::Path::new(&expanded).is_dir() {
             return Err(format!("cwd does not exist: {expanded}"));
         }
@@ -668,8 +737,21 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     // A dead worker's broker capability token dies with it
     // (integrationBroker.ts revoke-on-teardown).
     crate::integrations::BROKER.revoke(&id);
-    // Gone means gone — the ephemeral-worker watcher stops tracking it too.
-    st.live_workers.lock().unwrap().remove(&id);
+    // Kill this agent's proxy-bridge sidecar (qwen/crush) — a dead PTY never
+    // leaves an orphan loopback listener (teardownPty stopProxyBridge).
+    if let Some(bridge) = st.proxy_bridges.lock().unwrap().remove(&id) {
+        bridge.stop();
+    }
+    // teardownPty step 2: worker/live tracking + the isolated-worktree gate
+    // (workers: preserve unintegrated work + defer scratch GC; regular:
+    // upstream's immediate force-remove). Empties live_workers for this id.
+    let was_worker = st.live_workers.lock().unwrap().contains_key(&id);
+    crate::workers::finalize_teardown(&st, &id);
+    if was_worker {
+        // Mirrors teardownPty's hive:agentArchived broadcast — the dead
+        // worker's floor card comes down even on a manual stop.
+        let _ = app.emit("hive-agent-archived", serde_json::json!({ "id": id }));
+    }
     st.hive.set_status(&id, "gone").map_err(err_str)?;
     let _ = app.emit(
         "agent-status",
@@ -1452,6 +1534,13 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
         }
         Err(e) => eprintln!("[slack] reply endpoint failed to start: {e}"),
     }
+    // Public tunnel (upstream slack.ts openTunnel — Slack's servers need a
+    // reachable Request URL). Non-fatal: the local handler is the security
+    // boundary and stays up even if the tunnel can't be established.
+    match crate::misc::start_tunnel(port) {
+        Ok((url, child)) => *st.slack_tunnel.lock().unwrap() = Some((url, child)),
+        Err(e) => eprintln!("[slack] tunnel unavailable: {e}"),
+    }
     Ok(true)
 }
 
@@ -1460,6 +1549,9 @@ pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
     let st = state(&app);
     st.slack.stop();
     st.slack_reply.stop();
+    if let Some((_, mut child)) = st.slack_tunnel.lock().unwrap().take() {
+        let _ = child.kill();
+    }
     // The discovery file advertises a dead socket once the rail is down —
     // drop it so a stale helper doesn't talk to an unrelated listener.
     let _ = std::fs::remove_file(crate::misc::harness_home(&app).join("slack-reply.json"));
@@ -1473,6 +1565,7 @@ pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
         "running": st.slack.is_running(),
         "port": *st.slack.url_port.lock().unwrap(),
         "replyPort": *st.slack_reply.port.lock().unwrap(),
+        "url": st.slack_tunnel.lock().unwrap().as_ref().map(|(u, _)| u.clone()),
     }))
 }
 

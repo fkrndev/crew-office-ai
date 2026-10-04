@@ -339,6 +339,12 @@ export const analyticsMessageSent = (event: string, props?: Record<string, unkno
 export const analyticsSetOptIn = (on: boolean) => invoke('analytics_set_opt_in', { on });
 export const analyticsStatus = () => invoke('analytics_status');
 export const realtimeSetSessionLive = (live: boolean) => invoke('realtime_set_session_live', { live });
+export const realtimeHasKey = () => invoke<boolean>('realtime_has_key');
+export const realtimeMintToken = (model?: string) =>
+  invoke<{ ok: boolean; token?: string; expiresAt?: number | null; sessionConfig?: { model: string }; error?: string; code?: string }>(
+    'realtime_mint_token',
+    { model },
+  );
 export const realtimeWaitFor = (taskIdOrAgent: string, timeoutMs?: number) =>
   invoke('realtime_wait_for', { taskIdOrAgent, timeoutMs });
 export const realtimeDrainCompletions = () => invoke('realtime_drain_completions');

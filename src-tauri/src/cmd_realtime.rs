@@ -27,6 +27,89 @@ fn read_live_flag(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+// ─── realtime:hasKey / realtime:mintToken (realtime.ts) ─────────────────────
+// MAIN-only OpenAI BYOK key (the same `apikey:openai` keyring ref upstream
+// uses). hasKey reports presence only; mintToken decrypts once to mint a
+// SHORT-LIVED ephemeral client secret — only the token + session config
+// cross IPC, the real key is never returned or logged.
+
+const OPENAI_KEY_REF: &str = "apikey:openai";
+const REALTIME_MODEL: &str = "gpt-realtime-2.1";
+const CLIENT_SECRETS_URL: &str = "https://api.openai.com/v1/realtime/client_secrets";
+const LEGACY_SESSIONS_URL: &str = "https://api.openai.com/v1/realtime/sessions";
+
+/// realtime:hasKey — boolean presence only; gates the voice toggle.
+#[tauri::command]
+pub fn realtime_has_key(_app: AppHandle) -> Result<bool, String> {
+    Ok(crate::misc::secret_get(OPENAI_KEY_REF).is_some())
+}
+
+/// realtime:mintToken — GA client_secrets shape first, legacy sessions
+/// fallback on 404; both response shapes normalized to {value, expires_at}.
+#[tauri::command]
+pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Value, String> {
+    let model = model
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| REALTIME_MODEL.into());
+    let Some(key) = crate::misc::secret_get(OPENAI_KEY_REF) else {
+        return Ok(json!({
+            "ok": false,
+            "error": "no OpenAI API key set — add one in Settings → Voice",
+            "code": "no_key",
+        }));
+    };
+    let post = |url: &str, body: &Value| -> Result<(u16, Value, String), String> {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let mut r = agent
+            .post(url)
+            .header("Authorization", &format!("Bearer {key}"))
+            .header("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| format!("{e}"))?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().unwrap_or_default();
+        let j: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+        Ok((status, j, text))
+    };
+    let mut res = post(CLIENT_SECRETS_URL, &json!({ "session": { "type": "realtime", "model": model } }));
+    if let Ok((404, ..)) = res {
+        res = post(LEGACY_SESSIONS_URL, &json!({ "model": model }));
+    }
+    match res {
+        Err(e) => Ok(json!({ "ok": false, "error": e, "code": "network" })),
+        Ok((status, j, text)) if !(200..300).contains(&status) => {
+            let msg = j["error"]["message"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| Some(text.chars().take(200).collect()))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            Ok(json!({ "ok": false, "error": format!("token mint failed ({status}): {msg}"), "code": "mint_failed" }))
+        }
+        Ok((_status, j, _text)) => {
+            let token = j["value"]
+                .as_str()
+                .or_else(|| j["client_secret"]["value"].as_str())
+                .unwrap_or("");
+            if token.is_empty() {
+                return Ok(json!({ "ok": false, "error": "mint returned no ephemeral token", "code": "no_token" }));
+            }
+            let expires_at = j["expires_at"]
+                .as_u64()
+                .or_else(|| j["client_secret"]["expires_at"].as_u64());
+            Ok(json!({
+                "ok": true,
+                "token": token,
+                "expiresAt": expires_at,
+                "sessionConfig": { "model": model },
+            }))
+        }
+    }
+}
+
 /// realtime:setSessionLive — emit vs queue for detected completions.
 #[tauri::command]
 pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, String> {

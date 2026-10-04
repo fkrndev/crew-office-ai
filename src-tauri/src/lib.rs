@@ -386,7 +386,8 @@ pub fn run() {
                             }
                         }
                     }
-                    commands::write_fleet_snapshot(&handle2);
+                    // (fleet.json refresh lives on its own 8s timer below —
+                    // upstream's fleetTimer cadence, not the breaker beat's.)
                     // Drain each agent's api_error stamps into the breaker's
                     // storm window before the tick (telemetry push → pull).
                     {
@@ -502,6 +503,16 @@ pub fn run() {
                             );
                         }
                     }
+                }
+            });
+            // fleet.json heartbeat — upstream's ~8s fleetTimer keeps the
+            // snapshot god is told to Read fresh even when no hook fires.
+            let handle6 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(8));
+                loop {
+                    tick.tick().await;
+                    commands::write_fleet_snapshot(&handle6);
                 }
             });
             // Ephemeral-worker watcher (workers.rs — upstream's 1.5s
@@ -841,6 +852,8 @@ pub fn run() {
             cmd_analytics::analytics_status,
             cmd_realtime::realtime_set_session_live,
             cmd_realtime::realtime_wait_for,
+            cmd_realtime::realtime_has_key,
+            cmd_realtime::realtime_mint_token,
             cmd_realtime::realtime_drain_completions,
             cmd_realtime::realtime_track_dispatch,
             cmd_realtime::realtime_actions_status,

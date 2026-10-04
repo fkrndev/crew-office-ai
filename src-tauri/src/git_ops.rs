@@ -588,6 +588,126 @@ pub fn worktree_is_gc_safe(cwd: &Path) -> Option<Value> {
     }))
 }
 
+/// agentBranchFor (git.ts:254) — derive a safe `agent/<id>` branch name from
+/// a worktree path's basename.
+pub fn agent_branch_for(wt_path: &Path) -> String {
+    let base = wt_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "agent".into());
+    let slug: String = base
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-');
+    format!("agent/{}", if slug.is_empty() { "agent" } else { slug })
+}
+
+/// worktreeHasUnintegratedWork with an explicit BASE ref (upstream compares
+/// `baseBranch..HEAD`, not the upstream tracking branch — a worker's
+/// `agent/<id>` branch usually has none). keep = dirty OR ahead>0 OR any
+/// unknown (fails safe: uncertainty keeps the worktree).
+pub fn worktree_unintegrated_details(
+    wt_path: &Path,
+    base_branch: &str,
+) -> Option<(bool, String, String)> {
+    let repo = git2::Repository::discover(wt_path).ok()?;
+    let branch = repo
+        .head()
+        .ok()
+        .and_then(|h| if h.is_branch() { h.shorthand().ok().map(str::to_string) } else { None })
+        .unwrap_or_else(|| "(detached)".into());
+    let s = status(wt_path);
+    let dirty = s
+        .and_then(|v| v["clean"].as_bool().map(|c| !c))
+        .unwrap_or(true); // unknown → assume dirty
+    let ahead: Option<u64> = (|| {
+        let base = repo.revparse_single(base_branch).ok()?.peel_to_commit().ok()?;
+        let head = repo.head().ok()?.peel_to_commit().ok()?;
+        let (ahead, _behind) = repo.graph_ahead_behind(head.id(), base.id()).ok()?;
+        Some(ahead as u64)
+    })();
+    let keep = dirty || ahead.map(|a| a > 0).unwrap_or(true);
+    let detail = format!(
+        "dirty={dirty}, commitsAheadOf({base_branch})={}",
+        ahead.map(|a| a.to_string()).unwrap_or_else(|| "unknown".into())
+    );
+    Some((keep, detail, branch))
+}
+
+/// worktreeIsGcSafe against an explicit base (the GC sweep's proof the
+/// worker's content already landed): clean tree AND (HEAD reachable from
+/// base OR `diff base HEAD` empty — squash/merge parity).
+pub fn worktree_integrated_against(wt_path: &Path, base_branch: &str) -> Option<bool> {
+    let s = status(wt_path)?;
+    if s["clean"].as_bool() != Some(true) {
+        return Some(false);
+    }
+    let repo = git2::Repository::discover(wt_path).ok()?;
+    let base = repo.revparse_single(base_branch).ok()?.peel_to_commit().ok()?;
+    let head = repo.head().ok()?.peel_to_commit().ok()?;
+    if let Ok((ahead, _)) = repo.graph_ahead_behind(head.id(), base.id()) {
+        if ahead == 0 {
+            return Some(true);
+        }
+    }
+    // Squash-proof: content identical even if history differs.
+    let diff = repo
+        .diff_tree_to_tree(Some(&base.tree().ok()?), Some(&head.tree().ok()?), None)
+        .ok()?;
+    Some(diff.deltas().len() == 0)
+}
+
+/// linkWorktreeDeps — junction (win32) / symlink the base checkout's
+/// node_modules into a fresh worktree so installs aren't duplicated.
+pub fn link_worktree_deps(base_dir: &Path, worktree_dir: &Path) -> Result<(), String> {
+    let base_nm = base_dir.join("node_modules");
+    let wt_nm = worktree_dir.join("node_modules");
+    if !base_nm.is_dir() || wt_nm.exists() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        let st = std::process::Command::new("cmd")
+            .args(["/d", "/s", "/c", "mklink", "/J"])
+            .arg(&wt_nm)
+            .arg(&base_nm)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if st.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&st.stderr).trim().to_string())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(&base_nm, &wt_nm).map_err(|e| e.to_string())
+    }
+}
+
+/// unlinkWorktreeDeps — remove the link ONLY (never the real dir): verify
+/// the entry is a symlink/junction pointing back at the base node_modules.
+pub fn unlink_worktree_deps(base_dir: &Path, worktree_dir: &Path) -> Result<(), String> {
+    let base_nm = base_dir.join("node_modules");
+    let wt_nm = worktree_dir.join("node_modules");
+    let Ok(meta) = std::fs::symlink_metadata(&wt_nm) else {
+        return Ok(()); // absent or not a link → nothing to do
+    };
+    if !meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let target = std::fs::read_link(&wt_nm).map_err(|e| e.to_string())?;
+    let resolved = worktree_dir.join(&target);
+    let a = std::fs::canonicalize(&base_nm).ok();
+    let b = std::fs::canonicalize(&resolved).ok();
+    if a.is_some() && a == b {
+        std::fs::remove_dir(&wt_nm).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Topological history page for the commit-graph renderer — getLogGraph():
 /// `--all --topo-order`, pageable via n + skip, each commit carrying its
 /// parent edges for DAG layout.
@@ -808,6 +928,50 @@ mod tests {
         assert_eq!(s["clean"].as_bool(), Some(false));
         drop(repo);
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn agent_branch_slug() {
+        assert_eq!(
+            agent_branch_for(std::path::Path::new("/x/worktrees/worker-abc123")),
+            "agent/worker-abc123"
+        );
+        // unsafe basename chars → '-' (injection-proof like upstream slugify)
+        assert_eq!(
+            agent_branch_for(std::path::Path::new("/x/wt/../evil name")),
+            "agent/evil-name"
+        );
+        assert_eq!(agent_branch_for(std::path::Path::new("/x/---")), "agent/agent");
+    }
+
+    #[test]
+    fn unintegrated_details_repo() {
+        let dir = std::env::temp_dir().join(format!("ao-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        // Seed commit so rev-list/dirty checks have something to compare.
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let mut idx = repo.index().unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        idx.add_path(std::path::Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let oid = repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "init",
+            &repo.find_tree(idx.write_tree().unwrap()).unwrap(),
+            &[],
+        );
+        assert!(oid.is_ok());
+        let (keep, detail, _branch) =
+            worktree_unintegrated_details(&dir, "HEAD").expect("repo must answer");
+        assert!(!keep, "clean repo at HEAD must not be kept ({detail})");
+        // Dirty file → keep.
+        std::fs::write(dir.join("a.txt"), "changed").unwrap();
+        let (keep, _, _) = worktree_unintegrated_details(&dir, "HEAD").unwrap();
+        assert!(keep);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
