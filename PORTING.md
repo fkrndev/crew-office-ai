@@ -53,7 +53,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | Missing-CLI auto-install | `PENDING_INSTALLS` + `misc::install_script` (native → npm → manual-hint ladder per provider) + `pty:relaunch:<id>` on clean installer exit, `no_auto_install` loop guard | DONE |
 | Provider context verbs | `misc::context_commands` = total providerAutomation.ts table (/compress for gemini+qwen, focus-arg gating per provider); drives context-trigger, auto-compact missions, compact-queue drain AND voice clear_context | DONE |
 | Compact-queue drain | parked compacts fire the provider verb at the next idle transition (hooks emit_status) — the queue previously had no consumer | DONE |
-| `power:resume` keepalive | Emulated: a dedicated 1s watchdog sees wall-clock gaps >5s — after upstream's 15s pipe-wake grace, `power_resume_probe` pid-probes every registered PTY and emits `power:resume {reason,awayMs,dead,total}` so the renderer's auto-revive respawns dead agents with --resume | DONE (gap-based detection; sleeps <5s are the only observable difference) |
+| `power:resume` keepalive | Emulated: REAL events on Windows: a hidden message-only window receives WM_POWERBROADCAST (suspend/resume) + WTS_SESSION_CHANGE (lock/unlock) — upstream's exact four powerMonitor listeners. Suspend stamps the clock; resume/unlock re-arms the scheduler instantly and, after upstream's 15s pipe-wake grace, `power_resume_probe` pid-probes every registered PTY and emits `power:resume {reason,awayMs,dead,total}` so the renderer's auto-revive respawns dead agents with --resume | DONE (real OS events on Windows; gap watchdog is the non-Windows fallback) |
 | `munderdifflin://` + `agent-office://` deep-link hires | tauri-plugin-deep-link (both schemes in tauri.conf.json) + `on_open_url` → park_pending_hire → `hire-pending` → renderer drains via hire:drainPending + hire_fetch/validate (the upstream fetch+review split); single-instance plugin forwards a second process's argv and focuses the main window; cold-start argv is scanned at boot | DONE |
 | `pathForFile` drag-drop attach | `onDragDropEvent` carries the OS paths; the shim synthesizes a DOM `drop` at the cursor's element with `File`s whose `.path` is set — the copied upstream drop handlers work unmodified | DONE |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
@@ -499,3 +499,5 @@ mirrored by tauri commands. New this pass:
   crosses IPC. misc::start_tunnel — `npx tunnelmole <port>` URL scrape,
   wired into webhook:start and slack:start; the child dies on stop.
   114 tests green (95 lib + 11 parity + 8 shim).
+
+| `sendSync` (roster:readSync, clipboard:readSync) | sync_api.rs loopback + synchronous XHR — real blocking semantics, fresh values; caches remain fallback | DONE |
