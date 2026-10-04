@@ -306,7 +306,7 @@ pub fn run() {
                                             serde_json::json!({
                                                 "id": d.msg_id,
                                                 "from": d.from,
-                                                "to": d.targets.first().cloned().unwrap_or_default(),
+                                                "to": d.to,
                                                 "act": d.act,
                                                 "subject": d.subject,
                                                 "targets": d.targets,
