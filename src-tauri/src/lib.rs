@@ -768,6 +768,7 @@ pub fn run() {
             commands::webhook_pending,
             commands::triggers_list,
             commands::triggers_clear,
+            commands::trigger_history_decide,
             commands::cost_lifetime,
             commands::roster_read,
             commands::roster_write,

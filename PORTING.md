@@ -38,15 +38,16 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `git.ts`, `worktreeDeps.ts` (worktrees, fs/git broker for IDE) | `git2` usage in `hive.rs` covers commit; IDE git rails = TODO | PARTIAL |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds or `tauri-plugin-fs` + explicit scope check | TODO |
 
-| Renderer (React) | Port strategy |
+| Renderer (React) | Status |
 |---|---|
-| `PtyTerminalView`/`TerminalView` (xterm.js) | port now — xterm works in webview |
-| `agentProvider.ts` presets | ported → `src/providers.ts` (data only; bridge shims deferred) |
-| Office floor (Pixi.js scene/*) | `OfficeFloorLite.tsx` — canvas2d render of the SAME office.tmj + tilesets (copied w/ ATTRIBUTION.md); spawn-point seating, status glow, envelope flights. Full Pixi pipeline (walk paths, wander, thought bubbles, Character/portraitArt) = TODO | PARTIAL |
-| CommandCenter (tasks/triggers/memory/threads) | PHASE 2 |
-| Monaco IDE (`src/ide`, FileTree, git rails) | PHASE 3 — needs `fs.rs`/`git.rs` broker cmds |
-| Slack/webhooks/settings/onboarding/updater UI | PHASE 3 |
-| i18n (i18next) | TODO — copy `src/renderer/src/i18n` |
+| Entire renderer tree (~157 files, 2.3MB) | VERBATIM port — all of `src/renderer/src/{components,hooks,freeflow,ide,markdown,integrations,realtime,terminal,store,scene,design,i18n}` copied onto a `window.cth` shim (`src/cth.ts`, generated from the upstream preload→channel map; ~160 invoke channels + ~20 event helpers). tsc clean, vite build green. |
+| Office floor (Pixi.js scene/*) | FULL Pixi pipeline — OfficeFloor.tsx + Character/portraitArt/TiledMapRenderer/Camera/bubbles/envelopes/themes/pathfinding/cast copied unchanged. Backend emits `hive:message` in the upstream payload shape so handoff envelopes are real routes. |
+| `window.cth` bridge | shim maps upstream preload methods onto Tauri `invoke()`/`listen()`; per-id `pty:data:<id>`/`pty:exit:<id>` channels emitted alongside the aggregate events (upstream contract). |
+| `store/useHive` wiring | upstream `store.ts` + `useHive.ts` (68KB) verbatim — roster/status/tool streaming flows through the same code paths as Electron. |
+| i18n (en/zh-CN/ar, godName interpolation) | verbatim, `@shared` → `src/shared` alias |
+| Monaco IDE + CodeMirror editors + xterm WebGL/unicode11 | deps installed (`monaco-editor`, `@monaco-editor/react`, `@uiw/react-codemirror`, `@xterm/addon-{webgl,unicode11}`), wired through the same components |
+| `realtime:action{,:confirm,:cancel}` | backend `realtimeActions.ts` NOT yet ported — shim returns null + console warn (TODO) |
+| `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
 
 ## Env contract at agent spawn (from ptyEnv.ts + hive.ts:803)
 

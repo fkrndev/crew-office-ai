@@ -1067,6 +1067,31 @@ pub fn webhook_reject(app: AppHandle, token: String) -> Result<serde_json::Value
         .ok_or_else(|| "unknown or non-pending entry".to_string())
 }
 
+/// triggerHistory:decide — the operator's verdict on a held message.
+/// 'approved' releases the identical dispatch path an auto-allowed message
+/// would take; 'rejected' just flips. Idempotent: only a `pending` entry can
+/// be decided (upstream index.ts:4300).
+#[tauri::command]
+pub fn trigger_history_decide(
+    app: AppHandle,
+    arg: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    let id = arg.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    let decision = match arg.get("decision").and_then(|v| v.as_str()) {
+        Some("approved") => "approved",
+        Some("rejected") => "rejected",
+        _ => return Err("decision must be 'approved' or 'rejected'".to_string()),
+    };
+    if id.is_empty() {
+        return Err("missing id".to_string());
+    }
+    Ok(st
+        .webhook
+        .decide(&app, &st.hive, id, decision)
+        .unwrap_or(serde_json::Value::Null))
+}
+
 /// Pending inbound rows — upstream's surface is the trigger ledger itself
 /// (entries still at decision:'pending').
 #[tauri::command]

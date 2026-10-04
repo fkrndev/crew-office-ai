@@ -596,8 +596,14 @@ fn finish(
                         "pty-output",
                         PtyOutputPayload {
                             id: event_id.clone(),
-                            data,
+                            data: data.clone(),
                         },
+                    );
+                    // Upstream's per-id channel (`pty:data:<id>`) — the
+                    // preload payload there is the raw string.
+                    let _ = app_reader.emit(
+                        &format!("pty:data:{event_id}"),
+                        serde_json::json!(data),
                     );
                 }
                 Err(_) => break,
@@ -623,6 +629,12 @@ fn finish(
                 id: event_id2.clone(),
                 code,
             },
+        );
+        // Upstream's per-id channel (`pty:exit:<id>`) — payload {exitCode,
+        // signal} there; code maps to exitCode, signal is always null here.
+        let _ = app.emit(
+            &format!("pty:exit:{event_id2}"),
+            serde_json::json!({ "exitCode": code, "signal": null }),
         );
         // Natural-exit teardown (upstream's exitHandler): a child that exits
         // on its own gets the same lifecycle cleanup as an explicit kill —
