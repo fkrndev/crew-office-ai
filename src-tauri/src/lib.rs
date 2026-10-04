@@ -145,6 +145,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let harness_home = app
                 .path()
@@ -715,58 +716,44 @@ pub fn run() {
                 }
             }
 
-            // Mission scheduler — syncMissions port as a 15s poll (no timer
-            // re-arm; a missions:save takes effect on the next tick).
+            // Mission scheduler — syncMissions port as a delay loop, not a
+            // fixed poll: upstream arms a per-mission setTimeout(remaining),
+            // so the port sleeps until the earliest due mission, fires it,
+            // then re-computes. A missions:save wakes the loop through
+            // mission_rearm (upstream's clearMissionTimers+re-arm on write).
+            // Heartbeat rides its adaptive cadence map, exactly upstream.
             let handle3 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_secs(15));
-                // power:resume emulation — Tauri has no powerMonitor, but a
-                // suspended machine freezes this interval the same way it
-                // froze libuv's: a wall-clock gap far past the tick means we
-                // slept. Upstream gives PTYs 15s to wake their pipes before
-                // judging them dead, so the probe rides a spawned timer.
-                let mut last_tick_wall = 0u64;
+                let mut heartbeat_cadence: std::collections::HashMap<String, u64> =
+                    std::collections::HashMap::new();
                 loop {
-                    tick.tick().await;
                     let st = handle3.state::<AppState>();
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
-                    if last_tick_wall != 0 && now.saturating_sub(last_tick_wall) > 90_000 {
-                        let away_ms = now - last_tick_wall;
-                        let handle9 = handle3.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(15)).await;
-                            crate::misc::power_resume_probe(&handle9, away_ms);
-                        });
-                    }
-                    last_tick_wall = now;
+                    let missions_now: Vec<missions::ScheduledMission> =
+                        st.config.lock().unwrap().missions.clone();
                     let mut fired_ids: Vec<String> = Vec::new();
-                    {
-                        let cfg = st.config.lock().unwrap();
-                        for m in &cfg.missions {
-                            if !m.enabled || !missions::is_mission_due(m, now) {
-                                continue;
-                            }
-                            // Heartbeat is quiet-gated: only fires when the
-                            // whole floor has been silent past its threshold.
-                            if m.kind.as_deref() == Some("heartbeat") {
-                                let clocks: Vec<u64> = st
-                                    .ptys
-                                    .lock()
-                                    .unwrap()
-                                    .values()
-                                    .map(|h| h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
-                                    .collect();
-                                let threshold = m.quiet_threshold_ms.unwrap_or(300_000);
-                                if !st.hive.is_floor_quiet(threshold, &clocks) {
-                                    continue;
-                                }
-                            }
-                            fire_mission(&handle3, &st, m);
-                            fired_ids.push(m.id.clone());
+                    for m in &missions_now {
+                        let Some(due) =
+                            missions::mission_due_ms(m, now, &heartbeat_cadence)
+                        else {
+                            continue;
+                        };
+                        if due > 0 {
+                            continue;
                         }
+                        if m.kind.as_deref() == Some("heartbeat") {
+                            // The beat ALWAYS stamps + evaluates: re-engage on
+                            // quiet-or-actionable, tighten on looksStuck.
+                            let next =
+                                missions::heartbeat_beat(&st, m, now);
+                            heartbeat_cadence.insert(m.id.clone(), next);
+                        } else {
+                            fire_mission(&handle3, &st, m);
+                        }
+                        fired_ids.push(m.id.clone());
                     }
                     if !fired_ids.is_empty() {
                         let mut cfg = st.config.lock().unwrap();
@@ -778,6 +765,52 @@ pub fn run() {
                         let _ = st.config_store.save(&cfg);
                         let _ = handle3.emit("missions:updated", serde_json::json!({}));
                     }
+                    // Sleep until the earliest next due — upstream's timer
+                    // granularity. Re-arm wakes take effect instantly; the
+                    // 60s cap bounds drift if a mission is added out-of-band.
+                    let wait = st
+                        .config
+                        .lock()
+                        .unwrap()
+                        .missions
+                        .iter()
+                        .filter_map(|m| {
+                            missions::mission_due_ms(m, now, &heartbeat_cadence)
+                        })
+                        .min()
+                        .unwrap_or(60_000)
+                        .clamp(100, 60_000);
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(wait)) => {},
+                        _ = st.mission_rearm.notified() => {},
+                    }
+                }
+            });
+
+            // power:resume watchdog — a suspended machine freezes every
+            // timer; a 1s wall-clock gap detector sees sleeps as short as
+            // ~2s (upstream fires on ANY resume). The probe still waits
+            // upstream's 15s pipe-wake grace before judging PTYs dead.
+            let handle10 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
+                tick.tick().await;
+                let mut last_wall = 0u64;
+                loop {
+                    tick.tick().await;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    if last_wall != 0 && now.saturating_sub(last_wall) > 5_000 {
+                        let away_ms = now - last_wall;
+                        let handle9 = handle10.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(15)).await;
+                            crate::misc::power_resume_probe(&handle9, away_ms);
+                        });
+                    }
+                    last_wall = now;
                 }
             });
             Ok(())

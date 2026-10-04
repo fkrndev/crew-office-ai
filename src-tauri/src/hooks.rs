@@ -311,15 +311,22 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     }
 }
 
-/// The OS-toast equivalent — upstream fires `new Notification` gated on the
-/// user's `notifications` config (hooks.ts:602). No tauri-notification
-/// plugin in this port: emit `hive-notify` for the renderer to toast instead,
-/// gated on the same config toggle (default off like upstream).
+/// breakerToast/idle-toast — upstream fires `new Notification` gated on the
+/// `notifications` config (hooks.ts:602). tauri-plugin-notification gives the
+/// real OS toast; `hive-notify` stays as an in-app mirror the renderer can
+/// also surface.
 fn notify(app: &AppHandle, st: &AppState, agent_id: &str, body: &str) {
     if !st.config.lock().unwrap().notifications {
         return;
     }
     let title = if agent_id.is_empty() { "Agent" } else { agent_id };
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
     let _ = app.emit(
         "hive-notify",
         json!({ "agentId": agent_id, "title": title, "body": body }),

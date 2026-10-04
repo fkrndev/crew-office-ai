@@ -62,6 +62,10 @@ pub struct AppState {
     /// The roster mirror (roster.rs) — UI floor state on disk with
     /// append-only backups + the empty-first-write guard.
     pub roster: crate::roster::RosterStore,
+    /// Mission re-arm signal — upstream's `clearMissionTimers`+`syncMissions`
+    /// on every config save. `missions:save` notifies; the scheduler loop
+    /// wakes immediately instead of waiting out its sleep.
+    pub mission_rearm: tokio::sync::Notify,
     /// Closing-time protocol (closing_time.rs) — graceful shutdown via the
     /// hive rails: god brief + worker ACKs + verified COMPLETE.
     pub closing: crate::closing_time::ClosingTime,
@@ -141,6 +145,7 @@ impl AppState {
             context_last_compact: Mutex::new(context_last_run),
             cost_moved: Mutex::new(HashMap::new()),
             roster: crate::roster::RosterStore::new(harness_home.clone()),
+            mission_rearm: tokio::sync::Notify::new(),
             closing: crate::closing_time::ClosingTime::default(),
             slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
             slack_reply: std::sync::Arc::new(crate::slack::SlackReplyServer::new()),
@@ -642,11 +647,8 @@ pub(crate) fn spawn_inner(
     // spawn and dies on its own missing-binary error — same as upstream.
     if !args.no_auto_install && pty::resolve_program(&first_tok, &path).is_none() {
         let npm_available = pty::resolve_program("npm", &path).is_some();
-        let node_probe = crate::misc::node_install_command().and_then(|(probe, _)| {
-            pty::resolve_program(probe, &path).is_some().then_some(probe)
-        });
         if let Some((script, relaunch)) =
-            crate::misc::install_script(&args.provider, &first_tok, npm_available, node_probe)
+            crate::misc::install_script(&args.provider, &first_tok, npm_available)
         {
             if relaunch {
                 let mut retry = args.clone();
@@ -1011,8 +1013,9 @@ pub fn missions_save(
         cfg.missions = missions;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    // The scheduler polls config — a save takes effect on the next tick for
-    // free (no re-arm plumbing; that's the poll design's payoff).
+    // Upstream's clearMissionTimers+re-arm on write: wake the scheduler loop
+    // so the new cadence applies now, not after the current sleep.
+    st.mission_rearm.notify_waiters();
     let _ = app.emit("missions:updated", serde_json::json!({}));
     Ok(())
 }
@@ -1227,6 +1230,9 @@ pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<serde_j
     *cfg = serde_json::from_value(raw).map_err(|e| e.to_string())?;
     st.config_store.save(&cfg).map_err(err_str)?;
     drop(cfg);
+    // onConfigWritten → syncMissions re-arm (upstream re-arms on EVERY
+    // config write, not just missions:save).
+    st.mission_rearm.notify_waiters();
     get_config(app)
 }
 
@@ -1561,6 +1567,7 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
                 &files_dir,
             );
             let mut text = text.trim().to_string();
+            let slack_raw_text = text.clone();
             if !local_files.is_empty() {
                 let lines = local_files
                     .iter()
@@ -1602,6 +1609,16 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
                 .unwrap_or_else(|_| "slack-reply".into());
             let preamble =
                 crate::slack::autonomous_request_protocol(&channel, &thread_ts, &helper);
+            // slack:incomingMessage (upstream index.ts) — the renderer's live
+            // Slack feed gets the message even while main routes it to god.
+            let mut ipc_msg = serde_json::json!({
+                "text": slack_raw_text, "channel": channel, "ts": _ts, "thread_ts": thread_ts,
+                "autonomyPreamble": preamble,
+            });
+            if !local_files.is_empty() {
+                ipc_msg["files"] = serde_json::json!(local_files);
+            }
+            let _ = app3.emit("slack:incomingMessage", &ipc_msg);
             let instruction = format!("{preamble}{text}\n\n(tracked as kanban card {task_id})");
             if let Ok(_d) = hive.send_virtual("slack", "god", "request", &card_title, &instruction) {
                 trigger_history.append(crate::trigger_history::TriggerHistoryEntry {

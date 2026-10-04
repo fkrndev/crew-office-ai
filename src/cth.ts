@@ -49,7 +49,7 @@ export function installCth(): void {
   // an aggressive interval (a paste within ~2s of copy still lands).
   clipboardPoll();
   rosterPoll();
-  window.setInterval(clipboardPoll, 2000);
+  window.setInterval(clipboardPoll, 500);
   window.setInterval(rosterPoll, 3000);
   window.addEventListener('focus', clipboardPoll);
 

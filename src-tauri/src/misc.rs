@@ -147,24 +147,87 @@ pub fn provider_install(provider: &str) -> (Option<&'static str>, Option<&'stati
     }
 }
 
-/// The platform's Node installer for the node-then-npm rung — upstream
-/// resolves the current LTS from nodejs.org and runs the official .msi/.pkg;
-/// here we use the OS package manager when one is on PATH (winget on
-/// Windows, brew on macOS). `None` = no Node install path we can vouch for,
-/// which drops the ladder to the native rung.
-pub fn node_install_command() -> Option<(&'static str, &'static str)> {
-    // (detect program, install command). PATH-refresh hint is spliced into
-    // the script after install so the npm step sees node immediately.
-    if cfg!(windows) {
-        Some((
-            "winget",
-            "winget install OpenJS.NodeJS --exact --silent --accept-source-agreements --accept-package-agreements",
-        ))
+/// resolveNodeInstaller (nodeInstall.ts) — the current LTS artifact from
+/// nodejs.org with its SHASUMS256 digest. `dist/index.json` → first `lts`
+/// entry → `SHASUMS256.txt` for the platform artifact (win-x64 .msi, macOS
+/// .pkg, linux .tar.xz). `None` = offline or no artifact — the ladder then
+/// falls to the native rung.
+const NODE_DIST: &str = "https://nodejs.org/dist";
+
+pub struct NodeInstaller {
+    version: String,
+    file: String,
+    url: String,
+    sha256: String,
+}
+
+fn resolve_node_installer() -> Option<NodeInstaller> {
+    let index: serde_json::Value = ureq::get(&format!("{NODE_DIST}/index.json"))
+        .call().ok()?.body_mut().read_json().ok()?;
+    let lts = index.as_array()?.iter()
+        .find(|e| e["lts"].is_string() || e["lts"] == serde_json::json!(true))?;
+    let version = lts["version"].as_str()?.to_string();
+    let file = if cfg!(windows) {
+        format!("node-{version}-x64.msi")
     } else if cfg!(target_os = "macos") {
-        Some(("brew", "brew install node"))
+        format!("node-{version}.pkg")
     } else {
-        None
+        let a = match std::env::consts::ARCH { "aarch64" => "arm64", _ => "x64" };
+        format!("node-{version}-linux-{a}.tar.xz")
+    };
+    let sha_body: String = ureq::get(&format!("{NODE_DIST}/{version}/SHASUMS256.txt"))
+        .call().ok()?.body_mut().read_to_string().ok()?;
+    // "<sha>  <file>" lines — pull our artifact's digest.
+    let sha256 = sha_body.lines().find_map(|l| {
+        let mut it = l.split_whitespace();
+        let sha = it.next()?;
+        (it.next()? == file).then(|| sha.to_string())
+    })?;
+    Some(NodeInstaller { url: format!("{NODE_DIST}/{version}/{file}"), version, file, sha256 })
+}
+
+/// buildNodeInstallScript (nodeInstall.ts) — download → digest-verify →
+/// install. Windows: certutil + findstr (the only guaranteed tools);
+/// msiexec's own UAC prompt is the elevation — never silent. POSIX:
+/// shasum on macOS, sha256sum on Linux.
+fn node_install_script(n: &NodeInstaller) -> String {
+    if cfg!(windows) {
+        let f = format!("%TEMP%\\{}", n.file);
+        return [
+            format!("echo   Downloading Node.js {} ^(official installer^)...", n.version),
+            format!("curl -fSL {} -o {f}", n.url),
+            "if errorlevel 1 exit /b 1".to_string(),
+            "echo   Verifying checksum...".to_string(),
+            format!("certutil -hashfile {f} SHA256 | findstr /i /c:{} >nul", n.sha256),
+            "if errorlevel 1 (echo   [x] CHECKSUM MISMATCH - refusing to install ^& exit /b 1)".to_string(),
+            "echo   Installing - approve the Windows prompt if it appears...".to_string(),
+            format!("msiexec /i {f} /passive /norestart"),
+            "if errorlevel 1 exit /b 1".to_string(),
+            "set \"PATH=%ProgramFiles%\\nodejs;%PATH%\"".to_string(),
+        ].join("\r\n");
     }
+    let verify = if cfg!(target_os = "macos") {
+        format!("echo \"{}  $__f\" | shasum -a 256 -c - >/dev/null", n.sha256)
+    } else {
+        format!("echo \"{}  $__f\" | sha256sum -c - >/dev/null", n.sha256)
+    };
+    let install = if cfg!(target_os = "macos") {
+        "sudo installer -pkg \"$__f\" -target /".to_string()
+    } else {
+        "sudo tar -xJf \"$__f\" -C /usr/local --strip-components=1".to_string()
+    };
+    [
+        format!("echo '  Downloading Node.js {} (official installer)...'", n.version),
+        "__tmp=$(mktemp -d)".to_string(),
+        format!("__f=$__tmp/{}", n.file),
+        format!("curl -fSL --progress-bar {} -o \"$__f\" || {{ echo '  [x] Download failed.'; exit 1; }}", n.url),
+        "echo '  Verifying checksum...'".to_string(),
+        format!("{verify} || {{ echo '  [x] CHECKSUM MISMATCH - refusing to install.'; rm -rf \"$__tmp\"; exit 1; }}"),
+        "echo ''".to_string(),
+        "echo '  Installing Node.js. Enter your password if prompted -'".to_string(),
+        "echo '  the official installer writes outside your home directory.'".to_string(),
+        install,
+    ].join("\n")
 }
 
 /// chooseInstallRung + buildMissingCliScript, in the UPSTREAM rung order —
@@ -177,7 +240,6 @@ pub fn install_script(
     provider: &str,
     bin: &str,
     npm_available: bool,
-    node_probe: Option<&str>,
 ) -> Option<(String, bool)> {
     let (native_posix, native_win32, npm) = provider_install(provider);
     let native = if cfg!(windows) { native_win32 } else { native_posix };
@@ -191,19 +253,16 @@ pub fn install_script(
         ));
     }
 
-    // Rung 2: npm missing but a Node installer exists — install Node first,
-    // then the package (node-then-npm). The PATH splice lets the npm step
-    // resolve node inside the same shell.
-    if let (Some(cmd), Some((probe, node_cmd))) = (npm, node_install_command()) {
-        if node_probe == Some(probe) {
-            let path_fix = if cfg!(windows) {
-                "set \"PATH=%ProgramFiles%\\nodejs;%PATH%\""
-            } else {
-                ""
-            };
+    // Rung 2: npm missing but the official Node installer resolves — install
+    // Node first, then the package (node-then-npm). The PATH splice lets the
+    // npm step resolve node inside the same shell.
+    if let Some(cmd) = npm {
+        if let Some(n) = resolve_node_installer() {
+            let path_fix = if cfg!(windows) { "" } else { "export PATH=/usr/local/bin:$PATH" };
             return Some((
                 format!(
-                    "echo {header}installing Node.js first, then the package.\r\n{node_cmd}\r\n{path_fix}{cmd}"
+                    "echo {header}installing Node.js first, then the package.\r\n{}\r\n{path_fix}{cmd}",
+                    node_install_script(&n)
                 ),
                 true,
             ));

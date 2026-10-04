@@ -1,16 +1,16 @@
-//! Scheduled missions â€” port of the scheduler half of `index.ts` (syncMissions
+//! Scheduled missions --” port of the scheduler half of `index.ts` (syncMissions
 //! + fire) and the mission constants of `config.ts`.
 //!
 //! A recurring auto-dispatched mission: when `now - last_fired_at >=
-//! interval_ms`, fire â€” a `kind:'compact'` mission emits the compact trigger
+//! interval_ms`, fire --” a `kind:'compact'` mission emits the compact trigger
 //! instead of mailing (its `to`/`body` are empty), every other kind mails
 //! `body` to `to` from the virtual 'scheduler' sender. `kind:'heartbeat'` is
 //! additionally quiet-gated: it only fires when the floor has been silent for
-//! `quiet_threshold_ms` (log.jsonl + mailbox mtimes + PTY output â€” the same
+//! `quiet_threshold_ms` (log.jsonl + mailbox mtimes + PTY output --” the same
 //! file/activity signals as upstream's isFloorQuiet, never registry.status).
 //!
 //! Deviation: upstream arms per-mission setTimeout/interval handles and
-//! re-arms on every config save. This port polls every 15s â€” same due-time
+//! re-arms on every config save. This port polls every 15s --” same due-time
 //! semantics, no re-arm plumbing, and a config edit takes effect on the next
 //! tick for free. Weekly schedules port the full upstream shared/weeklySchedule.ts contract below..
 
@@ -31,7 +31,7 @@ pub struct ScheduledMission {
     #[serde(default)]
     pub auto_compact: bool,
     /// shared/weeklySchedule.ts WeeklySchedule {days:[0..6], minute:0..1439}
-    /// â€” when present and valid it REPLACES the interval cadence.
+    /// --” when present and valid it REPLACES the interval cadence.
     pub weekly: Option<serde_json::Value>,
     pub last_fired_at: u64,
 }
@@ -61,7 +61,7 @@ pub fn ops_standup() -> ScheduledMission {
         interval_ms: 3_600_000,
         to: "god".into(),
         body: "Hourly ops standup. Review every agent: who is doing what, and confirm each \
-               is still running (not stalled or idle-stale). Check the task board â€” are \
+               is still running (not stalled or idle-stale). Check the task board --” are \
                in-flight tasks on track, and is anything blocked or unowned? Flag stale \
                items and re-engage whoever needs it."
             .into(),
@@ -75,7 +75,7 @@ pub fn ops_standup() -> ScheduledMission {
 }
 
 /// Shipped DISABLED (opt-in): unlike the standup, the heartbeat nudges god's
-/// PTY â€” the user turns it on explicitly (upstream ships it off too).
+/// PTY --” the user turns it on explicitly (upstream ships it off too).
 pub fn heartbeat() -> ScheduledMission {
     ScheduledMission {
         id: "heartbeat".into(),
@@ -83,7 +83,7 @@ pub fn heartbeat() -> ScheduledMission {
         interval_ms: 120_000,
         to: "god".into(),
         body: "Floor heartbeat: the team has gone quiet. Review the digest in your inbox, \
-               re-engage anyone stalled or blocked, and keep the board accurate â€” or rest \
+               re-engage anyone stalled or blocked, and keep the board accurate --” or rest \
                if the work is genuinely done."
             .into(),
         enabled: false,
@@ -246,4 +246,174 @@ pub fn is_mission_due(m: &ScheduledMission, now_ms: u64) -> bool {
     }
     }
     m.interval_ms > 0 && now_ms.saturating_sub(m.last_fired_at) >= m.interval_ms
+}
+
+// --- heartbeat beat (index.ts armHeartbeat) ---------------------------------
+//
+// Upstream's heartbeat is NOT a plain interval mission: it self-reschedules
+// with an adaptive cadence ? base normally, base*2.5 right after a
+// re-engage, max(30s, base/4) when an agent looks wedged. It re-engages god
+// when the floor is quiet OR god has actionable (non-system) inbox mail ?
+// a worker's reply must not sit unread just because other agents keep the
+// floor loud. The beat ALWAYS stamps lastFiredAt, even when it doesn't
+// re-engage ? the stamp is what the re-arm math hangs off.
+
+/// SYSTEM_SENDERS ? the scheduler's own noise never wakes god.
+const SYSTEM_SENDERS: &[&str] = &["heartbeat", "scheduler", "breaker", "system"];
+
+/// godActionableInboxCount ? unread non-system mail in god's inbox.
+pub fn god_actionable_inbox_count(hive: &crate::hive::Hive) -> usize {
+    let Some(god) = hive.god_id() else {
+        return 0;
+    };
+    hive.inbox(&god)
+        .map(|msgs| {
+            msgs.iter()
+                .filter(|m| !SYSTEM_SENDERS.contains(&m.from.as_str()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// buildHeartbeatDigest ? the bounded digest (paths + counts, never full
+/// files) dropped into god's inbox when the floor needs a nudge.
+pub fn heartbeat_digest(hive: &crate::hive::Hive, quiet_ms: u64, actionable: usize) -> String {
+    let reg = hive.registry();
+    let god = hive.god_id();
+    let active: Vec<_> = reg
+        .iter()
+        .filter(|a| !a.archived && Some(&a.id) != god.as_ref())
+        .collect();
+    let names = active
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let names = if names.is_empty() { "?".to_string() } else { names };
+    let board_head = hive
+        .read_board()
+        .unwrap_or_default()
+        .lines()
+        .take(10)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    let log = crate::hive_admin::hive_log(hive, 8)
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let with_inbox: Vec<&str> = active
+        .iter()
+        .filter(|a| hive.inbox_backlog(&a.id) > 0)
+        .map(|a| a.name.as_str())
+        .collect();
+    let header = if actionable > 0 {
+        format!("Floor heartbeat ? {actionable} actionable inbox message(s) awaiting you (worker/human mail). Drain your inbox NOW and act on them.")
+    } else {
+        format!("Floor heartbeat ? quiet ~{}m.", quiet_ms / 60_000)
+    };
+    let inbox_line = if with_inbox.is_empty() {
+        "No undrained inboxes.".to_string()
+    } else {
+        format!("Undrained inbox: {}.", with_inbox.join(", "))
+    };
+    format!(
+        "{header}\nActive agents ({}): {names}.\n{inbox_line}\n\nBoard (head):\n{}\n\nRecent log:\n{}\n\nRe-engage anyone stalled or blocked and keep the board accurate ? or rest if the work is genuinely done.",
+        active.len(),
+        if board_head.is_empty() { "(empty)" } else { board_head.as_str() },
+        if log.is_empty() { "(none)" } else { log.as_str() }
+    )
+}
+
+/// looksStuck (index.ts) ? an agent printing PTY output <15s ago whose
+/// coordination files have not moved in `window_ms`: it is busy but not
+/// coordinating, so the heartbeat tightens its cadence to watch it.
+pub fn looks_stuck(
+    st: &crate::commands::AppState,
+    window_ms: u64,
+    now: u64,
+) -> bool {
+    let reg = st.hive.registry();
+    let god = st.hive.god_id();
+    let ptys = st.ptys.lock().unwrap();
+    for a in &reg {
+        if a.archived || Some(&a.id) == god.as_ref() {
+            continue;
+        }
+        let Some(h) = ptys.get(&a.id) else {
+            continue;
+        };
+        let idle = now.saturating_sub(
+            h.last_output_at
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
+        if idle < 15_000
+            && now.saturating_sub(st.hive.last_coordination_at(&a.id)) > window_ms
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// One heartbeat beat ? returns the delay until the NEXT beat, mirroring
+/// upstream's adaptive cadence exactly.
+pub fn heartbeat_beat(st: &crate::commands::AppState, m: &ScheduledMission, now: u64) -> u64 {
+    let base = m.interval_ms;
+    let quiet = m.quiet_threshold_ms.unwrap_or(300_000);
+    let actionable = god_actionable_inbox_count(&st.hive);
+    let clocks: Vec<u64> = st
+        .ptys
+        .lock()
+        .unwrap()
+        .values()
+        .map(|h| h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
+        .collect();
+    let mut next = base;
+    if st.hive.is_floor_quiet(quiet, &clocks) || actionable > 0 {
+        let digest = heartbeat_digest(&st.hive, quiet, actionable);
+        let to = if m.to.is_empty() { "god" } else { m.to.as_str() };
+        let _ = st
+            .hive
+            .send_virtual("heartbeat", to, "request", "Heartbeat", &digest);
+        next = base * 5 / 2; // back off after re-engaging
+    } else if looks_stuck(st, quiet, now) {
+        next = (base / 4).max(30_000); // tighten when an agent is wedged
+    }
+    next
+}
+
+/// ms until this mission is next due ? the arm-side of upstream's
+/// `setTimeout(remaining)`. Heartbeat rides its adaptive cadence map;
+/// weekly rides the slot math; everything else rides the interval.
+pub fn mission_due_ms(
+    m: &ScheduledMission,
+    now: u64,
+    heartbeat_cadence: &std::collections::HashMap<String, u64>,
+) -> Option<u64> {
+    if !m.enabled {
+        return None;
+    }
+    if m.kind.as_deref() == Some("heartbeat") {
+        let c = heartbeat_cadence
+            .get(&m.id)
+            .copied()
+            .unwrap_or(m.interval_ms);
+        return Some(m.last_fired_at.saturating_add(c).saturating_sub(now));
+    }
+    if let Some(w) = &m.weekly {
+        if let Some(d) = weekly_delay_ms(w, now, m.last_fired_at) {
+            return Some(d);
+        }
+    }
+    if m.interval_ms > 0 {
+        return Some(
+            m.last_fired_at
+                .saturating_add(m.interval_ms)
+                .saturating_sub(now),
+        );
+    }
+    None
 }
