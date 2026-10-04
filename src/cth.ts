@@ -27,11 +27,23 @@ const clipboardPoll = () => {
   });
 };
 
+// Roster cache backing `rosterReadSync` — the store reads the roster
+// synchronously at boot. Same trick: a value kept warm by async reads +
+// refresh on rosterWrite so writes are visible immediately.
+let rosterCache: unknown = null;
+const rosterPoll = () => {
+  void invoke<unknown>('roster_read').then((r) => {
+    if (r && typeof r === 'object') rosterCache = r;
+  });
+};
+
 export function installCth(): void {
   // Seed + refresh: focus refreshes are the cheap way to stay fresh without
   // an aggressive interval (a paste within ~2s of copy still lands).
   clipboardPoll();
+  rosterPoll();
   window.setInterval(clipboardPoll, 2000);
+  window.setInterval(rosterPoll, 3000);
   window.addEventListener('focus', clipboardPoll);
 
   const ua = navigator.userAgent;
@@ -202,7 +214,13 @@ export function installCth(): void {
     realtimeDrainCompletions: (...args: unknown[]) => invoke('realtime_drain_completions', pack(args, [])),
     realtimeWaitFor: (...args: unknown[]) => invoke('realtime_wait_for', pack(args, ["taskIdOrAgent","timeoutMs"])),
     appInfo: (...args: unknown[]) => invoke('app_info', pack(args, [])),
-    rosterWrite: (...args: unknown[]) => invoke('roster_write', pack(args, ["snap"])),
+    rosterRead: (...args: unknown[]) => invoke('roster_read', pack(args, [])),
+    rosterReadSync: (): unknown => rosterCache,
+    rosterWrite: (...args: unknown[]) =>
+      invoke('roster_write', pack(args, ["snap"])).then((r) => {
+        rosterCache = args[0];
+        return r;
+      }),
     updateCurrent: (...args: unknown[]) => invoke('update_current', pack(args, [])),
     updateRestartAndInstall: (...args: unknown[]) => invoke('update_restart_and_install', pack(args, [])),
     updateCheckNow: (...args: unknown[]) => invoke('update_check_now', pack(args, [])),
