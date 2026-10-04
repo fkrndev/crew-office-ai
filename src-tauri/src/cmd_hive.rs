@@ -29,6 +29,19 @@ pub fn hive_delete_task(app: AppHandle, id: String) -> Result<Value, String> {
     crate::hive_admin::delete_task(&st.hive, &id).map_err(err_str)
 }
 
+/// hive:patchTask — per-card merge over the raw ledger entry (upstream
+/// patchTask): every patch key lands on the card (null clears), `id` is
+/// re-pinned so a stray id in the patch can't rename it.
+#[tauri::command]
+pub fn hive_patch_task(app: AppHandle, id: String, patch: Value) -> Result<Value, String> {
+    let st = state(&app);
+    let patch = patch
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "patch must be an object".to_string())?;
+    st.hive.update_task(&id, &patch).map_err(err_str)
+}
+
 // ─── registry edits ─────────────────────────────────────────────────────────
 
 /// hive:patchAgentRole — durable job string + identity.md refresh.

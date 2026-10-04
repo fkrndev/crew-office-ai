@@ -776,6 +776,7 @@ pub fn run() {
             commands::skills_reveal,
             cmd_hive::hive_add_task,
             cmd_hive::hive_delete_task,
+            cmd_hive::hive_patch_task,
             cmd_hive::hive_patch_agent_role,
             cmd_hive::hive_rename_agent,
             cmd_hive::hive_set_archived,

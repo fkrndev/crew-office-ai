@@ -149,6 +149,8 @@ export const onAgentStatus = (cb: (p: AgentStatusPayload) => void): Promise<Unli
 // ─── hive admin / tasks / agents ────────────────────────────────────────────
 export const hiveAddTask = (fields: Record<string, unknown>) => invoke('hive_add_task', { fields });
 export const hiveDeleteTask = (id: string) => invoke('hive_delete_task', { id });
+export const hivePatchTask = (id: string, patch: Record<string, unknown>) =>
+  invoke('hive_patch_task', { id, patch });
 export const hivePatchAgentRole = (id: string, role: string) =>
   invoke('hive_patch_agent_role', { id, role });
 export const hiveRenameAgent = (id: string, name: string) => invoke('hive_rename_agent', { id, name });
