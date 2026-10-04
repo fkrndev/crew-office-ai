@@ -57,6 +57,86 @@ pub fn inbox_delivery_terminal(provider: &str) -> bool {
     matches!(provider, "qwen" | "crush")
 }
 
+// ─── missing-CLI auto-install ladder (cliInstall.ts) ────────────────────────
+//
+// Upstream's spawnAgentCore: when the provider's binary is missing it runs a
+// bundled installer in an "install PTY" in the same terminal slot, then
+// re-runs the spawn on exit-0 (`pty:relaunch:<id>`). The rung ladder is
+// native vendor installer first, `npm install -g` second, and when neither
+// exists a printed manual hint that intentionally does NOT relaunch (a
+// respawn would just die on the still-missing binary).
+
+/// The install commands are trusted + hardcoded upstream — same table here.
+/// `(native_posix, native_win32, npm_command)`.
+pub fn provider_install(provider: &str) -> (Option<&'static str>, Option<&'static str>, Option<&'static str>) {
+    match provider {
+        "claude" => (
+            Some("curl -fsSL https://claude.ai/install.sh | bash"),
+            Some("powershell -c irm https://claude.ai/install.ps1 ^| iex"),
+            Some("npm install -g @anthropic-ai/claude-code"),
+        ),
+        "codex" => (None, None, Some("npm install -g @openai/codex")),
+        "gemini" => (None, None, Some("npm install -g @google/gemini-cli")),
+        "opencode" => (
+            Some("curl -fsSL https://opencode.ai/install | bash"),
+            Some("choco install opencode -y"),
+            Some("npm install -g opencode-ai@latest"),
+        ),
+        "crush" => (None, None, Some("npm install -g @charmland/crush")),
+        "pi" => (
+            None,
+            None,
+            Some("npm install -g --ignore-scripts @earendil-works/pi-coding-agent"),
+        ),
+        "copilot" => (None, None, Some("npm install -g @github/copilot")),
+        "cursor" => (
+            Some("curl https://cursor.com/install -fsS | bash"),
+            Some("irm https://cursor.com/install?win32=true | iex"),
+            None,
+        ),
+        _ => (None, None, None),
+    }
+}
+
+/// chooseInstallRung + buildMissingCliScript, condensed: pick the first rung
+/// whose command exists on this platform — native first, then npm when npm is
+/// reachable, else the manual-hint rung (returns `false` for "don't relaunch").
+/// Returns `(shell_script, will_relaunch)`.
+pub fn install_script(
+    provider: &str,
+    bin: &str,
+    npm_available: bool,
+) -> Option<(String, bool)> {
+    let (native_posix, native_win32, npm) = provider_install(provider);
+    let native = if cfg!(windows) { native_win32 } else { native_posix };
+    let header = format!("[agent-office] \"{bin}\" is not installed — ");
+    if let Some(cmd) = native {
+        return Some((
+            format!("echo {header}running the official {provider} installer.\r\n{cmd}"),
+            true,
+        ));
+    }
+    if let Some(cmd) = npm {
+        if npm_available {
+            return Some((
+                format!("echo {header}installing it with npm.\r\n{cmd}"),
+                true,
+            ));
+        }
+    }
+    if native.is_some() || npm.is_some() {
+        // Manual rung: print the honest hint and exit 0 — upstream does NOT
+        // arm a relaunch here because the spawn would die the same way.
+        return Some((
+            format!(
+                "echo {header}no bundled installer works on this machine.\r\necho Install {bin} manually, then respawn this agent."
+            ),
+            false,
+        ));
+    }
+    None
+}
+
 pub fn expand_tilde(p: &str) -> String {
     let t = p.trim();
     if t.is_empty() {

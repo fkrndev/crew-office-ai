@@ -174,7 +174,7 @@ pub fn state(app: &AppHandle) -> State<'_, AppState> {
 
 // ─── agent lifecycle ────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SpawnArgs {
     pub provider: String,
     pub name: String,
@@ -195,6 +195,8 @@ pub struct SpawnArgs {
     pub isolate: bool,
     #[serde(default)]
     pub is_god: bool,
+    #[serde(default)]
+    pub no_auto_install: bool,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -212,6 +214,13 @@ fn default_rows() -> u16 {
 pub struct Spawned {
     pub id: String,
 }
+
+/// Upstream `pendingInstallRelaunch` — install PTYs armed to re-run their
+/// agent spawn on a clean exit (the retry carries `no_auto_install` so the
+/// ladder can never loop).
+pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<
+    Mutex<HashMap<String, SpawnArgs>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[tauri::command]
 pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
@@ -242,6 +251,7 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         seed_prompt: None,
         isolate: false,
         is_god: entry.is_god,
+        no_auto_install: false,
         cols: 120,
         rows: 30,
     };
@@ -598,6 +608,31 @@ pub(crate) fn spawn_inner(
         .next()
         .unwrap_or("")
         .to_string();
+
+    // Missing-CLI auto-install (spawnAgentCore → pendingInstallRelaunch): the
+    // provider binary can't be resolved — run the bundled installer in the
+    // same terminal slot, then re-run THIS spawn on exit-0 (with
+    // no_auto_install so the ladder never loops). A provider with no installer
+    // spec, or a machine where no rung exists, falls through to the normal
+    // spawn and dies on its own missing-binary error — same as upstream.
+    if !args.no_auto_install && pty::resolve_program(&first_tok, &path).is_none() {
+        let npm_available = pty::resolve_program("npm", &path).is_some();
+        if let Some((script, relaunch)) =
+            crate::misc::install_script(&args.provider, &first_tok, npm_available)
+        {
+            if relaunch {
+                let mut retry = args.clone();
+                retry.no_auto_install = true;
+                PENDING_INSTALLS.lock().unwrap().insert(id.clone(), retry);
+            }
+            let handle = pty::spawn(&id, &script, &cwd, &env, args.cols, args.rows, app.clone())
+                .map_err(err_str)?;
+            st.ptys.lock().unwrap().insert(id.clone(), handle);
+            st.hive.set_status(&id, "idle").map_err(err_str)?;
+            return Ok(Spawned { id });
+        }
+    }
+
     let handle = match pty::resolve_program(&first_tok, &path) {
         Some(pty::Resolved::Exe(prog)) => {
             let mut av: Vec<String> = command_line

@@ -1227,6 +1227,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                 seed_prompt: None,
                 isolate: false,
                 is_god: false,
+                no_auto_install: false,
                 cols: 120,
                 rows: 30,
             };

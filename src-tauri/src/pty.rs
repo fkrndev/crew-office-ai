@@ -649,6 +649,24 @@ fn finish(
                 serde_json::json!({ "id": event_id2, "status": "stopped" }),
             );
         }
+        // pendingInstallRelaunch: this was an install PTY — a clean exit
+        // re-arms the renderer's pooled terminal (`pty:relaunch:<id>`) and
+        // re-runs the agent spawn, which now finds the installed binary.
+        // A non-zero exit leaves the installer's output on screen.
+        if code == Some(0) {
+            if let Some(retry) = crate::commands::PENDING_INSTALLS
+                .lock()
+                .unwrap()
+                .remove(&event_id2)
+            {
+                let _ = app.emit(&format!("pty:relaunch:{event_id2}"), serde_json::json!({}));
+                let app3 = app.clone();
+                let id3 = event_id2.clone();
+                let _ = crate::commands::spawn_inner(app3, retry, Some(id3), None);
+            }
+        } else {
+            crate::commands::PENDING_INSTALLS.lock().unwrap().remove(&event_id2);
+        }
     });
     Ok(PtyHandle {
         writer,

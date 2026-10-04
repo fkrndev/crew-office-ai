@@ -454,6 +454,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             seed_prompt: None,
             isolate: raw["isolate"].as_bool().unwrap_or(true), // upstream default
             is_god: false,
+            no_auto_install: false,
             cols: 120,
             rows: 32,
         },
