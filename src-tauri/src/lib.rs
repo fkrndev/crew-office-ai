@@ -286,6 +286,10 @@ pub fn run() {
                             );
                         }
                     }
+                    // Floor delta watcher (realtimeFloorWatcher.ts) — emits
+                    // `realtime:floorDelta` while a voice session is live;
+                    // no-ops otherwise.
+                    crate::realtime::FLOOR_WATCHER.lock().unwrap().tick(&handle);
                 }
             });
 

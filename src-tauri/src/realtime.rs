@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::hive::{Hive, Message};
@@ -463,6 +463,148 @@ impl CompletionWatcher {
 /// static so no AppState field is needed.
 pub static WATCHER: LazyLock<Mutex<CompletionWatcher>> =
     LazyLock::new(|| Mutex::new(CompletionWatcher::default()));
+
+// ─── floor delta watcher (realtimeFloorWatcher.ts) ───────────────────────────
+//
+// The voice session's context strategy is "snapshot at connect + APPEND-ONLY
+// deltas". This watcher is the delta half: while a voice session is live it
+// polls the floor's main-side signals (roster, task ledger, pty activity) and
+// pushes short coalesced update sentences the renderer injects into the
+// conversation as silent items (`realtime:floorDelta`). Deltas are debounced
+// (≥ MIN_PUSH_GAP_MS between pushes), capped in length, and — upstream parity —
+// nothing queues when no session is live: the next connect re-primes from a
+// fresh snapshot.
+
+const FLOOR_POLL_MS: u64 = 5_000;
+const FLOOR_MIN_PUSH_GAP_MS: u64 = 12_000;
+const FLOOR_ACTIVE_WINDOW_MS: u64 = 8_000;
+const FLOOR_MAX_PUSH_CHARS: usize = 600;
+
+#[derive(Default)]
+pub struct FloorWatcher {
+    live: bool,
+    last_push_at: u64,
+    last_tick_at: u64,
+    buffer: Vec<String>,
+    prev_agents: HashMap<String, (bool, String)>,
+    prev_tasks: HashMap<String, (String, String)>,
+    prev_active: HashMap<String, bool>,
+    primed: bool,
+}
+
+impl FloorWatcher {
+    /// Upstream setSessionLive — a fresh session starts from a fresh snapshot
+    /// so old buffered deltas don't duplicate what the snapshot already says.
+    pub fn set_session_live(&mut self, live: bool) {
+        self.live = live;
+        self.buffer.clear();
+        self.primed = false;
+    }
+
+    /// Upstream tick(). Called from the background loop; the internal
+    /// FLOOR_POLL_MS gate keeps the effective cadence at upstream's 5s.
+    pub fn tick(&mut self, app: &AppHandle) {
+        let now = now_ms();
+        if self.last_tick_at != 0 && now.saturating_sub(self.last_tick_at) < FLOOR_POLL_MS {
+            return;
+        }
+        self.last_tick_at = now;
+
+        let st = crate::commands::state(app);
+        // roster snapshot
+        let agents: HashMap<String, (bool, String)> = st
+            .hive
+            .registry()
+            .into_iter()
+            .map(|a| (a.id.clone(), (a.archived, if a.name.is_empty() { a.id } else { a.name })))
+            .collect();
+        // task ledger
+        let mut tasks: HashMap<String, (String, String)> = HashMap::new();
+        if let Ok(tv) = st.hive.read_tasks() {
+            if let Some(arr) = tv.get("tasks").and_then(|t| t.as_array()) {
+                for t in arr {
+                    if let Some(id) = t.get("id").and_then(|v| v.as_str()) {
+                        tasks.insert(
+                            id.to_string(),
+                            (
+                                t.get("status").and_then(|v| v.as_str()).unwrap_or("todo").to_string(),
+                                t.get("title").and_then(|v| v.as_str()).unwrap_or(id).to_string(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        // pty activity (upstream strips the `pty-` prefix — our ids don't have
+        // one, but keep the strip for safety)
+        let active: HashMap<String, bool> = st
+            .ptys
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, h)| {
+                let last = h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);
+                (id.trim_start_matches("pty-").to_string(), now.saturating_sub(last) < FLOOR_ACTIVE_WINDOW_MS)
+            })
+            .collect();
+
+        if self.primed && self.live {
+            for (id, (archived, name)) in &agents {
+                match self.prev_agents.get(id) {
+                    None => self.buffer.push(format!("{name} joined the floor")),
+                    Some((prev_arch, _)) if !prev_arch && *archived =>
+                        self.buffer.push(format!("{name} was archived")),
+                    Some((prev_arch, _)) if *prev_arch && !archived =>
+                        self.buffer.push(format!("{name} is back from the archive")),
+                    _ => {}
+                }
+            }
+            for (id, (status, title)) in &tasks {
+                let short: String = title.chars().take(60).collect();
+                match self.prev_tasks.get(id) {
+                    None => self.buffer.push(format!("new task \"{short}\"")),
+                    Some((prev_status, _)) if prev_status != status =>
+                        self.buffer.push(format!("task \"{short}\" moved to {status}")),
+                    _ => {}
+                }
+            }
+            for (id, is_active) in &active {
+                let prev = self.prev_active.get(id).copied();
+                let Some((archived, name)) = agents.get(id) else { continue };
+                if prev.is_none() || *archived { continue }
+                match (prev.unwrap_or(false), is_active) {
+                    (true, false) => self.buffer.push(format!("{name} went quiet (likely done or idle)")),
+                    (false, true) => self.buffer.push(format!("{name} started producing output")),
+                    _ => {}
+                }
+            }
+        }
+
+        self.prev_agents = agents;
+        self.prev_tasks = tasks;
+        self.prev_active = active;
+        self.primed = true;
+
+        if !self.live {
+            self.buffer.clear();
+            return;
+        }
+        if self.buffer.is_empty()
+            || now.saturating_sub(self.last_push_at) < FLOOR_MIN_PUSH_GAP_MS
+        {
+            return;
+        }
+        let text: String = self.buffer.join("; ").chars().take(FLOOR_MAX_PUSH_CHARS).collect();
+        self.buffer.clear();
+        self.last_push_at = now;
+        let _ = app.emit("realtime:floorDelta", json!({ "text": text }));
+    }
+}
+
+/// Upstream held the floorWatcher in index.ts beside the completion watcher —
+/// same static pattern.
+pub static FLOOR_WATCHER: LazyLock<Mutex<FloorWatcher>> =
+    LazyLock::new(|| Mutex::new(FloorWatcher::default()));
 
 #[cfg(test)]
 mod tests {

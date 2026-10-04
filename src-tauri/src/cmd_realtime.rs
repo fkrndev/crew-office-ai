@@ -119,6 +119,9 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
         .unwrap()
         .set_kv(KV_SESSION_LIVE, &json!(live));
     WATCHER.lock().unwrap().set_session_live(live);
+    // Upstream toggles BOTH watchers on the same flag — the floor delta
+    // watcher re-primes off a fresh snapshot either way.
+    crate::realtime::FLOOR_WATCHER.lock().unwrap().set_session_live(live);
     Ok(json!({ "ok": true }))
 }
 
