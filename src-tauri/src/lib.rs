@@ -238,24 +238,26 @@ pub fn run() {
                             // renderer's feed contract); `hive-deliver`
                             // stays as this port's per-target detail event.
                             {
-                                let mut by_msg: std::collections::BTreeMap<
-                                    String,
-                                    Vec<String>,
-                                > = std::collections::BTreeMap::new();
+                                let mut seen: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
                                 for d in &deliveries {
-                                    by_msg
-                                        .entry(d.msg_id.clone())
-                                        .or_default()
-                                        .push(d.to.clone());
-                                }
-                                for (msg_id, targets) in by_msg {
-                                    let _ = handle.emit(
-                                        "hive:message",
-                                        serde_json::json!({
-                                            "id": msg_id,
-                                            "targets": targets,
-                                        }),
-                                    );
+                                    // One upstream `hive:message` per routed
+                                    // message — the floor flies an envelope
+                                    // per resolved target (emitMessage).
+                                    if seen.insert(d.msg_id.clone()) {
+                                        let _ = handle.emit(
+                                            "hive:message",
+                                            serde_json::json!({
+                                                "id": d.msg_id,
+                                                "from": d.from,
+                                                "to": d.targets.first().cloned().unwrap_or_default(),
+                                                "act": d.act,
+                                                "subject": d.subject,
+                                                "targets": d.targets,
+                                                "needsHuman": d.needs_human,
+                                            }),
+                                        );
+                                    }
                                 }
                             }
                             for d in deliveries {

@@ -6,7 +6,7 @@ import { ControlStrip } from './components/ControlStrip';
 import { BoardPanel } from './components/BoardPanel';
 import { InboxPanel } from './components/InboxPanel';
 import { MissionsPanel } from './components/MissionsPanel';
-import { OfficeFloorLite } from './components/OfficeFloorLite';
+import { OfficeFloor } from './scene/office/OfficeFloor';
 import { SecretsPanel } from './components/SecretsPanel';
 import { SkillsPanel } from './components/SkillsPanel';
 import { TriggersPanel } from './components/TriggersPanel';
@@ -24,6 +24,18 @@ export default function App() {
   const [autoMode, setAuto] = useState(false);
 
   useEffect(() => {
+    // Floor → app selection bridge: clicking an avatar in the Pixi scene
+    // opens its terminal; the task boards open the Board panel.
+    const onSelect = (ev: Event) => {
+      const id = (ev as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) select(id);
+    };
+    const onTab = (ev: Event) => {
+      const tab = (ev as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (tab === 'tasks' || tab === 'board') setShowBoard(true);
+    };
+    window.addEventListener('ao:select-agent', onSelect);
+    window.addEventListener('ao:command-center-tab', onTab);
     refreshAgents();
     getConfig().then((c) => setAuto(c.auto_mode));
     const un = onPtyExit(() => refreshAgents());
@@ -31,6 +43,8 @@ export default function App() {
     const unBreaker = onBreakerState((b) => setBreaker(b));
     const poll = setInterval(refreshAgents, 5000);
     return () => {
+      window.removeEventListener('ao:select-agent', onSelect);
+      window.removeEventListener('ao:command-center-tab', onTab);
       un.then((f) => f());
       unStatus.then((f) => f());
       unBreaker.then((f) => f());
@@ -90,7 +104,7 @@ export default function App() {
             </div>
           </>
         ) : (
-          <OfficeFloorLite />
+          <OfficeFloor />
         )}
       </main>
       {showBoard && <BoardPanel onClose={() => setShowBoard(false)} />}
