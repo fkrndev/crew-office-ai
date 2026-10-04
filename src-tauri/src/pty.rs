@@ -48,7 +48,43 @@ pub fn resolve_program(prog: &str, path_env: &str) -> Option<Resolved> {
             }
         }
     }
+    // PATH missed — the established install locations
+    // (shellEnv.ts windowsFallbackCandidates: npm global shims, the Claude
+    // installer dir, provider-specific homes).
+    for cand in fallback_candidates(prog) {
+        if cand.is_file() {
+            return Some(classify(cand));
+        }
+    }
     None
+}
+
+/// Where a provider CLI lands when it is installed but NOT on the spawning
+/// process's PATH — a GUI app launched from the tray inherits no shell PATH
+/// fixups, so npm-globals and installer dirs are probed by name.
+fn fallback_candidates(prog: &str) -> Vec<PathBuf> {
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let mut out = vec![
+        PathBuf::from(format!(r"{appdata}\npm\{prog}.cmd")),
+        PathBuf::from(format!(r"{appdata}\npm\{prog}")),
+        PathBuf::from(format!(r"{appdata}\npm\{prog}.exe")),
+        PathBuf::from(format!(r"{local}\Programs\claude\{prog}.exe")),
+        PathBuf::from(format!(r"{home}\.claude\local\{prog}.cmd")),
+        PathBuf::from(format!(r"{home}\.claude\local\{prog}")),
+        PathBuf::from(format!(r"{home}\.local\bin\{prog}")),
+        PathBuf::from(format!(r"{home}\.volta\bin\{prog}.cmd")),
+        PathBuf::from(format!(r"{local}\Programs\{prog}\{prog}.exe")),
+    ];
+    // Provider-specific installs (WINDOWS_FALLBACK_LOCATIONS): agy.exe under
+    // %LOCALAPPDATA%\agy\bin.
+    if prog.eq_ignore_ascii_case("agy") {
+        out.push(PathBuf::from(format!(r"{local}\agy\bin\agy.exe")));
+    }
+    out
 }
 
 fn classify(p: PathBuf) -> Resolved {
@@ -60,6 +96,215 @@ fn classify(p: PathBuf) -> Resolved {
         Resolved::Script(p)
     } else {
         Resolved::Exe(p)
+    }
+}
+
+/// What an npm-style Windows `.cmd` shim actually runs, decoded from its text
+/// — port of `parseNpmCmdShim` (pty.ts). Routing a shim through
+/// `cmd.exe /d /s /c` re-enters cmd's parser, which cannot carry a newline and
+/// reads `(`/`)` as block delimiters: the multi-line hive protocol prompt was
+/// silently truncated there for every npm-installed CLI. Decoding the shim to
+/// its real interpreter + script lets us spawn with an argv array instead —
+/// no shell parser at all.
+pub enum ShimTarget {
+    /// `node/bun/deno <script> %*` — spawn interpreter with `[script, ...args]`.
+    Interpreted { interpreter: String, script: PathBuf },
+    /// Direct-executable shim (`"<exe>" %*` — opencode-ai's bin shape): the
+    /// target IS the program, no interpreter needed.
+    DirectExe { exe: PathBuf },
+}
+
+const SHIM_INTERPRETERS: &[&str] = &["node", "bun", "deno"];
+
+/// Windows-path-only expand of `%~dp0`/`%dp0%` (the shim's own dir, WITH a
+/// trailing backslash). Any other surviving `%` is a variable we do not model
+/// → refuse, as upstream does.
+fn shim_expand(raw: &str, shim_dir: &str) -> Option<PathBuf> {
+    let mut s = raw
+        .replace("%~dp0", &format!("{shim_dir}\\"))
+        .replace("%dp0%", &format!("{shim_dir}\\"));
+    if s.contains('%') || s.trim().is_empty() {
+        return None;
+    }
+    // Collapse doubled separators (dir ends in `\`, target may start with `\`)
+    // while keeping a leading UNC `\\`.
+    let unc = s.starts_with("\\\\") || s.starts_with("//");
+    let mut out = String::new();
+    let mut last_sep = false;
+    for c in s.chars() {
+        let is_sep = c == '\\' || c == '/';
+        if is_sep {
+            if last_sep {
+                continue;
+            }
+            out.push('\\');
+        } else {
+            out.push(c);
+        }
+        last_sep = is_sep;
+    }
+    s = out;
+    if unc && !s.starts_with("\\\\") {
+        s = format!("\\{s}");
+    }
+    let p = PathBuf::from(&s);
+    (p.is_absolute()).then_some(p)
+}
+
+/// Decode an npm-generated Windows `.cmd` shim into the interpreter + script
+/// (or direct exe) it would have run. Returns `None` — "fall back to the
+/// cmd.exe path" — for ANY shape not fully understood: unknown interpreter,
+/// unexpanded `%VAR%`, a relative target, extra interpreter flags, a non-JS
+/// target, a file too large to be a shim, or garbage. Pure string work so it
+/// is testable on any host (upstream tests it on macOS/Linux).
+pub fn parse_npm_cmd_shim(shim_path: &str, content: &str) -> Option<ShimTarget> {
+    if shim_path.is_empty() || content.is_empty() {
+        return None;
+    }
+    // A cmd-shim is ~1KB; anything larger is a real batch script.
+    if content.len() > 8192 || content.contains('\0') {
+        return None;
+    }
+    let shim_dir = std::path::Path::new(shim_path)
+        .parent()
+        .map(|p| p.display().to_string())?;
+    if shim_dir.is_empty() || shim_dir == "." {
+        return None;
+    }
+
+    // Every `SET "_prog=…"` the shim performs (IF-EXISTS arm + PATH arm) —
+    // they can appear MID-line (`IF EXIST … (SET "_prog=…") ELSE (SET …)`).
+    let mut prog_values: Vec<String> = Vec::new();
+    {
+        let mut rest = content;
+        while let Some(pos) = rest.find("SET") {
+            rest = &rest[pos + 3..];
+            let l = rest.trim_start().trim_start_matches('"');
+            if let Some(v) = l.strip_prefix("_prog=") {
+                let end = v.find(['"', '\r', '\n', ')']).unwrap_or(v.len());
+                prog_values.push(v[..end].to_string());
+            }
+        }
+    }
+
+    // The exec line is the LAST line carrying `%*` (forward-all-args).
+    let exec_line = content.lines().rev().find(|l| l.contains("%*"))?;
+    let head = &exec_line[..exec_line.rfind("%*")?];
+
+    // Quoted tokens in the exec head: the LAST is the script/exe target; the
+    // one before it (if any) is the program — with nothing between them.
+    let mut quoted: Vec<(usize, usize, &str)> = Vec::new(); // (start,end,text)
+    let bytes = head.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if let Some(end) = head[i + 1..].find('"') {
+                quoted.push((i, i + 1 + end, &head[i + 1..i + 1 + end]));
+                i += end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let &(s_start, s_end, script_tok) = quoted.last()?;
+    let prog_raw: String;
+    if quoted.len() >= 2 {
+        let &(_, p_end, p_tok) = &quoted[quoted.len() - 2];
+        // Interpreter flags baked between program and script must not be
+        // silently dropped → bail to the cmd.exe fallback.
+        if head[p_end + 1..s_start].trim() != "" {
+            return None;
+        }
+        prog_raw = p_tok.to_string();
+    } else {
+        // Two one-token shapes share this branch:
+        let before = head[..s_start].trim().trim_start_matches('@').trim();
+        if before.is_empty() {
+            // DIRECT-EXECUTABLE shim — `"%dp0%\..\bin\x.exe" %*`.
+            let exe = shim_expand(script_tok, &shim_dir)?;
+            let lower = exe.display().to_string().to_lowercase();
+            if !(lower.ends_with(".exe") || lower.ends_with(".com")) {
+                return None;
+            }
+            return Some(ShimTarget::DirectExe { exe });
+        }
+        // Classic ELSE arm: `node  "<script>" %*` — program is a bare word.
+        let word = before.split_whitespace().last()?;
+        if word != before {
+            return None;
+        }
+        prog_raw = word.to_string();
+    }
+
+    // `"%_prog%"` → the value the shim SET. Prefer the bare-name arm.
+    let mut prog_raw = prog_raw;
+    if prog_raw.eq_ignore_ascii_case("%_prog%") {
+        prog_raw = prog_values
+            .iter()
+            .find(|v| !v.contains('%') && !v.contains('\\') && !v.contains('/'))
+            .cloned()
+            .or_else(|| prog_values.last().cloned())?;
+    }
+    let interpreter = prog_raw
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(".exe")
+        .trim_end_matches(".EXE")
+        .to_lowercase();
+    if !SHIM_INTERPRETERS.contains(&interpreter.as_str()) {
+        return None;
+    }
+    let script = shim_expand(script_tok, &shim_dir)?;
+    let sc = script.display().to_string().to_lowercase();
+    if !(sc.ends_with(".js") || sc.ends_with(".cjs") || sc.ends_with(".mjs")) {
+        return None;
+    }
+    Some(ShimTarget::Interpreted { interpreter, script })
+}
+
+/// resolveWindowsShimSpawn (pty.ts): decode the resolved shim to a spawnable
+/// target — interpreter exe + script argv-head, or the exe itself. `resolve`
+/// finds `node`/`bun`/`deno` the same way the caller resolved the shim (PATH +
+/// fallbacks) and must return an EXE — a `.cmd` node would hit the exact
+/// CreateProcess limit we are routing around. Every miss returns `None` =
+/// "use the cmd.exe path", never worse than before.
+pub fn resolve_windows_shim_spawn<F>(resolved: &PathBuf, resolve: F) -> Option<(PathBuf, Option<PathBuf>)>
+where
+    F: Fn(&str) -> Option<Resolved>,
+{
+    if !cfg!(windows) {
+        return None;
+    }
+    let lower = resolved.display().to_string().to_lowercase();
+    let shim_path = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+        resolved.clone()
+    } else {
+        // An extensionless npm shim is a POSIX sh script cmd can't run — its
+        // `.cmd` sibling names the same target.
+        let with_ext = PathBuf::from(format!("{}.cmd", resolved.display()));
+        with_ext.is_file().then_some(with_ext)?
+    };
+    let meta = std::fs::metadata(&shim_path).ok()?;
+    if !meta.is_file() || meta.len() > 8192 {
+        return None;
+    }
+    let content = std::fs::read_to_string(&shim_path).ok()?;
+    match parse_npm_cmd_shim(&shim_path.display().to_string(), &content)? {
+        ShimTarget::DirectExe { exe } => {
+            exe.is_file().then_some((exe, None))
+        }
+        ShimTarget::Interpreted { interpreter, script } => {
+            if !script.is_file() {
+                return None;
+            }
+            // The interpreter itself must resolve to a REAL exe — a `.cmd`
+            // node would hit the same CreateProcess limit we route around.
+            match resolve(&interpreter) {
+                Some(Resolved::Exe(exe)) => Some((exe, Some(script))),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -253,5 +498,72 @@ impl PtyHandle {
         self.child.kill()?;
         let _ = self.child.wait(); // reap
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod shim_tests {
+    use super::*;
+
+    const MODERN: &str = "@SET dp0=%~dp0\r\nIF EXIST \"%dp0%\\node.exe\" (SET \"_prog=%dp0%\\node.exe\") ELSE (SET \"_prog=node\")\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\r\n";
+
+    const CLASSIC: &str = "@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\" \"%~dp0\\node_modules\\pkg\\bin\\cli.js\" %*\r\n) ELSE (\r\n  node \"%~dp0\\node_modules\\pkg\\bin\\cli.js\" %*\r\n)\r\n";
+
+    const DIRECT_EXE: &str = "@\"%~dp0\\..\\opencode-ai\\bin\\opencode.exe\" %*\r\n";
+
+    #[test]
+    fn modern_shim_decodes_to_node_plus_cli() {
+        let t = parse_npm_cmd_shim(r"C:\Users\u\AppData\Roaming\npm\claude.cmd", MODERN).unwrap();
+        match t {
+            ShimTarget::Interpreted { interpreter, script } => {
+                assert_eq!(interpreter, "node");
+                assert!(script.display().to_string().replace('/', "\\").ends_with(
+                    r"npm\node_modules\@anthropic-ai\claude-code\cli.js"
+                ));
+            }
+            _ => panic!("expected interpreted"),
+        }
+    }
+
+    #[test]
+    fn classic_if_else_decodes() {
+        let t = parse_npm_cmd_shim(r"C:\npm\codex.cmd", CLASSIC).unwrap();
+        match t {
+            ShimTarget::Interpreted { interpreter, script } => {
+                assert_eq!(interpreter, "node");
+                assert!(script.display().to_string().ends_with(r"bin\cli.js"));
+            }
+            _ => panic!("expected interpreted"),
+        }
+    }
+
+    #[test]
+    fn direct_exe_shim_needs_no_interpreter() {
+        let t = parse_npm_cmd_shim(r"C:\npm\opencode.cmd", DIRECT_EXE).unwrap();
+        match t {
+            ShimTarget::DirectExe { exe } => {
+                assert!(exe.display().to_string().ends_with("opencode.exe"));
+            }
+            _ => panic!("expected direct exe"),
+        }
+    }
+
+    #[test]
+    fn garbage_and_oversize_refused() {
+        assert!(parse_npm_cmd_shim(r"C:\x.cmd", "echo hello").is_none());
+        assert!(parse_npm_cmd_shim(r"C:\x.cmd", &"x".repeat(9000)).is_none());
+        assert!(parse_npm_cmd_shim(r"C:\x.cmd", "").is_none());
+    }
+
+    #[test]
+    fn interpreter_flags_between_prog_and_script_refused() {
+        let s = "@rem shim\nnode --inspect \"%~dp0\\cli.js\" %*\n";
+        assert!(parse_npm_cmd_shim(r"C:\npm\x.cmd", s).is_none());
+    }
+
+    #[test]
+    fn unknown_interpreter_refused() {
+        let s = "@rem\npython \"%~dp0\\cli.py\" %*\n";
+        assert!(parse_npm_cmd_shim(r"C:\npm\x.cmd", s).is_none());
     }
 }

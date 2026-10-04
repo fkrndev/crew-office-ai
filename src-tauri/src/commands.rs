@@ -421,7 +421,10 @@ fn spawn_inner(
     let path = parent.get("PATH").cloned().unwrap_or_default();
     let env = build_pty_env(&parent, &path, Some(&agent_env), cfg!(windows));
 
-    let cwd = if args.cwd.is_empty() {
+    let cwd = if args.cwd.is_empty() || !std::path::Path::new(&args.cwd).is_dir() {
+        // A stale/missing workspace must not fail CreateProcessW (os error
+        // 267) — fall back to the agent's own folder, which always exists
+        // after register_agent.
         agent_dir.display().to_string()
     } else {
         args.cwd.clone()
@@ -478,6 +481,27 @@ fn spawn_inner(
             pty::spawn_argv(&id, &prog, &av, &cwd, &env, args.cols, args.rows, app.clone())
         }
         Some(pty::Resolved::Script(prog)) => {
+            // resolveWindowsShimSpawn (pty.ts): decode the .cmd shim to its
+            // real interpreter + script and spawn argv — cmd.exe cannot carry
+            // the multi-line hive prompt (newlines + parens, ~8191-char cap).
+            // Every miss falls through to the cmd route below.
+            if let Some((exe, script)) =
+                pty::resolve_windows_shim_spawn(&prog, |n| pty::resolve_program(n, &path))
+            {
+                let mut av: Vec<String> = script
+                    .map(|s| vec![s.display().to_string()])
+                    .unwrap_or_default();
+                av.extend(command_line.split_whitespace().skip(1).map(String::from));
+                if is_claude {
+                    av.push("--append-system-prompt".into());
+                    av.push(injected.clone());
+                }
+                if let Some(sid) = &resume_session {
+                    av.push("--resume".into());
+                    av.push(sid.clone());
+                }
+                pty::spawn_argv(&id, &exe, &av, &cwd, &env, args.cols, args.rows, app.clone())
+            } else {
             let mut parts = vec![pty::cmd_quote(&prog.display().to_string())];
             for a in command_line.split_whitespace().skip(1) {
                 parts.push(pty::cmd_quote(a));
@@ -492,6 +516,7 @@ fn spawn_inner(
             }
             command_line = parts.join(" ");
             pty::spawn(&id, &command_line, &cwd, &env, args.cols, args.rows, app.clone())
+            }
         }
         None => {
             if is_claude {
