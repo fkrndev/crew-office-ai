@@ -117,6 +117,30 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Upstream requestSingleInstanceLock — a second process launch hands
+        // its argv to the running instance (Windows/Linux deep links arrive
+        // exactly that way) and focuses the main window, never spawning a
+        // second harness on the same hive.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Emitter, Manager};
+            for arg in &argv {
+                if let Some(src) = crate::hire::parse_hire_deep_link(arg) {
+                    let home = app
+                        .state::<AppState>()
+                        .hive
+                        .root
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    commands::park_pending_hire(&home, &src);
+                    let _ = app.emit("hire-pending", &src);
+                }
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -170,6 +194,22 @@ pub fn run() {
                         }
                     }
                 });
+            }
+
+            // Cold-start deep link (upstream: the link rides in on OUR argv
+            // when the OS launches a fresh process for the scheme).
+            for arg in std::env::args() {
+                if let Some(src) = crate::hire::parse_hire_deep_link(&arg) {
+                    let home = app
+                        .state::<AppState>()
+                        .hive
+                        .root
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    commands::park_pending_hire(&home, &src);
+                    let _ = app.emit("hire-pending", &src);
+                }
             }
 
             // agent-office://hire?src=... deep links (upstream's

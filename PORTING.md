@@ -54,7 +54,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | Provider context verbs | `misc::context_commands` = total providerAutomation.ts table (/compress for gemini+qwen, focus-arg gating per provider); drives context-trigger, auto-compact missions, compact-queue drain AND voice clear_context | DONE |
 | Compact-queue drain | parked compacts fire the provider verb at the next idle transition (hooks emit_status) — the queue previously had no consumer | DONE |
 | `power:resume` keepalive | Emulated: a wall-clock gap >90s on the 15s mission tick means the machine slept — after upstream's 15s pipe-wake grace, `power_resume_probe` pid-probes every registered PTY and emits `power:resume {reason,awayMs,dead,total}` so the renderer's auto-revive respawns dead agents with --resume | DONE (tick-gap detection, not a real power event) |
-| `munderdifflin://` deep-link hires | Tauri deep-link plugin not wired; `hire:import`/`hire:error` channels exist but only spawn-request files fire | GAP |
+| `munderdifflin://` + `agent-office://` deep-link hires | tauri-plugin-deep-link (both schemes in tauri.conf.json) + `on_open_url` → park_pending_hire → `hire-pending` → renderer drains via hire:drainPending + hire_fetch/validate (the upstream fetch+review split); single-instance plugin forwards a second process's argv and focuses the main window; cold-start argv is scanned at boot | DONE |
 | `pathForFile` drag-drop attach | WebView2 `File` objects carry no `.path` (an Electron extension); shim returns '' so drag-attach degrades — use the attach dialog. A real fix needs `onDragDropEvent` plumbing into the copied renderer | GAP |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
 

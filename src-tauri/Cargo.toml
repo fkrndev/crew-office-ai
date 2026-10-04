@@ -43,6 +43,7 @@ base64 = "0.22"
 tauri-plugin-deep-link = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2.5.2"
 [target.'cfg(windows)'.dependencies]
 junction = "1"
 winreg = "0.52"
