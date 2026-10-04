@@ -4,7 +4,7 @@
 //! channels (hive:addTask → hive_add_task, …).
 
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::state;
 
@@ -62,7 +62,14 @@ pub fn hive_rename_agent(app: AppHandle, id: String, name: String) -> Result<Val
 #[tauri::command]
 pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<Value, String> {
     let st = state(&app);
-    crate::hive_admin::set_archived(&st.hive, &id, archived).map_err(err_str)
+    let res = crate::hive_admin::set_archived(&st.hive, &id, archived).map_err(err_str)?;
+    // Upstream setArchived dep (index.ts:4530): the floor hears every
+    // archive/unarchive regardless of who initiated it.
+    let _ = app.emit(
+        if archived { "hive:agentArchived" } else { "hive:agentSpawned" },
+        serde_json::json!({ "id": id }),
+    );
+    Ok(res)
 }
 
 /// hive:setAgentHold — 1:1 claimed by the human; paused-delivery marker.

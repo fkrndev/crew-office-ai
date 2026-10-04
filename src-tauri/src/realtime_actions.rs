@@ -833,6 +833,9 @@ fn exec_unarchive(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResul
     let (g, agents) = registry_doc(app);
     let r = resolve_agent(&target_of(a), &g, &agents).map_err(|e| anyhow::anyhow!(e))?;
     let res = crate::hive_admin::set_archived(&state(app).hive, &r.id, false);
+    // Upstream setArchived pushes hive:agentSpawned on an unarchive — the
+    // floor re-adds the card.
+    let _ = app.emit("hive:agentSpawned", json!({ "id": r.id }));
     attribute(app, "unarchive", &r.id, Map::new());
     Ok(match res {
         Result::Ok(_) => ok(format!("Brought {} back from the archive.", r.name)),
@@ -1164,6 +1167,12 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
     match commit {
         CommitSpec::Kill { id, name } => {
             let res = commands::kill_agent(app.clone(), id.clone());
+            // Voice kill is main-initiated — the renderer never removed the
+            // card itself (unlike a UI kill), so tell the floor to archive it
+            // (upstream killAgent dep → 'hive:agentArchived').
+            if res.is_ok() {
+                let _ = app.emit("hive:agentArchived", json!({ "id": id }));
+            }
             attribute(app, "kill", id, Map::new());
             Ok(match res {
                 Result::Ok(_) => format!("Killed {}.", name),
@@ -1200,6 +1209,9 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
         }
         CommitSpec::Archive { id, name } => {
             let res = crate::hive_admin::set_archived(&state(app).hive, id, true);
+            if res.is_ok() {
+                let _ = app.emit("hive:agentArchived", json!({ "id": id }));
+            }
             attribute(app, "archive", id, Map::new());
             Ok(match res {
                 Result::Ok(_) => format!(
@@ -1224,6 +1236,18 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                 rows: 30,
             };
             let res = commands::spawn_inner(app.clone(), args, Some(spec.id.clone()), None);
+            // Main-initiated spawn — the floor adds the card from this
+            // descriptor since it didn't initiate the hire (upstream
+            // 'hive:agentSpawned' broadcast).
+            if res.is_ok() {
+                let _ = app.emit(
+                    "hive:agentSpawned",
+                    json!({
+                        "id": spec.id, "name": spec.name, "provider": spec.provider,
+                        "cwd": spec.cwd, "command": spec.command, "role": spec.role,
+                    }),
+                );
+            }
             let mut extra = Map::new();
             extra.insert("provider".into(), json!(spec.provider));
             if let Some(r) = &spec.role {

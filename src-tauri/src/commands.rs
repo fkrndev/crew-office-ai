@@ -1306,9 +1306,42 @@ pub fn app_cancel_close(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
+    // Upstream 'app:info' (index.ts) — version + the two newest CHANGELOG
+    // sections for the voice get_app_info tool. Our extra name/home/
+    // liveAgents fields are additive.
+    let mut changelog = String::new();
+    for p in [
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("CHANGELOG.md"))),
+        Some(std::path::PathBuf::from("CHANGELOG.md")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(c) = std::fs::read_to_string(&p) {
+            changelog = c;
+            break;
+        }
+    }
+    let top: String = if changelog.is_empty() {
+        String::new()
+    } else {
+        changelog
+            .split("\n## ")
+            .skip(1)
+            .take(2)
+            .map(|s| format!("## {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .take(8000)
+            .collect()
+    };
     Ok(serde_json::json!({
         "name": "Agent Office",
         "version": env!("CARGO_PKG_VERSION"),
+        "changelog": top,
         "home": st.hive.root.parent().unwrap_or(&st.hive.root).display().to_string(),
         "liveAgents": st.ptys.lock().unwrap().len(),
     }))

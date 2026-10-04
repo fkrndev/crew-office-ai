@@ -359,7 +359,7 @@ impl TelemetryCollector {
                     v["model"] = serde_json::json!(model);
                 }
                 let _ = app.emit(
-                    "telemetry-event",
+                    "telemetry:event",
                     serde_json::json!({ "kind": "usage", "sample": v }),
                 );
             }
@@ -400,7 +400,7 @@ impl TelemetryCollector {
                             drop(spans);
                             if let Some(app) = app {
                                 let _ = app.emit(
-                                    "telemetry-event",
+                                    "telemetry:event",
                                     serde_json::json!({ "kind": "tool_result", "span": span }),
                                 );
                             }
@@ -426,7 +426,7 @@ impl TelemetryCollector {
                                 .push(now);
                             if let Some(app) = app {
                                 let _ = app.emit(
-                                    "telemetry-event",
+                                    "telemetry:event",
                                     serde_json::json!({
                                         "kind": "api_error", "agentId": agent_id,
                                         "sessionId": session_id, "ts": now,
