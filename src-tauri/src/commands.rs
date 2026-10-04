@@ -623,8 +623,11 @@ pub(crate) fn spawn_inner(
     // spawn and dies on its own missing-binary error — same as upstream.
     if !args.no_auto_install && pty::resolve_program(&first_tok, &path).is_none() {
         let npm_available = pty::resolve_program("npm", &path).is_some();
+        let node_probe = crate::misc::node_install_command().and_then(|(probe, _)| {
+            pty::resolve_program(probe, &path).is_some().then_some(probe)
+        });
         if let Some((script, relaunch)) =
-            crate::misc::install_script(&args.provider, &first_tok, npm_available)
+            crate::misc::install_script(&args.provider, &first_tok, npm_available, node_probe)
         {
             if relaunch {
                 let mut retry = args.clone();

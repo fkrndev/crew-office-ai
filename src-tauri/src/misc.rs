@@ -147,35 +147,79 @@ pub fn provider_install(provider: &str) -> (Option<&'static str>, Option<&'stati
     }
 }
 
-/// chooseInstallRung + buildMissingCliScript, condensed: pick the first rung
-/// whose command exists on this platform — native first, then npm when npm is
-/// reachable, else the manual-hint rung (returns `false` for "don't relaunch").
-/// Returns `(shell_script, will_relaunch)`.
+/// The platform's Node installer for the node-then-npm rung — upstream
+/// resolves the current LTS from nodejs.org and runs the official .msi/.pkg;
+/// here we use the OS package manager when one is on PATH (winget on
+/// Windows, brew on macOS). `None` = no Node install path we can vouch for,
+/// which drops the ladder to the native rung.
+pub fn node_install_command() -> Option<(&'static str, &'static str)> {
+    // (detect program, install command). PATH-refresh hint is spliced into
+    // the script after install so the npm step sees node immediately.
+    if cfg!(windows) {
+        Some((
+            "winget",
+            "winget install OpenJS.NodeJS --exact --silent --accept-source-agreements --accept-package-agreements",
+        ))
+    } else if cfg!(target_os = "macos") {
+        Some(("brew", "brew install node"))
+    } else {
+        None
+    }
+}
+
+/// chooseInstallRung + buildMissingCliScript, in the UPSTREAM rung order —
+/// npm first, then install-Node-then-npm, then the self-contained native
+/// installer, then the manual hint. `node_probe` is the detected Node
+/// installer program being reachable on PATH. Returns `(script, relaunch)` —
+/// the manual rung returns `false` (a respawn would die on the same missing
+/// binary, so upstream arms no relaunch there).
 pub fn install_script(
     provider: &str,
     bin: &str,
     npm_available: bool,
+    node_probe: Option<&str>,
 ) -> Option<(String, bool)> {
     let (native_posix, native_win32, npm) = provider_install(provider);
     let native = if cfg!(windows) { native_win32 } else { native_posix };
     let header = format!("[agent-office] \"{bin}\" is not installed — ");
-    if let Some(cmd) = native {
+
+    // Rung 1: npm present — run the package install directly.
+    if let (Some(cmd), true) = (npm, npm_available) {
         return Some((
-            format!("echo {header}running the official {provider} installer.\r\n{cmd}"),
+            format!("echo {header}installing it with npm.\r\n{cmd}"),
             true,
         ));
     }
-    if let Some(cmd) = npm {
-        if npm_available {
+
+    // Rung 2: npm missing but a Node installer exists — install Node first,
+    // then the package (node-then-npm). The PATH splice lets the npm step
+    // resolve node inside the same shell.
+    if let (Some(cmd), Some((probe, node_cmd))) = (npm, node_install_command()) {
+        if node_probe == Some(probe) {
+            let path_fix = if cfg!(windows) {
+                "set \"PATH=%ProgramFiles%\\nodejs;%PATH%\""
+            } else {
+                ""
+            };
             return Some((
-                format!("echo {header}installing it with npm.\r\n{cmd}"),
+                format!(
+                    "echo {header}installing Node.js first, then the package.\r\n{node_cmd}\r\n{path_fix}{cmd}"
+                ),
                 true,
             ));
         }
     }
+
+    // Rung 3: the vendor's self-contained installer (no Node needed).
+    if let Some(cmd) = native {
+        return Some((
+            format!("echo {header}running the official {provider} installer (no Node needed).\r\n{cmd}"),
+            true,
+        ));
+    }
+
+    // Rung 4: manual hint — honest output, intentionally no relaunch.
     if native.is_some() || npm.is_some() {
-        // Manual rung: print the honest hint and exit 0 — upstream does NOT
-        // arm a relaunch here because the spawn would die the same way.
         return Some((
             format!(
                 "echo {header}no bundled installer works on this machine.\r\necho Install {bin} manually, then respawn this agent."
