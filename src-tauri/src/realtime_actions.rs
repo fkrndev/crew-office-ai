@@ -162,19 +162,11 @@ fn provider_command(provider: &str) -> &'static str {
 
 /// Per-provider context-clear verbs — upstream `contextCommandsForProvider(.).clear`.
 /// `None` = nothing safe to type (copilot/cursor/crush/custom), NOT unchecked.
-fn clear_command(provider: &str) -> Option<&'static str> {
-    Some(match provider {
-        "claude" => "/clear",
-        "codex" => "/clear",
-        "grok" => "/new",
-        "kimi" => "/clear",
-        "antigravity" => "/clear",
-        "gemini" => "/clear",
-        "qwen" => "/clear",
-        "opencode" => "/new",
-        "pi" => "/new",
-        _ => return None,
-    })
+/// clearCommandForProvider — single source is misc::context_commands
+/// (shared/providerAutomation.ts ported to backend); the empty message falls
+/// back to the table verb.
+fn clear_command(provider: &str) -> Option<String> {
+    crate::misc::clear_command(provider, "")
 }
 
 fn normalize_provider(v: Option<&str>) -> Option<String> {
@@ -1457,9 +1449,9 @@ mod tests {
 
     #[test]
     fn provider_clear_table() {
-        assert_eq!(clear_command("claude"), Some("/clear"));
-        assert_eq!(clear_command("grok"), Some("/new"));
-        assert_eq!(clear_command("opencode"), Some("/new"));
+        assert_eq!(clear_command("claude").as_deref(), Some("/clear"));
+        assert_eq!(clear_command("grok").as_deref(), Some("/new"));
+        assert_eq!(clear_command("opencode").as_deref(), Some("/new"));
         assert_eq!(clear_command("copilot"), None);
         assert_eq!(clear_command("crush"), None);
         assert_eq!(clear_command("custom"), None);

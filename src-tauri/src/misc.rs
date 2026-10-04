@@ -57,6 +57,55 @@ pub fn inbox_delivery_terminal(provider: &str) -> bool {
     matches!(provider, "qwen" | "crush")
 }
 
+// ─── per-provider context commands (shared/providerAutomation.ts) ───────────
+//
+// The total CONTEXT_COMMANDS table. `null` means "we could not establish a
+// command we trust" — a wrong slash command typed into a live terminal is
+// worse than no command (at best dead text the model answers, at worst it
+// fires some other verb). `focus` is appended only where the provider's
+// parser actually reads it (compactTakesFocus).
+/// `(compact_verb, clear_verb, compact_takes_focus)`
+fn context_commands(provider: &str) -> (Option<&'static str>, Option<&'static str>, bool) {
+    match provider {
+        "claude" => (Some("/compact"), Some("/clear"), true),
+        "codex" => (Some("/compact"), Some("/clear"), false),
+        "grok" => (Some("/compact"), Some("/new"), true),
+        "kimi" => (Some("/compact"), Some("/clear"), true),
+        "antigravity" => (None, Some("/clear"), false),
+        "gemini" => (Some("/compress"), Some("/clear"), false),
+        "qwen" => (Some("/compress"), Some("/clear"), true),
+        "opencode" => (Some("/compact"), Some("/new"), false),
+        "pi" => (Some("/compact"), Some("/new"), true),
+        // crush/copilot/cursor/custom/hermes → NO_CONTEXT_COMMANDS: leave the
+        // terminal alone rather than typing an untrusted verb.
+        _ => (None, None, false),
+    }
+}
+
+/// compactionCommandForProvider — the focus message is appended only where
+/// the provider's parser reads it. `None` = no trustworthy compact command.
+pub fn compact_command(provider: &str, message: &str) -> Option<String> {
+    let (compact, _, takes_focus) = context_commands(provider);
+    let compact = compact?;
+    let focus = message.trim();
+    Some(if takes_focus && !focus.is_empty() {
+        format!("{compact} {focus}")
+    } else {
+        compact.to_string()
+    })
+}
+
+/// clearCommandForProvider — a non-empty message is a VERBATIM override
+/// (used by the clear context rule); empty falls back to the table verb.
+pub fn clear_command(provider: &str, message: &str) -> Option<String> {
+    let m = message.trim();
+    if !m.is_empty() {
+        return Some(m.to_string());
+    }
+    let (_, clear, _) = context_commands(provider);
+    clear.map(|c| c.to_string())
+}
+
 // ─── missing-CLI auto-install ladder (cliInstall.ts) ────────────────────────
 //
 // Upstream's spawnAgentCore: when the provider's binary is missing it runs a

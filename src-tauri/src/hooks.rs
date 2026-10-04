@@ -94,6 +94,26 @@ fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
 fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
     if let Some(st) = app.try_state::<AppState>() {
         let _ = st.hive.set_status(id, status);
+        // The parked-compact drain: mission/context-trigger fires while the
+        // agent was mid-work land here at the idle boundary (the same slot
+        // upstream's renderer-side queue drained through). Provider verb
+        // table: no trustworthy command → leave the terminal alone.
+        if status == "idle" && st.compact_queue.lock().unwrap().remove(id) {
+            let provider = st
+                .hive
+                .registry()
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.provider.clone())
+                .unwrap_or_default();
+            let focus = st.config.lock().unwrap().context_trigger.message.clone();
+            if let Some(cmd) = crate::misc::compact_command(&provider, &focus) {
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut(id) {
+                    let _ = h.write(&format!("{cmd}\r"));
+                }
+            }
+        }
     }
     let _ = app.emit(
         "agent-status",

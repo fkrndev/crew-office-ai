@@ -82,17 +82,18 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
         }
     }
     if m.auto_compact || m.kind.as_deref() == Some("compact") {
+        let focus = st.config.lock().unwrap().context_trigger.message.clone();
         let live: Vec<String> = st.ptys.lock().unwrap().keys().cloned().collect();
+        let reg = st.hive.registry();
         for id in live {
-            let idle = st
-                .hive
-                .registry()
-                .iter()
-                .any(|a| a.id == id && a.status == "idle");
+            let idle = reg.iter().any(|a| a.id == id && a.status == "idle");
             if idle {
-                let mut ptys = st.ptys.lock().unwrap();
-                if let Some(h) = ptys.get_mut(&id) {
-                    let _ = h.write("/compact\r");
+                let provider = reg.iter().find(|a| a.id == id).map(|a| a.provider.as_str()).unwrap_or("");
+                if let Some(cmd) = crate::misc::compact_command(provider, &focus) {
+                    let mut ptys = st.ptys.lock().unwrap();
+                    if let Some(h) = ptys.get_mut(&id) {
+                        let _ = h.write(&format!("{cmd}\r"));
+                    }
                 }
             } else {
                 st.compact_queue.lock().unwrap().insert(id);
@@ -478,10 +479,19 @@ pub fn run() {
                                 continue;
                             }
                             last.insert(id.clone(), now);
-                            let cmd = if ct.message.is_empty() {
-                                "/compact".to_string()
-                            } else {
-                                format!("/compact {}", ct.message)
+                            // Provider-aware verb (providerAutomation.ts): a
+                            // missing command means this CLI is left alone,
+                            // never typed dead text.
+                            let provider = st
+                                .hive
+                                .registry()
+                                .iter()
+                                .find(|a| a.id == id)
+                                .map(|a| a.provider.clone())
+                                .unwrap_or_default();
+                            let Some(cmd) = crate::misc::compact_command(&provider, &ct.message)
+                            else {
+                                continue;
                             };
                             let idle = st
                                 .hive
