@@ -593,3 +593,67 @@ curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
         Ok(path)
     }
 }
+
+/// healthCheckPtys (index.ts) — after a detected resume, probe each live
+/// PTY's pid liveness; ones whose process vanished but whose PTY is still
+/// registered are the `dead` the renderer auto-revives with --resume.
+pub fn power_resume_probe(app: &tauri::AppHandle, away_ms: u64) {
+    use tauri::Emitter;
+    let st = crate::commands::state(app);
+    let ids: Vec<(String, Option<u32>)> = st
+        .ptys
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, h)| (id.clone(), h.pid))
+        .collect();
+    let dead: Vec<String> = ids
+        .iter()
+        .filter(|(_, pid)| pid.map_or(false, |p| !pid_alive(p)))
+        .map(|(id, _)| id.clone())
+        .collect();
+    if !dead.is_empty() {
+        eprintln!(
+            "[power] resume (away ~{}s): {}/{} PTY(s) look wedged (process gone): {}",
+            away_ms / 1000,
+            dead.len(),
+            ids.len(),
+            dead.join(", ")
+        );
+    }
+    let _ = app.emit(
+        "power:resume",
+        serde_json::json!({
+            "reason": "resume-detected", "awayMs": away_ms,
+            "dead": dead, "total": ids.len(),
+        }),
+    );
+}
+
+/// process.kill(pid, 0) liveness probe — ESRCH means gone.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        // tasklist filtered to the pid; "No tasks are running" means dead.
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output();
+        match out {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.contains(&pid.to_string())
+            }
+            Err(_) => true,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(true)
+    }
+}

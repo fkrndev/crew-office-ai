@@ -680,6 +680,12 @@ pub fn run() {
             let handle3 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(15));
+                // power:resume emulation — Tauri has no powerMonitor, but a
+                // suspended machine freezes this interval the same way it
+                // froze libuv's: a wall-clock gap far past the tick means we
+                // slept. Upstream gives PTYs 15s to wake their pipes before
+                // judging them dead, so the probe rides a spawned timer.
+                let mut last_tick_wall = 0u64;
                 loop {
                     tick.tick().await;
                     let st = handle3.state::<AppState>();
@@ -687,14 +693,20 @@ pub fn run() {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
+                    if last_tick_wall != 0 && now.saturating_sub(last_tick_wall) > 90_000 {
+                        let away_ms = now - last_tick_wall;
+                        let handle9 = handle3.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(15)).await;
+                            crate::misc::power_resume_probe(&handle9, away_ms);
+                        });
+                    }
+                    last_tick_wall = now;
                     let mut fired_ids: Vec<String> = Vec::new();
                     {
                         let cfg = st.config.lock().unwrap();
                         for m in &cfg.missions {
-                            if !m.enabled || m.interval_ms == 0 {
-                                continue;
-                            }
-                            if now.saturating_sub(m.last_fired_at) < m.interval_ms {
+                            if !m.enabled || !missions::is_mission_due(m, now) {
                                 continue;
                             }
                             // Heartbeat is quiet-gated: only fires when the
