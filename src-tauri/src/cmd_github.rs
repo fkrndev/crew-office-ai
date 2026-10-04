@@ -23,7 +23,7 @@ fn resolve_repo(app: &AppHandle, repo: Option<String>) -> Result<String, String>
 }
 
 /// github:ciRuns — recent workflow runs for the repo.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn github_ci_runs(app: AppHandle, repo: Option<String>) -> Result<Value, String> {
     match resolve_repo(&app, repo).and_then(|r| crate::github::list_ci_runs(&r)) {
         Ok(runs) => Ok(json!({ "ok": true, "runs": runs })),
@@ -32,7 +32,7 @@ pub fn github_ci_runs(app: AppHandle, repo: Option<String>) -> Result<Value, Str
 }
 
 /// github:issues — up to 30 open issues for the repo.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn github_issues(app: AppHandle, repo: Option<String>) -> Result<Value, String> {
     match resolve_repo(&app, repo).and_then(|r| crate::github::list_issues(&r)) {
         Ok(issues) => Ok(json!({ "ok": true, "issues": issues })),
@@ -42,7 +42,7 @@ pub fn github_issues(app: AppHandle, repo: Option<String>) -> Result<Value, Stri
 
 /// Persist the default `owner/repo` (persist kv `github_repo`). An empty
 /// string clears it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn github_set_repo(app: AppHandle, owner_repo: String) -> Result<Value, String> {
     let st = state(&app);
     let trimmed = owner_repo.trim();

@@ -49,7 +49,7 @@ fn freeflow_model(app: &AppHandle) -> String {
 
 /// freeflow:setConfig — {enabled?, apiKey?|api_key?, model?}. Trim string
 /// fields; an emptied key deletes the credential (upstream: `|| undefined`).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String> {
     let st = state(&app);
     let p = &patch;
@@ -83,7 +83,7 @@ pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String
 /// freeflow:transcribe — one captured clip (base64) via Groq. Gated on the
 /// flag + a key being present, so a disabled feature can NEVER reach the
 /// network. Only the audio bytes cross IPC inbound, the transcript outbound.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn freeflow_transcribe(
     app: AppHandle,
     audio_b64: String,
@@ -116,7 +116,7 @@ pub fn freeflow_transcribe(
 }
 
 /// Settings-gate probe — presence of the key + flag, never the key itself.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn freeflow_status(app: AppHandle) -> Result<Value, String> {
     Ok(json!({
         "ok": true,

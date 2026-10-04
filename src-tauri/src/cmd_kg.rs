@@ -29,12 +29,12 @@ fn harness_home(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(|| st.hive.root.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_status(app: AppHandle) -> Result<Value, String> {
     Ok(kg::status(&harness_home(&app)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_list(app: AppHandle) -> Result<Value, String> {
     let root = kg::kg_root(&harness_home(&app));
     if !root.exists() {
@@ -43,7 +43,7 @@ pub fn kg_list(app: AppHandle) -> Result<Value, String> {
     Ok(json!(kg::list(&root)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_search(app: AppHandle, query: String, limit: Option<u32>) -> Result<Value, String> {
     if query.trim().is_empty() {
         return Ok(json!([]));
@@ -55,7 +55,7 @@ pub fn kg_search(app: AppHandle, query: String, limit: Option<u32>) -> Result<Va
     Ok(json!(kg::search(&root, &query, limit)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_get(app: AppHandle, id: String) -> Result<Value, String> {
     if id.is_empty() {
         return Ok(Value::Null);
@@ -67,7 +67,7 @@ pub fn kg_get(app: AppHandle, id: String) -> Result<Value, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_remove(app: AppHandle, id: String) -> Result<Value, String> {
     let ok = !id.is_empty() && kg::remove_doc(&kg::kg_root(&harness_home(&app)), &id);
     Ok(json!({ "ok": ok }))
@@ -77,7 +77,7 @@ pub fn kg_remove(app: AppHandle, id: String) -> Result<Value, String> {
 ///   upstream: { paths: ["/a/b.md", ...], tags: [...] }
 ///   extended: { files: [{ name, path?, content?|text?, title?, tags?, caption? }] }
 /// Best-effort per file; per-file results so the UI can report partial success.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> {
     let root = kg::kg_root(&harness_home(&app));
     let shared_tags = payload
@@ -157,7 +157,7 @@ pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> 
 
 /// "Add documents" — ingest explicit disk paths (the renderer's file picker
 /// supplies them; upstream opened the dialog itself). Same per-file results.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kg_add_files(app: AppHandle, payload: Option<Value>) -> Result<Value, String> {
     let root = kg::kg_root(&harness_home(&app));
     let p = payload.unwrap_or_else(|| json!({}));

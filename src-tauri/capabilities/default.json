@@ -5,7 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:default",
+    "opener:default",
     "notification:default"
   ]
 }

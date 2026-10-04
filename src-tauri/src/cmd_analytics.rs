@@ -14,7 +14,7 @@ use tauri::AppHandle;
 /// `message_sent` the surface must be a renderer-allowed one (upstream
 /// isRendererMessageSurface). Never errors: a refused event is a silent no-op
 /// upstream, so we return ok:false instead of throwing.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analytics_message_sent(
     app: AppHandle,
     event: String,
@@ -30,7 +30,7 @@ pub fn analytics_message_sent(
 
 /// Settings → Privacy toggle — `on=false` opts out (persist kv
 /// `analytics_opt_out`); sends stop instantly.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analytics_set_opt_in(app: AppHandle, on: bool) -> Result<Value, String> {
     crate::analytics::global().set_opt_in(&app, on);
     Ok(json!({ "ok": true, "opted_in": on }))
@@ -39,7 +39,7 @@ pub fn analytics_set_opt_in(app: AppHandle, on: bool) -> Result<Value, String> {
 /// Diagnostics — whether a send could happen right now and why not. The key
 /// itself is never exposed; `has_key` reports only whether the build carries
 /// one (empty in dev/fork builds, per upstream).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn analytics_status(app: AppHandle) -> Result<Value, String> {
     let a = crate::analytics::global();
     Ok(json!({

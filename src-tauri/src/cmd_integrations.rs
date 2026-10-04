@@ -31,19 +31,19 @@ fn harness_home(app: &AppHandle) -> PathBuf {
 }
 
 /// `integrations:list` — records with secretRef redacted to `hasSecret`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_list(app: AppHandle) -> Result<Value, String> {
     Ok(json!(integrations::list_redacted(&harness_home(&app))))
 }
 
 /// `integrations:templates` — the v1 reference presets.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_templates() -> Result<Value, String> {
     Ok(integrations::templates())
 }
 
 /// `integrations:upsert` — validated create/replace; same {ok,record|error} shape.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_upsert(app: AppHandle, record: Value) -> Result<Value, String> {
     match integrations::upsert_record(&harness_home(&app), &record) {
         Ok(rec) => Ok(json!({ "ok": true, "record": rec })),
@@ -52,7 +52,7 @@ pub fn integrations_upsert(app: AppHandle, record: Value) -> Result<Value, Strin
 }
 
 /// `integrations:remove` — drops the record AND its stored secret.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_remove(app: AppHandle, payload: Value) -> Result<Value, String> {
     let id = payload
         .get("id")
@@ -68,7 +68,7 @@ pub fn integrations_remove(app: AppHandle, payload: Value) -> Result<Value, Stri
 }
 
 /// `integrations:setSecret` — {id, secret, key?} → keychain only, never echoed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, String> {
     let _ = app;
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -95,7 +95,7 @@ pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, 
 /// `integrations:test` — probe reachability through the broker's own auth
 /// path (confined path resolved BEFORE the secret is materialized; only the
 /// upstream status crosses back).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_test(app: AppHandle, payload: Value) -> Result<Value, String> {
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let path = payload
@@ -107,7 +107,7 @@ pub fn integrations_test(app: AppHandle, payload: Value) -> Result<Value, String
 
 /// Start the loopback broker (idempotent). `preferred_port` 0/absent ⇒ OS pick.
 /// Resolves {ok, port, url} or {ok:false, error} — never a Tauri error.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_broker_start(
     app: AppHandle,
     preferred_port: Option<u16>,
@@ -119,7 +119,7 @@ pub fn integrations_broker_start(
 }
 
 /// Stop the broker and clear all capabilities (upstream stop()).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_broker_stop(app: AppHandle) -> Result<Value, String> {
     let _ = app;
     BROKER.stop_broker();
@@ -127,7 +127,7 @@ pub fn integrations_broker_stop(app: AppHandle) -> Result<Value, String> {
 }
 
 /// {running, url, port, capabilities} — secrets are not part of status.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_broker_status(app: AppHandle) -> Result<Value, String> {
     let _ = app;
     Ok(json!({
@@ -143,7 +143,7 @@ pub fn integrations_broker_status(app: AppHandle) -> Result<Value, String> {
 /// payload: {workerId, allowedIds?} — allowedIds defaults to the currently
 /// enabled integrations. Returns {ok, token} — the token is a handle, never a
 /// secret, and lives only in broker memory.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integrations_broker_token(app: AppHandle, payload: Value) -> Result<Value, String> {
     if !BROKER.running() {
         return Ok(json!({ "ok": false, "error": "broker not running" }));

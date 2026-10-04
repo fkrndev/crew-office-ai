@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::state;
 use crate::misc::{
@@ -34,7 +34,7 @@ const MAX_BINARY_READ: u64 = 2 * 1024 * 1024;
 /// https/http/mailto so the renderer can never shell an arbitrary scheme
 /// (upstream allowed https + the two OS settings schemes; this port keeps
 /// mailto for the contact links and drops the settings schemes).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
     let url = url.trim().to_string();
     let lower = url.to_lowercase();
@@ -46,7 +46,7 @@ pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
     {
         return Err("blocked url".into());
     }
-    if let Err(e) = app.shell().open(url.clone(), None) {
+    if let Err(e) = app.opener().open_url(url.clone(), None::<&str>) {
         // Fallback: the OS's own opener. A renderer-provided URL reaching this
         // path is already scheme-gated above.
         os_open(&url).map_err(|e2| format!("{e}; fallback failed: {e2}"))?;
@@ -55,14 +55,14 @@ pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
 }
 
 /// app:copyToClipboard.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_clipboard_write(app: AppHandle, text: String) -> Result<bool, String> {
     app.clipboard().write_text(text).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
 /// app:readClipboard — upstream swallows read errors to ''; keep that.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_clipboard_read(app: AppHandle) -> Result<String, String> {
     Ok(app.clipboard().read_text().unwrap_or_default())
 }
@@ -70,7 +70,7 @@ pub fn app_clipboard_read(app: AppHandle) -> Result<String, String> {
 /// Persist a pasted image to the OS clipboard — the paste-flow companion of
 /// the file dialog: the renderer hands PNG bytes (base64, optionally a
 /// `data:` URL) and the OS clipboard gets the decoded image.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, String> {
     let s = base64.trim();
     // Strip a `data:image/png;base64,` prefix if the caller sent a data URL.
@@ -95,7 +95,7 @@ pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, Stri
 /// root — a missing/misconfigured home must never escalate into a volume
 /// wipe. (Upstream also reset config.json and relaunched; this port returns a
 /// summary + `requiresRestart` instead — the caller restarts the app.)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
     let home = harness_home(&app);
@@ -163,7 +163,7 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
 /// app:setLoginItem — Windows autostart via the Run key. Non-Windows has no
 /// equivalent here yet → "not supported" (upstream used Electron's
 /// setLoginItemSettings, which was the macOS path).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String> {
     let _ = app;
     #[cfg(windows)]
@@ -193,7 +193,7 @@ pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String>
 /// app:setNotifications — persist the desktop-notification toggle. The slimmed
 /// Config has no field for it, so it lives in the persist kv (readable by the
 /// hooks layer when a native-notification path lands).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, String> {
     // Upstream writeConfig({notifications}) — the toggle lives in typed
     // config so get_config round-trips it for the Settings UI.
@@ -207,7 +207,7 @@ pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, Stri
 }
 
 /// terminal:openAtFolder — spawn a system terminal at a folder.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, String> {
     let _ = app;
     let p = expand_tilde(&path);
@@ -261,7 +261,7 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
 /// tools:status — probe each agent-engine binary on PATH. Presence is a PATH
 /// resolution, never a spawn (upstream's argument verbatim: several of these
 /// boot a TUI when invoked bare).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
     let _ = app;
     const PROVIDERS: [&str; 10] = [
@@ -288,7 +288,7 @@ pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
 /// fs:statAbs — existence/metadata check for an ABSOLUTE path (the terminal
 /// ⌘-click flow). Metadata only, never contents; `~/` is expanded here since
 /// the renderer doesn't know the home dir.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_stat_abs(app: AppHandle, path: String) -> Result<Value, String> {
     let _ = app;
     if path.len() > 4096 || path.contains('\0') {
@@ -308,7 +308,7 @@ pub fn fs_stat_abs(app: AppHandle, path: String) -> Result<Value, String> {
 /// (images et al.), base64 on the wire. Same pre-stat + post-read cap as
 /// upstream so a file that grows mid-read can't slip past the memory
 /// guarantee.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
     let _ = app;
     if path.is_empty() || path.len() > 4096 || path.contains('\0') {
@@ -340,7 +340,7 @@ pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
 
 /// fs:writeFile — confined write through fs_ops::safe_resolve (the one
 /// path-escape policy); parent dirs are created so a new nested file lands.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_write_file(
     app: AppHandle,
     root: String,
@@ -362,7 +362,7 @@ pub fn fs_write_file(
 /// file itself would hand an arbitrary path from agent output to its default
 /// application. A DIRECTORY is opened (a folder has no default app to
 /// exploit).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_reveal_path(app: AppHandle, path: String) -> Result<bool, String> {
     let _ = app;
     if path.is_empty() || path.len() > 4096 || path.contains('\0') {
@@ -456,7 +456,7 @@ pub fn dialog_attach_files(app: AppHandle) -> Result<Value, String> {
 /// models:catalog — the agent model presets. Upstream fetched a remote
 /// catalog with a baked-in fallback; this port serves the baked copy
 /// (embedded at build time from upstream's shared/modelCatalog.json).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn models_catalog(app: AppHandle) -> Result<Value, String> {
     let _ = app;
     serde_json::from_str::<Value>(include_str!("modelCatalog.json"))
@@ -466,7 +466,7 @@ pub fn models_catalog(app: AppHandle) -> Result<Value, String> {
 /// hero:payload — the Settings hero card, fetched + cached with a 6h TTL and
 /// a never-fail contract ({hero, fetchedAt, stale}). Off the UI thread since
 /// a cold cache means a bounded network fetch.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, String> {
     let cache = harness_home(&app).join("hero.json");
     let force = force.unwrap_or(false);
@@ -480,7 +480,7 @@ pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, 
 /// roster:readSync — same read as roster_read (upstream kept a sync channel
 /// for the renderer's first paint; Tauri IPC is async either way, but the
 /// name is the contract).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn roster_read_sync(app: AppHandle) -> Result<Option<Value>, String> {
     Ok(state(&app).roster.read())
 }
@@ -501,7 +501,7 @@ fn provider_key_name(provider: &str) -> Result<String, String> {
     Ok(format!("PROVIDER_KEY_{}", p.to_uppercase().replace('-', "_")))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Result<bool, String> {
     let key = provider_key_name(&provider)?;
     if value.is_empty() {
@@ -519,13 +519,13 @@ pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Resu
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_key_has(app: AppHandle, provider: String) -> Result<bool, String> {
     let _ = app;
     Ok(secret_get(&provider_key_name(&provider)?).is_some())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_key_clear(app: AppHandle, provider: String) -> Result<bool, String> {
     let key = provider_key_name(&provider)?;
     if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &key) {
@@ -567,7 +567,7 @@ static WEBHOOK_TUNNEL: std::sync::Mutex<Option<(String, std::process::Child)>> =
 /// webhook:start — bind the loopback gateway against the configured endpoints
 /// and port (upstream reconcileWebhookServer), then open the public tunnel.
 /// The tunnel is non-fatal — the loopback handler is the security boundary.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String> {
     if WEBHOOK_LATCHED.load(Ordering::SeqCst) {
         return Err(
@@ -613,7 +613,7 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
 
 /// webhook:stop — signal the serve loop to exit (one-way latch; the port
 /// rebinds only on the next app launch).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
     state(&app).webhook.stop();
     WEBHOOK_BOUND.store(false, Ordering::SeqCst);
@@ -627,7 +627,7 @@ pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
 /// webhooks:status — {running, port, endpoints} (upstream also reported the
 /// tunnel url + per-endpoint public urls; this port is loopback-only, so
 /// `url` is the loopback base and `endpoints` is the served id list).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_status(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
     let cfg_port = st.config.lock().unwrap().webhook_port;
@@ -647,7 +647,7 @@ pub fn webhook_status(app: AppHandle) -> Result<Value, String> {
 
 /// webhooks:generateSecret — mint a 256-bit secret for the operator to paste
 /// into their caller (not persisted here).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_generate_secret(app: AppHandle) -> Result<String, String> {
     let _ = app;
     Ok(random_hex32())
@@ -656,7 +656,7 @@ pub fn webhook_generate_secret(app: AppHandle) -> Result<String, String> {
 /// webhooks:delete — drop one endpoint by id and hot-swap the served list (a
 /// removed id stops resolving on the very next request; the port never
 /// rebinds).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhooks_delete(
     app: AppHandle,
     id: String,
@@ -679,7 +679,7 @@ pub fn webhooks_delete(
 /// (`slack_config`; the slimmed Config has no slack fields). Disabling stops
 /// the running server, matching upstream's reconcile (we deliberately do NOT
 /// auto-start on save — the user presses Start).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_set_config(app: AppHandle, cfg: Value) -> Result<Value, String> {
     let st = state(&app);
     let mut cur = st
@@ -716,7 +716,7 @@ pub fn slack_set_config(app: AppHandle, cfg: Value) -> Result<Value, String> {
 /// slack:replyScriptPath — absolute path of the `<harness>/bin/slack-reply`
 /// helper agents invoke to post back into a thread (written idempotently;
 /// the bot token travels via the SLACK_BOT_TOKEN env, never an argv).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_reply_script_path(app: AppHandle) -> Result<String, String> {
     let path = write_slack_reply_script(&harness_home(&app))?;
     Ok(path.display().to_string())
@@ -726,20 +726,20 @@ pub fn slack_reply_script_path(app: AppHandle) -> Result<String, String> {
 
 /// telemetry:snapshot — cold-start backfill {usage, spans} for a renderer
 /// that missed the live pushes.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn telemetry_snapshot(app: AppHandle) -> Result<Value, String> {
     Ok(state(&app).telemetry.snapshot())
 }
 
 /// telemetry:spans — one agent's recent tool-span ring, oldest→newest.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn telemetry_spans(app: AppHandle, agent_id: String) -> Result<Value, String> {
     Ok(json!(state(&app).telemetry.spans(&agent_id)))
 }
 
 /// telemetry:usage — one agent's cumulative usage with upstream's fallback
 /// order: live OTel sample → proxy-sample ledger → transcript reconciler.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn telemetry_usage(app: AppHandle, agent_id: String) -> Result<Value, String> {
     let st = state(&app);
     let sample = st
@@ -793,7 +793,7 @@ pub fn window_new_floor(app: AppHandle) -> Result<Value, String> {
 /// validates + persists the override and defers the actual move to the next
 /// launch. Upstream additionally offered 'move' semantics and relaunched in
 /// place; this port is persist-and-flag only.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn config_change_home(app: AppHandle, new_home: String) -> Result<Value, String> {
     let expanded = expand_tilde(&new_home);
     if expanded.is_empty() {
@@ -831,7 +831,7 @@ pub fn config_change_home(app: AppHandle, new_home: String) -> Result<Value, Str
 
 /// config:ensureHome — create the harness home (and its hive/ subdir) on
 /// disk; `~` expands first, same defense-in-depth rule as upstream (#140).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn config_ensure_home(app: AppHandle, path: String) -> Result<Value, String> {
     let _ = app;
     let p = expand_tilde(&path);
@@ -844,7 +844,7 @@ pub fn config_ensure_home(app: AppHandle, path: String) -> Result<Value, String>
 }
 
 /// config:homeSync — the current harness home path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn config_home_sync(app: AppHandle) -> Result<String, String> {
     Ok(harness_home(&app).display().to_string())
 }
@@ -852,7 +852,7 @@ pub fn config_home_sync(app: AppHandle) -> Result<String, String> {
 /// config:setAgentTokenCap — set/clear one agent's work-token ceiling
 /// (None/0 clears; upstream's MAX_AGENT_TOKEN_CAP = 10e9). Read-modify-write
 /// on the live config so concurrent cap writes merge rather than clobber.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn config_set_agent_token_cap(
     app: AppHandle,
     agent_id: String,
@@ -887,7 +887,7 @@ pub fn config_set_agent_token_cap(
 /// reads it). The breaker policy in this port already emits `breaker-state`
 /// from the beat; this command keeps the renderer-writable seam — the payload
 /// is relayed verbatim plus the agent id.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_set_breaker_state(
     app: AppHandle,
     agent_id: String,
@@ -907,7 +907,7 @@ pub fn control_set_breaker_state(
 /// the inverted `auto_delivery_paused` bit. Like upstream, the paused-agent
 /// id list is also persisted (persist kv `auto_delivery_paused_agents`) so a
 /// restart keeps the holds.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_auto_delivery(
     app: AppHandle,
     agent_id: String,
@@ -988,7 +988,7 @@ fn sanitize_context_rule(patch: &Value, current: &Value) -> Value {
 
 /// triggers:getContext — the stored {compact, clear} blob (persist kv
 /// `triggers_context`), else derived defaults from the live config.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn triggers_get_context(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
     if let Some(v) = st.persist.lock().unwrap().get_kv("triggers_context") {
@@ -1006,7 +1006,7 @@ pub fn triggers_get_context(app: AppHandle) -> Result<Value, String> {
 /// triggers:setContext — merge + clamp both halves, persist the blob, and
 /// mirror the compact half into cfg.context_trigger so the running trigger
 /// (lib.rs's beat) sees the new cadence on its next tick.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String> {
     let st = state(&app);
     let current = triggers_get_context(app.clone())?;
@@ -1037,7 +1037,7 @@ pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String>
 
 /// org:getTrigger — the org/clone-node blob (persist kv `org_trigger`;
 /// upstream persisted-only too — no transport service exists yet).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn org_get_trigger(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
     let v = st
@@ -1053,7 +1053,7 @@ pub fn org_get_trigger(app: AppHandle) -> Result<Value, String> {
 /// org:setTrigger — persist-only merge; valid modes are the shared
 /// TriggerMode set. Deliberately no side effects (upstream's comment
 /// verbatim: nothing reads apiKey beyond the settings surface).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
     let st = state(&app);
     let current = org_get_trigger(app.clone())?;

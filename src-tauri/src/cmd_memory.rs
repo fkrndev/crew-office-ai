@@ -30,7 +30,7 @@ fn harness_home(app: &AppHandle) -> PathBuf {
 /// `hive:memoryStatus` → memory.refresh(): reset the bin cache, idempotently
 /// arm the mine loop (a post-boot install otherwise reads "getting ready"
 /// until restart), then report status. `available:false` when CLI absent.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_status(app: AppHandle) -> Result<Value, String> {
     let palace = memory_palace::instance(&harness_home(&app));
     Ok(palace.refresh())
@@ -38,7 +38,7 @@ pub fn memory_status(app: AppHandle) -> Result<Value, String> {
 
 /// `hive:searchMemory` — `mempalace search <q> --results N [--wing <w>]`.
 /// `limit` maps to upstream's `--results` (default 5 when unset/0).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_memory(
     app: AppHandle,
     query: String,
@@ -53,7 +53,7 @@ pub fn search_memory(
 }
 
 /// `hive:memoryWakeUp` — `mempalace wake-up [--wing <w>]` session digest.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn memory_wake_up(app: AppHandle, wing: Option<String>) -> Result<Value, String> {
     let palace = memory_palace::instance(&harness_home(&app));
     Ok(palace.wake_up(wing.as_deref()))
@@ -62,7 +62,7 @@ pub fn memory_wake_up(app: AppHandle, wing: Option<String>) -> Result<Value, Str
 /// `hive:mineNow` — fire-and-forget mine pass, returns {ok:true} immediately
 /// (upstream contract). `agent_id` narrows the pass to one agent's memory.md;
 /// absent = every agent under <harness>/hive/agents whose memory changed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mine_now(app: AppHandle, agent_id: Option<String>) -> Result<Value, String> {
     let palace = memory_palace::instance(&harness_home(&app));
     palace.mine_now(agent_id.filter(|s| !s.is_empty()));

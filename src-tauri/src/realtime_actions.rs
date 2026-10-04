@@ -1362,7 +1362,7 @@ fn run_action(app: &AppHandle, verb: &str, a: &Map<String, Value>) -> Result<Act
 
 // ─── commands (upstream's ipcMain.handle triple) ───────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn realtime_action(app: AppHandle, payload: Option<Value>) -> Result<ActionResult, String> {
     let p = payload.unwrap_or_else(|| json!({}));
     let obj = p.as_object().cloned().unwrap_or_default();
@@ -1376,7 +1376,7 @@ pub async fn realtime_action(app: AppHandle, payload: Option<Value>) -> Result<A
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn realtime_action_confirm(
     app: AppHandle,
     payload: Option<Value>,
@@ -1405,7 +1405,7 @@ pub async fn realtime_action_confirm(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn realtime_action_cancel() -> Result<ActionResult, String> {
     let had = pending_fresh();
     *PENDING.lock().unwrap() = None;

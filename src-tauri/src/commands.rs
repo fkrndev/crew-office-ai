@@ -237,7 +237,7 @@ pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<
     Mutex<HashMap<String, SpawnArgs>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
     spawn_inner(app, args, None, None)
 }
@@ -245,7 +245,7 @@ pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
 /// Respawn a registry agent — same id, same hive folder/memory, optionally
 /// resuming its recorded session (claude --resume <session_id>). This is the
 /// restart/restore-team path: the registry survives, only the PTY died.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String> {
     let st = state(&app);
     let entry = st
@@ -773,7 +773,7 @@ pub(crate) fn spawn_inner(
     Ok(Spawned { id })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
     let st = state(&app);
     let mut ptys = st.ptys.lock().unwrap();
@@ -783,7 +783,7 @@ pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String>
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<(), String> {
     let st = state(&app);
     let ptys = st.ptys.lock().unwrap();
@@ -793,7 +793,7 @@ pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<()
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     let st = state(&app);
     if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
@@ -833,7 +833,7 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
 
 /// hive:registry — upstream returns the registry DOCUMENT `{godId, agents:{
 /// <id>: entry}}` so the renderer can key by id and reach godId.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_registry(app: AppHandle) -> Result<serde_json::Value, String> {
     let (god_id, agents) = state(&app).hive.read_registry_doc();
     let map: serde_json::Map<String, serde_json::Value> = agents
@@ -851,7 +851,7 @@ pub fn hive_registry(app: AppHandle) -> Result<serde_json::Value, String> {
 /// is normalized and routed SYNCHRONOUSLY (index.ts:3503 — no outbox hop, so
 /// virtual senders like 'human'/'system' never materialize an agents/<from>
 /// dir).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_send(
     app: AppHandle,
     partial: crate::hive::PartialMessage,
@@ -862,12 +862,12 @@ pub fn hive_send(
     Ok(serde_json::json!({ "ok": true, "message": msg }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_inbox(app: AppHandle, agent_id: String) -> Result<Vec<Message>, String> {
     state(&app).hive.inbox(&agent_id).map_err(err_str)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_mark_done(app: AppHandle, agent_id: String, msg_id: String) -> Result<(), String> {
     state(&app)
         .hive
@@ -875,24 +875,24 @@ pub fn hive_mark_done(app: AppHandle, agent_id: String, msg_id: String) -> Resul
         .map_err(err_str)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_board(app: AppHandle) -> Result<String, String> {
     state(&app).hive.read_board().map_err(err_str)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_tasks(app: AppHandle) -> Result<serde_json::Value, String> {
     state(&app).hive.read_tasks().map_err(err_str)
 }
 
 // ─── memory ─────────────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_memory(app: AppHandle, agent_id: String) -> Result<String, String> {
     state(&app).hive.read_memory(&agent_id).map_err(err_str)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<(), String> {
     state(&app)
         .hive
@@ -902,7 +902,7 @@ pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 /// config:get — upstream readConfig(): the persisted file deep-filled with
 /// defaults and returned as the camelCase object the renderer expects. The
 /// raw file merge preserves unknown keys (officeTheme, terminalTheme, the
@@ -919,7 +919,7 @@ pub fn get_config(app: AppHandle) -> Result<serde_json::Value, String> {
     Ok(serde_json::Value::Object(merged))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     let st = state(&app);
     {
@@ -933,7 +933,7 @@ pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 // ─── operator control (control.ts IPC equivalents) ──────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_pause(app: AppHandle, agent_id: String, on: bool) -> Result<ControlSnapshot, String> {
     let st = state(&app);
     let mut c = st.control.lock().unwrap();
@@ -941,7 +941,7 @@ pub fn control_pause(app: AppHandle, agent_id: String, on: bool) -> Result<Contr
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_resume(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
     let st = state(&app);
     let mut c = st.control.lock().unwrap();
@@ -949,7 +949,7 @@ pub fn control_resume(app: AppHandle, agent_id: String) -> Result<ControlSnapsho
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_halt(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
     let st = state(&app);
     let mut c = st.control.lock().unwrap();
@@ -957,7 +957,7 @@ pub fn control_halt(app: AppHandle, agent_id: String) -> Result<ControlSnapshot,
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_steer(
     app: AppHandle,
     agent_id: String,
@@ -969,7 +969,7 @@ pub fn control_steer(
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_gate_tool(
     app: AppHandle,
     agent_id: String,
@@ -982,7 +982,7 @@ pub fn control_gate_tool(
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_pause_delivery(
     app: AppHandle,
     agent_id: String,
@@ -994,19 +994,19 @@ pub fn control_pause_delivery(
     Ok(c.snapshot(&agent_id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_snapshot(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
     Ok(state(&app).control.lock().unwrap().snapshot(&agent_id))
 }
 
 // ─── missions (scheduler) ───────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn missions_list(app: AppHandle) -> Result<Vec<crate::missions::ScheduledMission>, String> {
     Ok(state(&app).config.lock().unwrap().missions.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn missions_save(
     app: AppHandle,
     missions: Vec<crate::missions::ScheduledMission>,
@@ -1039,7 +1039,7 @@ fn secret_get(app: &AppHandle, key: &str) -> Option<String> {
 
 /// Store a secret in the OS credential store and register its env key for
 /// injection. The value never touches config.json or log.jsonl.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
     let key = key.trim().to_string();
     if key.is_empty() || value.is_empty() {
@@ -1058,7 +1058,7 @@ pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), Stri
 }
 
 /// Remove a secret — from the keychain AND the injection list.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
     if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &key) {
         let _ = e.delete_credential();
@@ -1070,14 +1070,14 @@ pub fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
 }
 
 /// The injection-list key NAMES — values are never exposed to the frontend.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn secrets_list(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(state(&app).config.lock().unwrap().secret_env_keys.clone())
 }
 
 // ─── webhooks (inbound HTTP → god's inbox) ──────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhooks_list(app: AppHandle) -> Result<Vec<crate::webhook::WebhookEndpoint>, String> {
     Ok(state(&app).config.lock().unwrap().webhooks.clone())
 }
@@ -1085,7 +1085,7 @@ pub fn webhooks_list(app: AppHandle) -> Result<Vec<crate::webhook::WebhookEndpoi
 /// Persist the endpoint list and hot-swap it on the running server — a
 /// removed id stops resolving on the very next request (upstream
 /// setEndpoints semantics; the port never rebinds).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhooks_save(
     app: AppHandle,
     webhooks: Vec<crate::webhook::WebhookEndpoint>,
@@ -1133,7 +1133,7 @@ fn ensure_webhook_server(
 /// decision='approved'. Takes the HISTORY ENTRY id (the pending row the UI
 /// lists), releases the message down the identical card+god path, and flips
 /// the ledger. Idempotent: already-decided entries are a no-op.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_approve(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
     let st = state(&app);
     st.webhook
@@ -1141,7 +1141,7 @@ pub fn webhook_approve(app: AppHandle, token: String) -> Result<serde_json::Valu
         .ok_or_else(|| "unknown or non-pending entry".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_reject(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
     let st = state(&app);
     st.webhook
@@ -1153,7 +1153,7 @@ pub fn webhook_reject(app: AppHandle, token: String) -> Result<serde_json::Value
 /// 'approved' releases the identical dispatch path an auto-allowed message
 /// would take; 'rejected' just flips. Idempotent: only a `pending` entry can
 /// be decided (upstream index.ts:4300).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trigger_history_decide(
     app: AppHandle,
     arg: serde_json::Value,
@@ -1176,7 +1176,7 @@ pub fn trigger_history_decide(
 
 /// Pending inbound rows — upstream's surface is the trigger ledger itself
 /// (entries still at decision:'pending').
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
     Ok(state(&app).webhook.pending(&app))
 }
@@ -1198,7 +1198,7 @@ pub fn park_pending_hire(home: &std::path::Path, src: &str) {
 }
 
 /// hire:drainPending — read + clear the queued deep-link source.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
     let st = state(&app);
     let home = st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf();
@@ -1217,7 +1217,7 @@ pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
 /// config:update — merge a partial JSON patch into config.json. Only keys
 /// that exist on Config survive (serde drops the rest, same as upstream's
 /// typed settings write); one level of object merge for nested knobs.
-#[tauri::command]
+#[tauri::command(async)]
 /// config:update — writeConfig(patch): shallow merge at the top level (a
 /// nested object REPLACES its subtree wholesale, matching upstream's spread),
 /// onto the RAW file so unknown keys survive, then re-parse the typed Config.
@@ -1242,7 +1242,7 @@ pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<serde_j
 
 /// webhook:setConfig — secret + port + enable toggle; the port applies on
 /// next boot. `secret` rotates the legacy endpoint's shared secret.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webhook_set_config(
     app: AppHandle,
     secret: Option<String>,
@@ -1337,19 +1337,19 @@ pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
 
 /// app:confirmClose — kick the closing-time protocol (same rail as
 /// closing_time_start; frontend shows "Confirm close" → this).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_confirm_close(app: AppHandle) -> Result<usize, String> {
     closing_time_start(app)
 }
 
 /// app:cancelClose — abort the in-flight closing-time protocol.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_cancel_close(app: AppHandle) -> Result<bool, String> {
     closing_time_cancel(app)
 }
 
 /// app:info — version + home path for the About surface.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
     // Upstream 'app:info' (index.ts) — version + the two newest CHANGELOG
@@ -1394,7 +1394,7 @@ pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 /// skills:reveal — open a skill's directory in the OS file manager.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
     let st = state(&app);
     let cwds: Vec<String> = st.hive.registry().iter().map(|a| a.cwd.clone()).collect();
@@ -1417,7 +1417,7 @@ pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
 
 /// Manually condense one agent's memory.md — skips the trigger (on-demand);
 /// the full backup→summarize→rebuild→verify→swap pipeline still runs.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
     let st = state(&app);
     let settings = crate::reflect::ReflectSettings { enabled: true, ..Default::default() };
@@ -1437,7 +1437,7 @@ pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde
 
 /// One git snapshot for the pane — is_repo? branch? counts? ahead/behind?
 /// The `cwd` argument is the agent's workspace directory.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, String> {
     let _ = app;
     let p = std::path::Path::new(&cwd);
@@ -1457,14 +1457,14 @@ pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, St
 
 /// List a directory inside an agent's workspace — `root` is the agent's cwd
 /// (or any path the caller confines); `rel` must stay inside it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_list(app: AppHandle, root: String, rel: String) -> Result<Vec<serde_json::Value>, String> {
     let _ = app;
     crate::fs_ops::list_dir(std::path::Path::new(&root), &rel)
         .ok_or_else(|| "path escapes the workspace".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_read(app: AppHandle, root: String, rel: String) -> Result<serde_json::Value, String> {
     let _ = app;
     match crate::fs_ops::read_file(std::path::Path::new(&root), &rel) {
@@ -1479,7 +1479,7 @@ pub fn fs_read(app: AppHandle, root: String, rel: String) -> Result<serde_json::
 
 // ─── persist store (kv + command history) ───────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kv_get(app: AppHandle, key: String) -> Result<serde_json::Value, String> {
     Ok(state(&app)
         .persist
@@ -1489,25 +1489,25 @@ pub fn kv_get(app: AppHandle, key: String) -> Result<serde_json::Value, String> 
         .unwrap_or(serde_json::Value::Null))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kv_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<bool, String> {
     state(&app).persist.lock().unwrap().set_kv(&key, &value);
     Ok(true)
 }
 
 /// Record one user-submitted prompt (db.ts addHistory).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn command_history_add(app: AppHandle, agent_id: String, cwd: Option<String>, text: String) -> Result<bool, String> {
     state(&app).persist.lock().unwrap().add_history(&agent_id, cwd.as_deref(), &text);
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn command_history_list(app: AppHandle, agent_id: Option<String>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
     Ok(state(&app).persist.lock().unwrap().list_history(agent_id.as_deref(), limit.unwrap_or(100)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn command_history_search(app: AppHandle, query: String, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
     Ok(state(&app).persist.lock().unwrap().search_history(&query, limit.unwrap_or(50)))
 }
@@ -1515,14 +1515,14 @@ pub fn command_history_search(app: AppHandle, query: String, limit: Option<i64>)
 // ─── hire manifests (munderdifflin://hire deep link + file import) ──────────
 
 /// Validate + return a hire manifest (prefill only — never auto-spawns).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hire_validate(raw: serde_json::Value) -> serde_json::Value {
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
     serde_json::json!({ "ok": m.is_some(), "manifest": m, "errors": errors, "consentRequired": consent })
 }
 
 /// Import from an https URL — SSRF-gated (resolved addresses blocklisted).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hire_fetch(url: String) -> Result<serde_json::Value, String> {
     let raw = crate::hire::fetch_manifest(&url)?;
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
@@ -1534,7 +1534,7 @@ pub fn hire_fetch(url: String) -> Result<serde_json::Value, String> {
 }
 
 /// Import from a local file — same byte cap + validator.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
     let raw = crate::hire::read_manifest_file(std::path::Path::new(&path))?;
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
@@ -1549,7 +1549,7 @@ pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
 
 /// Start the Slack listener. The signing secret comes from the credential
 /// store (SLACK_SIGNING_SECRET) — never from disk or args.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Result<bool, String> {
     let st = state(&app);
     let secret = secret_get(&app, "SLACK_SIGNING_SECRET")
@@ -1694,7 +1694,7 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
     let st = state(&app);
     st.slack.stop();
@@ -1708,7 +1708,7 @@ pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
     Ok(serde_json::json!({
@@ -1722,7 +1722,7 @@ pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
 /// Reply rail — agents post back into the Slack thread WITHOUT the bot
 /// token (it comes from the credential store at send time). The
 /// channel+thread are explicit (CLAUSE-1 — no channel-root posts).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn slack_reply(app: AppHandle, channel: String, thread_ts: String, text: String) -> Result<bool, String> {
     let token = secret_get(&app, "SLACK_BOT_TOKEN")
         .ok_or_else(|| "SLACK_BOT_TOKEN not in credential store".to_string())?;
@@ -1857,7 +1857,7 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
 
 /// Press "closing time": brief god + steer every live agent, then the router
 /// observer tracks worker ACKs and the verified COMPLETE.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
     let st = state(&app);
     let live: std::collections::HashSet<String> = st.ptys.lock().unwrap().keys().cloned().collect();
@@ -1867,7 +1867,7 @@ pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
     Ok(n)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
     let st = state(&app);
     let mut control = st.control.lock().unwrap();
@@ -1876,7 +1876,7 @@ pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn closing_time_status(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
     let (acked, total) = st.closing.progress();
@@ -1912,19 +1912,19 @@ pub(crate) fn write_fleet_snapshot(app: &AppHandle) {
 
 // ─── roster mirror (UI floor state on disk) ─────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn roster_read(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
     Ok(state(&app).roster.read())
 }
 
 /// app:syncPort — the loopback sync-IPC port (sync_api.rs); the shim needs
 /// it before its first sendSync-equivalent call.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_port(app: AppHandle) -> Result<u16, String> {
     Ok(state(&app).sync_port.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn roster_write(app: AppHandle, snap: serde_json::Value) -> Result<bool, String> {
     // A declined empty-first-write is not an error for the caller — the file
     // was protected, which is the outcome the renderer wants either way.
@@ -1935,7 +1935,7 @@ pub fn roster_write(app: AppHandle, snap: serde_json::Value) -> Result<bool, Str
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn roster_archive(app: AppHandle) -> Result<bool, String> {
     state(&app).roster.archive();
     Ok(true)
@@ -1943,7 +1943,7 @@ pub fn roster_archive(app: AppHandle) -> Result<bool, String> {
 
 /// Lifetime spend folded from cost-ledger.jsonl — the reset-safe number
 /// (telemetry's cumulative-since-boot counter understates post-restart).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
     let mut t = crate::cost_lifetime::CostLedgerTotals::default();
@@ -1956,7 +1956,7 @@ pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
 
 // ─── task ledger writes (patchTaskInLedger semantics) ───────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn task_update(
     app: AppHandle,
     id: String,
@@ -1968,14 +1968,14 @@ pub fn task_update(
 /// The ASK ME answer flow: sets the last open humanQA entry's `a`, unblocks
 /// the card, and mails god the answer — the two-channel contract upstream
 /// spells out in the orchestrator prompt.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn task_answer(app: AppHandle, id: String, answer: String) -> Result<serde_json::Value, String> {
     state(&app).hive.task_answer(&id, &answer).map_err(err_str)
 }
 
 // ─── skills (local discovery + catalog + hardened install) ─────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>, String> {
     // Bundled skills staged next to the running exe (app resources/skills/).
     let bundled = std::env::current_exe()
@@ -1984,18 +1984,18 @@ pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>,
     Ok(crate::skills::list_local_skills(&cwds, bundled.as_deref()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_catalog(app: AppHandle, force: Option<bool>) -> Result<crate::skills::CatalogResult, String> {
     let cache = state(&app).hive.root.join("skills-catalog.json");
     Ok(crate::skills::load_catalog(&cache, force.unwrap_or(false)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_install(url: String, name: String) -> Result<String, String> {
     crate::skills::install_skill(&url, &name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Result<bool, String> {
     crate::skills::uninstall_skill(&path, &cwds)?;
     Ok(true)
@@ -2003,12 +2003,12 @@ pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Result<bool, String>
 
 // ─── trigger ledger (inbound webhook history + verdicts) ────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn triggers_list(app: AppHandle) -> Result<Vec<crate::trigger_history::TriggerHistoryEntry>, String> {
     Ok(state(&app).trigger_history.list())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn triggers_clear(app: AppHandle, source: Option<String>) -> Result<bool, String> {
     state(&app).trigger_history.clear(source.as_deref());
     Ok(true)
@@ -2016,7 +2016,7 @@ pub fn triggers_clear(app: AppHandle, source: Option<String>) -> Result<bool, St
 
 // ─── breaker (the beat's data seam + level read) ────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn breaker_level(app: AppHandle, agent_id: String) -> Result<String, String> {
     let lvl = state(&app).breaker.lock().unwrap().level_for(&agent_id);
     Ok(format!("{lvl:?}").to_lowercase())

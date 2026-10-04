@@ -39,14 +39,14 @@ const CLIENT_SECRETS_URL: &str = "https://api.openai.com/v1/realtime/client_secr
 const LEGACY_SESSIONS_URL: &str = "https://api.openai.com/v1/realtime/sessions";
 
 /// realtime:hasKey — boolean presence only; gates the voice toggle.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_has_key(_app: AppHandle) -> Result<bool, String> {
     Ok(crate::misc::secret_get(OPENAI_KEY_REF).is_some())
 }
 
 /// realtime:mintToken — GA client_secrets shape first, legacy sessions
 /// fallback on 404; both response shapes normalized to {value, expires_at}.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Value, String> {
     let model = model
         .filter(|m| !m.trim().is_empty())
@@ -111,7 +111,7 @@ pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Val
 }
 
 /// realtime:setSessionLive — emit vs queue for detected completions.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, String> {
     state(&app)
         .persist
@@ -129,7 +129,7 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
 /// `trackDispatch` dep → completionWatcher.track). The port has no live
 /// session to dispatch from, so the UI/hive callers register dispatches here.
 /// `dispatch` is upstream's PendingDispatch minus kind (forced "dispatch").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_track_dispatch(_app: AppHandle, dispatch: Value) -> Result<Value, String> {
     let mut rec: PendingDispatch = serde_json::from_value(dispatch)
         .map_err(|e| format!("bad dispatch record: {e}"))?;
@@ -143,7 +143,7 @@ pub fn realtime_track_dispatch(_app: AppHandle, dispatch: Value) -> Result<Value
 
 /// realtime:drainCompletions — poll once, then return + clear the queue of
 /// completions that landed while no session was live (upstream warm-start).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_drain_completions(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
     let mut w = WATCHER.lock().unwrap();
@@ -157,7 +157,7 @@ pub fn realtime_drain_completions(app: AppHandle) -> Result<Value, String> {
 /// completion event, or `{ timedOut: true, taskId }` after the timeout
 /// (upstream default 120s; the renderer clamps to 600s max). The subject may
 /// be a task id, a tracked correlation id, or a registry agent id.
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn realtime_wait_for(
     app: AppHandle,
     task_id_or_agent: String,
@@ -197,7 +197,7 @@ pub async fn realtime_wait_for(
 /// destructive tiering); `backing` names the Tauri command that carries the
 /// equivalent behavior. Session-bound pieces (the two-phase verbal confirm
 /// spine, the renderer enqueue path) are listed but flagged unavailable.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn realtime_actions_status(app: AppHandle) -> Result<Value, String> {
     let tools = json!([
         // ── soft writes (upstream executed these immediately) ──────────────

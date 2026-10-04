@@ -83,7 +83,7 @@ fn fetch_latest() -> Result<Value, String> {
 }
 
 /// update:checkNow — notify-only check; emits update-state transitions.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_check_now(app: AppHandle) -> Result<Value, String> {
     emit(&app, json!({ "state": "checking" }));
     let app2 = app.clone();
@@ -116,7 +116,7 @@ pub fn update_check_now(app: AppHandle) -> Result<Value, String> {
 }
 
 /// update:current — the last emitted status (or idle).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_current(app: AppHandle) -> Result<Value, String> {
     Ok(app
         .try_state::<UpdateState>()
@@ -126,7 +126,7 @@ pub fn update_current(app: AppHandle) -> Result<Value, String> {
 
 /// update:openRelease — open a releases URL; guarded to this repo's release
 /// pages (upstream's prefix guard — download URLs live under /download/).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_open_release(app: AppHandle, url: String) -> Result<bool, String> {
     let ok = url.starts_with(&format!("https://github.com/{REPO}/releases"));
     if !ok {
@@ -138,20 +138,20 @@ pub fn update_open_release(app: AppHandle, url: String) -> Result<bool, String> 
 
 /// update:download / update:restartAndInstall — no signed feed in this build;
 /// the honest answer is "manual": the caller opens downloadUrl instead.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_download(app: AppHandle) -> Result<Value, String> {
     let _ = app;
     Ok(json!({ "ok": false, "error": "manual-download", "state": "available-manual" }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_restart_and_install(app: AppHandle) -> Result<Value, String> {
     let _ = app;
     Ok(json!({ "ok": false, "error": "manual-download", "state": "available-manual" }))
 }
 
 /// update:simulate — DEV ONLY (upstream's debug surface).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_simulate(app: AppHandle, version: Option<String>, notes: Option<String>) -> Result<bool, String> {
     let v = version.unwrap_or_else(|| "9.9.9".into());
     emit(

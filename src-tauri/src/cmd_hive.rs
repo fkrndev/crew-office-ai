@@ -16,14 +16,14 @@ fn err_str(e: anyhow::Error) -> String {
 
 /// hive:addTask — append one card; the helper assigns id/createdAt when the
 /// caller left them out and rejects a duplicate id.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_add_task(app: AppHandle, fields: Value) -> Result<Value, String> {
     let st = state(&app);
     crate::hive_admin::add_task(&st.hive, &fields).map_err(err_str)
 }
 
 /// hive:deleteTask — remove one card by id; returns the remaining list.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_delete_task(app: AppHandle, id: String) -> Result<Value, String> {
     let st = state(&app);
     crate::hive_admin::delete_task(&st.hive, &id).map_err(err_str)
@@ -32,7 +32,7 @@ pub fn hive_delete_task(app: AppHandle, id: String) -> Result<Value, String> {
 /// hive:patchTask — per-card merge over the raw ledger entry (upstream
 /// patchTask): every patch key lands on the card (null clears), `id` is
 /// re-pinned so a stray id in the patch can't rename it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_patch_task(app: AppHandle, id: String, patch: Value) -> Result<Value, String> {
     let st = state(&app);
     let patch = patch
@@ -45,21 +45,21 @@ pub fn hive_patch_task(app: AppHandle, id: String, patch: Value) -> Result<Value
 // ─── registry edits ─────────────────────────────────────────────────────────
 
 /// hive:patchAgentRole — durable job string + identity.md refresh.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_patch_agent_role(app: AppHandle, id: String, role: String) -> Result<Value, String> {
     let st = state(&app);
     crate::hive_admin::patch_agent_role(&st.hive, &id, &role).map_err(err_str)
 }
 
 /// hive:renameAgent — display name only; id/dir/mailboxes are unchanged.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_rename_agent(app: AppHandle, id: String, name: String) -> Result<Value, String> {
     let st = state(&app);
     crate::hive_admin::rename_agent(&st.hive, &id, &name).map_err(err_str)
 }
 
 /// hive:setArchived — retained-but-hidden floor flag (sidecar).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<Value, String> {
     let st = state(&app);
     let res = crate::hive_admin::set_archived(&st.hive, &id, archived).map_err(err_str)?;
@@ -73,7 +73,7 @@ pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<V
 }
 
 /// hive:setAgentHold — 1:1 claimed by the human; paused-delivery marker.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Value, String> {
     let st = state(&app);
     crate::hive_admin::set_hold(&st.hive, &id, hold).map_err(err_str)
@@ -86,7 +86,7 @@ pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Val
 /// context slot, INCLUDING archived agents (the floor can still speak to
 /// them). `{godId, agents:[…]}`; a `files` param asks for one agent's hive
 /// folder listing instead (the port's per-agent file surface).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_agent_directory(
     app: AppHandle,
     id: Option<String>,
@@ -168,7 +168,7 @@ pub fn hive_agent_directory(
 /// (UsageReader), keyed by the registry's cwd + session_id. When the id isn't
 /// registered the argument is treated as a raw cwd — upstream's `hive:agentUsage`
 /// took a cwd, so both call shapes resolve.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, String> {
     let st = state(&app);
     let mut v = crate::hive_admin::agent_usage(&st.hive, &agent_id);
@@ -188,7 +188,7 @@ pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, Strin
 /// hive:agentContext — the last Status-hook context slot (tokens, limit) for
 /// this agent, plus live/registered flags. Null slot until the first hook
 /// fires — same "unknown, not empty" reading upstream's gauge needs.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_agent_context(app: AppHandle, agent_id: String) -> Result<Value, String> {
     let st = state(&app);
     let live = st.ptys.lock().unwrap().contains_key(&agent_id);
@@ -214,7 +214,7 @@ pub fn hive_agent_context(app: AppHandle, agent_id: String) -> Result<Value, Str
 }
 
 /// hive:log — newest-first tail of log.jsonl (default 200, hard cap 500).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_log(app: AppHandle, limit: Option<u32>) -> Result<Vec<Value>, String> {
     let st = state(&app);
     Ok(crate::hive_admin::hive_log(
@@ -226,7 +226,7 @@ pub fn hive_log(app: AppHandle, limit: Option<u32>) -> Result<Vec<Value>, String
 /// hive:messages — upstream voiceMessages: floor-wide or per-agent mail in
 /// the VoiceMessage shape (deduped, secrets redacted). `id` narrows to a
 /// single message lookup.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_messages(
     app: AppHandle,
     agent_id: Option<String>,
@@ -245,7 +245,7 @@ pub fn hive_messages(
 }
 
 /// hive:textSearch — literal substring scan across hive text files.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hive_text_search(
     app: AppHandle,
     query: String,
@@ -261,7 +261,7 @@ pub fn hive_text_search(
 
 /// session:resolveCwd — where a resume should boot: registry cwd, else the
 /// agent's hive folder.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn session_resolve_cwd(app: AppHandle, agent_id: String) -> Result<Value, String> {
     let st = state(&app);
     Ok(crate::hive_admin::resolve_cwd(&st.hive, &agent_id))
@@ -270,7 +270,7 @@ pub fn session_resolve_cwd(app: AppHandle, agent_id: String) -> Result<Value, St
 // ─── pty / workers ──────────────────────────────────────────────────────────
 
 /// pty:list — live PTY ids.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pty_list(app: AppHandle) -> Result<Vec<String>, String> {
     let st = state(&app);
     let ids: Vec<String> = st.ptys.lock().unwrap().keys().cloned().collect();
@@ -280,7 +280,7 @@ pub fn pty_list(app: AppHandle) -> Result<Vec<String>, String> {
 /// pty:redraw — the buffered scrollback for one id.
 /// pty:redraw — replay the retained tail (TAIL_MAX) into a remounting xterm;
 /// "" for unknown/dead ids, same as upstream's {ok, tail} minus the flag.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
     let st = state(&app);
     let tail = st
@@ -296,7 +296,7 @@ pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
 /// workers:list — upstream's ephemeral-worker tab snapshot:
 /// `{live: WorkerSnapshot[], preserved: [], maxWorkers}` (the preserved-
 /// worktree list is not tracked in this port yet — PORTING.md).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn workers_list(app: AppHandle) -> Result<Value, String> {
     Ok(crate::workers::list(&app))
 }
@@ -304,7 +304,7 @@ pub fn workers_list(app: AppHandle) -> Result<Value, String> {
 /// workers:registry — every registry entry joined with its live-PTY flag
 /// and archived/onHold. The port's floor-roster surface (upstream folds the
 /// same data into hive:agentDirectory).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
     let st = state(&app);
     let live: std::collections::HashSet<String> =
@@ -330,7 +330,7 @@ pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
 
 /// workers:stop — the same teardown as pty:kill/kill_agent (kill the PTY,
 /// forget breaker/wake/telemetry, mark stopped, emit agent-status).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn workers_stop(app: AppHandle, id: String) -> Result<(), String> {
     crate::commands::kill_agent(app, id)
 }

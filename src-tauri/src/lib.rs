@@ -143,12 +143,22 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Deep links only fire for installed apps on Windows/Linux —
+            // register_all makes dev builds handle munderdifflin:// /
+            // agent-office:// too (official plugin recipe).
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("[deep-link] register_all failed: {e}");
+                }
+            }
             let harness_home = app
                 .path()
                 .app_data_dir()

@@ -17,7 +17,6 @@ tauri-build = { version = "2.5", features = [] }
 # image-png enables tauri::image::Image::from_bytes — clipboard_save_image
 # decodes PNG bytes through it before write_image.
 tauri = { version = "2.12", features = ["image-png"] }
-tauri-plugin-shell = "2.3"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -41,10 +40,9 @@ sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
 tauri-plugin-deep-link = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-notification = "2.5.1"
+tauri-plugin-opener = "2.7.0"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop"] }
 junction = "1"
