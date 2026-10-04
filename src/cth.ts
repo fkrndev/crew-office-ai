@@ -1,6 +1,7 @@
 // GENERATED window.cth shim — upstream preload method→channel map.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 const warned = new Set<string>();
 const missing = (name: string) => (..._args: unknown[]) => {
@@ -37,6 +38,12 @@ const rosterPoll = () => {
   });
 };
 
+// Drag-drop file paths — with dragDropEnabled the OS drop never reaches the
+// DOM in WebView2, so onDragDropEvent's paths are all we get. We re-emit a
+// synthetic DOM `drop` carrying File objects whose Electron-style `.path` is
+// filled in, so the copied renderer's drag handlers work unmodified.
+let dropPaths: string[] = [];
+
 export function installCth(): void {
   // Seed + refresh: focus refreshes are the cheap way to stay fresh without
   // an aggressive interval (a paste within ~2s of copy still lands).
@@ -45,6 +52,38 @@ export function installCth(): void {
   window.setInterval(clipboardPoll, 2000);
   window.setInterval(rosterPoll, 3000);
   window.addEventListener('focus', clipboardPoll);
+
+  // Tauri's OS-level file drop carries the absolute paths WebView2 won't.
+  // Re-emit it as a DOM `drop` on the element under the cursor — the copied
+  // upstream drop handlers then read File.path exactly like Electron's.
+  void getCurrentWebview()
+    .onDragDropEvent((e) => {
+      const p = e.payload;
+      if (p.type !== 'drop' || p.paths.length === 0) return;
+      dropPaths = [...p.paths];
+      try {
+        const dt = new DataTransfer();
+        for (const path of p.paths) {
+          const f = new File([], path.split(/[\\/]/).pop() ?? 'file');
+          (f as File & { path: string }).path = path;
+          dt.items.add(f);
+        }
+        const el =
+          document.elementFromPoint(p.position.x, p.position.y) ?? document.body;
+        el.dispatchEvent(
+          new DragEvent('drop', {
+            dataTransfer: dt,
+            bubbles: true,
+            cancelable: true,
+            clientX: p.position.x,
+            clientY: p.position.y,
+          })
+        );
+      } catch {
+        /* synthetic drop unsupported — pathForFile still has the queue */
+      }
+    })
+    .catch(() => { /* drag events unsupported — pathForFile degrades */ });
 
   const ua = navigator.userAgent;
   const platform = ua.includes('Windows') ? 'win32' : ua.includes('Mac') ? 'darwin' : 'linux';
@@ -58,7 +97,8 @@ export function installCth(): void {
     arch,
     // webUtils.getPathForFile — WebView2 File objects expose the real path
     // on the non-standard `.path` property already.
-    pathForFile: (file: File): string => (file as File & { path?: string }).path ?? '',
+    pathForFile: (file: File): string =>
+      (file as File & { path?: string }).path ?? dropPaths.shift() ?? '',
     // Sync clipboard: cached (see clipboardPoll). Exact upstream signature.
     readClipboardSync: (): string => clipboardCache,
     trackMessageSent: (...args: unknown[]) => invoke('analytics_message_sent', pack(args, ["event","props","Value>>"])),

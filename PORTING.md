@@ -55,7 +55,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | Compact-queue drain | parked compacts fire the provider verb at the next idle transition (hooks emit_status) — the queue previously had no consumer | DONE |
 | `power:resume` keepalive | Emulated: a wall-clock gap >90s on the 15s mission tick means the machine slept — after upstream's 15s pipe-wake grace, `power_resume_probe` pid-probes every registered PTY and emits `power:resume {reason,awayMs,dead,total}` so the renderer's auto-revive respawns dead agents with --resume | DONE (tick-gap detection, not a real power event) |
 | `munderdifflin://` + `agent-office://` deep-link hires | tauri-plugin-deep-link (both schemes in tauri.conf.json) + `on_open_url` → park_pending_hire → `hire-pending` → renderer drains via hire:drainPending + hire_fetch/validate (the upstream fetch+review split); single-instance plugin forwards a second process's argv and focuses the main window; cold-start argv is scanned at boot | DONE |
-| `pathForFile` drag-drop attach | WebView2 `File` objects carry no `.path` (an Electron extension); shim returns '' so drag-attach degrades — use the attach dialog. A real fix needs `onDragDropEvent` plumbing into the copied renderer | GAP |
+| `pathForFile` drag-drop attach | `onDragDropEvent` carries the OS paths; the shim synthesizes a DOM `drop` at the cursor's element with `File`s whose `.path` is set — the copied upstream drop handlers work unmodified | DONE |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
 
 ## Env contract at agent spawn (from ptyEnv.ts + hive.ts:803)
