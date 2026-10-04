@@ -79,7 +79,7 @@ fn work_tokens_of(s: Option<&UsageSample>) -> u64 {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct BreakerConfig {
     pub enabled: Option<bool>,
     pub hard_stop: Option<bool>,

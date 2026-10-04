@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ScheduledMission {
     pub id: String,
     pub label: String,

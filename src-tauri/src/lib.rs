@@ -57,6 +57,27 @@ use tauri::{Emitter, Manager};
 /// to `to` from the 'scheduler' virtual sender; a compact mission queues a
 /// `/compact` per live agent — typed immediately if idle, else parked in the
 /// compact queue for the next idle boundary.
+/// emitContextTrigger (index.ts:855): emit `trigger:context` with the CURRENT
+/// rule so the renderer acts on what config says NOW, plus the legacy
+/// `mission:autoCompact` alias for compact until every consumer moves over.
+fn emit_context_trigger(app: &tauri::AppHandle, action: &str) {
+    let st = commands::state(app);
+    let cfg = st.config.lock().unwrap();
+    let rule = if action == "compact" {
+        serde_json::to_value(&cfg.context_trigger.compact).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::to_value(&cfg.context_trigger.clear).unwrap_or_else(|_| serde_json::json!({}))
+    };
+    drop(cfg);
+    let _ = app.emit(
+        "trigger:context",
+        serde_json::json!({ "action": action, "rule": rule }),
+    );
+    if action == "compact" {
+        let _ = app.emit("mission:autoCompact", serde_json::json!({}));
+    }
+}
+
 fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMission) {
     if m.kind.as_deref() != Some("compact") && !m.to.is_empty() {
         let _ = st.hive.send_virtual("scheduler", &m.to, "request", &m.label, &m.body);
@@ -82,23 +103,10 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
         }
     }
     if m.auto_compact || m.kind.as_deref() == Some("compact") {
-        let focus = st.config.lock().unwrap().context_trigger.message.clone();
-        let live: Vec<String> = st.ptys.lock().unwrap().keys().cloned().collect();
-        let reg = st.hive.registry();
-        for id in live {
-            let idle = reg.iter().any(|a| a.id == id && a.status == "idle");
-            if idle {
-                let provider = reg.iter().find(|a| a.id == id).map(|a| a.provider.as_str()).unwrap_or("");
-                if let Some(cmd) = crate::misc::compact_command(provider, &focus) {
-                    let mut ptys = st.ptys.lock().unwrap();
-                    if let Some(h) = ptys.get_mut(&id) {
-                        let _ = h.write(&format!("{cmd}\r"));
-                    }
-                }
-            } else {
-                st.compact_queue.lock().unwrap().insert(id);
-            }
-        }
+        // Upstream funnels the legacy per-mission autoCompact flag through the
+        // SAME emitContextTrigger path — the renderer applies the per-agent
+        // pressure gate + provider verb.
+        emit_context_trigger(app, "compact");
     }
     let _ = app.emit(
         "hive-log",
@@ -458,58 +466,39 @@ pub fn run() {
                             breaker::BreakerAction::None => {}
                         }
                     }
-                    // Context-pressure trigger (ContextRule): a live agent
-                    // whose context fill crosses min_context_pct and whose
-                    // every_ms gap elapsed gets /compact + the focus text —
-                    // typed now if idle, else parked for the idle boundary.
-                    let ct = &cfg.context_trigger;
-                    if ct.enabled && ct.min_context_pct <= 100 {
-                        let usage = st.context_usage.lock().unwrap().clone();
-                        let mut last = st.context_last_compact.lock().unwrap();
-                        let mut ptys = st.ptys.lock().unwrap();
-                        for (id, (tokens, limit)) in usage {
-                            if !live.contains(&id) || limit == 0 {
-                                continue;
-                            }
-                            if tokens * 100 < ct.min_context_pct * limit {
-                                continue;
-                            }
-                            let fired = last.get(&id).copied().unwrap_or(0);
-                            if now.saturating_sub(fired) < ct.every_ms {
-                                continue;
-                            }
-                            last.insert(id.clone(), now);
-                            // Provider-aware verb (providerAutomation.ts): a
-                            // missing command means this CLI is left alone,
-                            // never typed dead text.
-                            let provider = st
-                                .hive
-                                .registry()
-                                .iter()
-                                .find(|a| a.id == id)
-                                .map(|a| a.provider.clone())
-                                .unwrap_or_default();
-                            let Some(cmd) = crate::misc::compact_command(&provider, &ct.message)
-                            else {
-                                continue;
-                            };
-                            let idle = st
-                                .hive
-                                .registry()
-                                .iter()
-                                .any(|a| a.id == id && a.status == "idle");
-                            if idle {
-                                if let Some(h) = ptys.get_mut(&id) {
-                                    let _ = h.write(&format!("{cmd}\r"));
-                                }
-                            } else {
-                                st.compact_queue.lock().unwrap().insert(id.clone());
-                            }
-                            let _ = handle2.emit(
-                                "hive-log",
-                                serde_json::json!({ "event": "context_trigger_compact", "agentId": id }),
+                    // Context-trigger cadence (index.ts syncContextTriggers):
+                    // the backend owns ONLY the cadence — when a rule comes
+                    // due we emit `trigger:context` {action,rule} and the
+                    // renderer applies the per-agent pressure gate +
+                    // provider-specific verb (upstream emits into its queue).
+                    for action in ["compact", "clear"] {
+                        let rule = if action == "compact" {
+                            &cfg.context_trigger.compact
+                        } else {
+                            &cfg.context_trigger.clear
+                        };
+                        if !rule.enabled || rule.every_ms == 0 {
+                            continue;
+                        }
+                        let fired = st
+                            .context_last_compact
+                            .lock()
+                            .unwrap()
+                            .get(action)
+                            .copied()
+                            .unwrap_or(0);
+                        if now.saturating_sub(fired) < rule.every_ms {
+                            continue;
+                        }
+                        {
+                            let mut m = st.context_last_compact.lock().unwrap();
+                            m.insert(action.to_string(), now);
+                            let _ = st.persist.lock().unwrap().set_kv(
+                                "context:lastRun",
+                                &serde_json::to_value(&*m).unwrap_or_else(|_| serde_json::json!({})),
                             );
                         }
+                        emit_context_trigger(&handle2, action);
                     }
                 }
             });

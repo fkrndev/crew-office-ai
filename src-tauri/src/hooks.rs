@@ -106,7 +106,7 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
                 .find(|a| a.id == id)
                 .map(|a| a.provider.clone())
                 .unwrap_or_default();
-            let focus = st.config.lock().unwrap().context_trigger.message.clone();
+            let focus = st.config.lock().unwrap().context_trigger.compact.message.clone();
             if let Some(cmd) = crate::misc::compact_command(&provider, &focus) {
                 let mut ptys = st.ptys.lock().unwrap();
                 if let Some(h) = ptys.get_mut(id) {

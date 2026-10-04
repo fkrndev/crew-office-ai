@@ -53,7 +53,8 @@ pub struct AppState {
     /// Latest context fill per live agent (tokens, limit) — fed by the Status
     /// hook/telemetry, read by the context-pressure trigger.
     pub context_usage: Mutex<HashMap<String, (u64, u64)>>,
-    /// Per-agent last context-trigger compact (runtime state, not config).
+    /// Last fire timestamp per context-trigger action ("compact"/"clear") —
+    /// the cadence stamp (upstream's persisted context lastRun map).
     pub context_last_compact: Mutex<HashMap<String, u64>>,
     /// "agent\tsession" → last ledgered cumulative usd — the #56 dedup gate
     /// (only append when the counter moved).
@@ -113,6 +114,12 @@ impl AppState {
         if config.seed_missions(now) {
             let _ = config_store.save(&config);
         }
+        let mut persist_store = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
+        let _ = persist_store.open(); // best-effort — a DB failure can't crash startup
+        let context_last_run: HashMap<String, u64> = persist_store
+            .get_kv("context:lastRun")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
         Ok(Self {
             hive: std::sync::Arc::new(hive),
             config_store,
@@ -128,7 +135,10 @@ impl AppState {
             otel_endpoint: std::sync::OnceLock::new(),
             trigger_history: crate::trigger_history::TriggerHistory::new(harness_home.clone()),
             context_usage: Mutex::new(HashMap::new()),
-            context_last_compact: Mutex::new(HashMap::new()),
+            // CONTEXT_LAST_RUN_KV_KEY (index.ts:823): the cadence survives
+            // restarts — an overdue rule fires once on boot, not a full
+            // interval late.
+            context_last_compact: Mutex::new(context_last_run),
             cost_moved: Mutex::new(HashMap::new()),
             roster: crate::roster::RosterStore::new(harness_home.clone()),
             closing: crate::closing_time::ClosingTime::default(),
@@ -141,11 +151,7 @@ impl AppState {
             preserved_worktrees: Mutex::new(HashMap::new()),
             proxy_bridges: Mutex::new(HashMap::new()),
             slack_tunnel: Mutex::new(None),
-            persist: {
-                let mut s = crate::db::PersistStore::new(crate::db::db_path(&harness_home));
-                let _ = s.open(); // best-effort — a DB failure can't crash startup
-                Mutex::new(s)
-            },
+            persist: Mutex::new(persist_store),
             sock_addr: None,
             hook_bin,
         })
@@ -869,8 +875,20 @@ pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<
 // ─── config ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_config(app: AppHandle) -> Result<Config, String> {
-    Ok(state(&app).config.lock().unwrap().clone())
+/// config:get — upstream readConfig(): the persisted file deep-filled with
+/// defaults and returned as the camelCase object the renderer expects. The
+/// raw file merge preserves unknown keys (officeTheme, terminalTheme, the
+/// onboarding fields the typed Config doesn't model).
+pub fn get_config(app: AppHandle) -> Result<serde_json::Value, String> {
+    let st = state(&app);
+    let typed = serde_json::to_value(&*st.config.lock().unwrap()).map_err(|e| e.to_string())?;
+    let mut merged = typed.as_object().cloned().unwrap_or_default();
+    if let Some(raw) = st.config_store.raw_value().as_object() {
+        for (k, v) in raw {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(serde_json::Value::Object(merged))
 }
 
 #[tauri::command]
@@ -881,7 +899,7 @@ pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
         cfg.auto_mode = enabled;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    let _ = app.emit("config:changed", serde_json::json!({ "auto_mode": enabled }));
+    let _ = app.emit("config:changed", serde_json::json!({ "autoMode": enabled }));
     Ok(())
 }
 
@@ -1171,27 +1189,23 @@ pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
 /// that exist on Config survive (serde drops the rest, same as upstream's
 /// typed settings write); one level of object merge for nested knobs.
 #[tauri::command]
-pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<Config, String> {
+/// config:update — writeConfig(patch): shallow merge at the top level (a
+/// nested object REPLACES its subtree wholesale, matching upstream's spread),
+/// onto the RAW file so unknown keys survive, then re-parse the typed Config.
+/// Returns the same merged view get_config produces.
+pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<serde_json::Value, String> {
     let st = state(&app);
-    let mut cfg = st.config.lock().unwrap();
-    let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
-    if let (Some(dst), Some(src)) = (v.as_object_mut(), patch.as_object()) {
+    let mut raw = st.config_store.raw_value();
+    if let (Some(dst), Some(src)) = (raw.as_object_mut(), patch.as_object()) {
         for (k, val) in src {
-            match (dst.get_mut(k), val) {
-                (Some(d @ serde_json::Value::Object(_)), serde_json::Value::Object(s)) => {
-                    for (k2, v2) in s {
-                        d[k2] = v2.clone();
-                    }
-                }
-                _ => {
-                    dst.insert(k.clone(), val.clone());
-                }
-            }
+            dst.insert(k.clone(), val.clone());
         }
     }
-    *cfg = serde_json::from_value(v).map_err(|e| e.to_string())?;
+    let mut cfg = st.config.lock().unwrap();
+    *cfg = serde_json::from_value(raw).map_err(|e| e.to_string())?;
     st.config_store.save(&cfg).map_err(err_str)?;
-    Ok(cfg.clone())
+    drop(cfg);
+    get_config(app)
 }
 
 /// webhook:setConfig — secret + port + enable toggle; the port applies on

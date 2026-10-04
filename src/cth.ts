@@ -246,6 +246,8 @@ export function installCth(): void {
     onHireError: (cb: (e: { error: string }) => void) => on<{ error: string }>('hire:error', cb),
     onPowerResume: (cb: (e: unknown) => void) => on<unknown>('power:resume', cb),
     onAutoCompact: (cb: () => void) => on<unknown>('mission:autoCompact', () => cb()),
+    onContextTrigger: (cb: (e: { action: 'compact' | 'clear'; rule: unknown }) => void) =>
+      on<{ action: 'compact' | 'clear'; rule: unknown }>('trigger:context', cb),
     onSlackMessage: (cb: (e: unknown) => void) => on<unknown>('slack:incomingMessage', cb),
     onTelemetryEvent: (cb: (e: unknown) => void) => on<unknown>('telemetry:event', cb),
     onRealtimeFloorDelta: (cb: (e: { text: string }) => void) => on<{ text: string }>('realtime:floorDelta', cb),

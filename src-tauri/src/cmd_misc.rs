@@ -935,27 +935,10 @@ pub fn control_auto_delivery(
 
 // ─── triggers — context rules + the org blob ────────────────────────────────
 
-/// Upstream ContextTriggerConfig default for the `clear` half (this port's
-/// running trigger only consumes the compact half — ContextTriggerCfg — but
-/// the stored blob keeps both so a round-trip through the UI loses nothing).
+/// Upstream DEFAULT_CONTEXT_TRIGGER blob — both halves of the typed struct
+/// serialize into exactly this shape.
 fn default_context_blob() -> Value {
-    let ct = crate::config::ContextTriggerCfg::default();
-    json!({
-        "compact": {
-            "enabled": ct.enabled,
-            "everyMs": ct.every_ms,
-            "minContextPct": ct.min_context_pct,
-            "minContextPctLargeWindow": 40,
-            "message": ct.message,
-        },
-        "clear": {
-            "enabled": false,
-            "everyMs": 7_200_000u64,
-            "minContextPct": 90,
-            "minContextPctLargeWindow": 80,
-            "message": "",
-        },
-    })
+    serde_json::to_value(crate::config::ContextTriggerCfg::default()).unwrap_or_else(|_| json!({}))
 }
 
 /// Clamp like upstream sanitizeContextRule — the renderer is not trusted with
@@ -1008,13 +991,8 @@ pub fn triggers_get_context(app: AppHandle) -> Result<Value, String> {
     }
     let ct = st.config.lock().unwrap().context_trigger.clone();
     let mut d = default_context_blob();
-    d["compact"] = json!({
-        "enabled": ct.enabled,
-        "everyMs": ct.every_ms,
-        "minContextPct": ct.min_context_pct,
-        "minContextPctLargeWindow": 40,
-        "message": ct.message,
-    });
+    d["compact"] = serde_json::to_value(&ct.compact).unwrap_or_else(|_| json!({}));
+    d["clear"] = serde_json::to_value(&ct.clear).unwrap_or_else(|_| json!({}));
     Ok(d)
 }
 
@@ -1037,13 +1015,13 @@ pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String>
         .set_kv("triggers_context", &next);
     {
         let mut cfg = st.config.lock().unwrap();
-        let c = &next["compact"];
-        cfg.context_trigger.enabled = c["enabled"].as_bool().unwrap_or(false);
-        cfg.context_trigger.every_ms = c["everyMs"].as_u64().unwrap_or(cfg.context_trigger.every_ms);
-        cfg.context_trigger.min_context_pct =
-            c["minContextPct"].as_u64().unwrap_or(cfg.context_trigger.min_context_pct);
-        if let Some(m) = c["message"].as_str() {
-            cfg.context_trigger.message = m.to_string();
+        // Mirror BOTH halves into typed config — the struct now carries the
+        // upstream {compact,clear} shape so the sanitized blob parses 1:1.
+        if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["compact"].clone()) {
+            cfg.context_trigger.compact = c;
+        }
+        if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["clear"].clone()) {
+            cfg.context_trigger.clear = c;
         }
         st.config_store.save(&cfg).map_err(err_str)?;
     }
