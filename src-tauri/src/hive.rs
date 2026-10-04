@@ -203,6 +203,13 @@ pub struct Delivery {
     #[serde(rename = "needsHuman")]
     pub needs_human: bool,
     pub bounced: bool,
+    /// Upstream `hive:terminalHandoff` payload — set INSTEAD of an inbox
+    /// delivery when the target's provider can't drain an inbox (hookless:
+    /// kimi/copilot/custom) or rides the proxy-tier terminal path (qwen,
+    /// crush). The full message — the renderer turns it into a terminal
+    /// work order (#53).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<serde_json::Value>,
 }
 
 /// What `settle_inbox` did to a released worker's mailbox (upstream
@@ -2025,6 +2032,10 @@ impl Hive {
                 .collect()
         };
         let mut delivered: Vec<String> = Vec::new();
+        // Targets that took the terminal work-order handoff INSTEAD of inbox
+        // mail — surfaced on the Delivery so lib.rs emits the upstream
+        // `hive:terminalHandoff` event with the full message payload.
+        let mut handoffs: std::collections::HashSet<String> = std::collections::HashSet::new();
         for t in &targets {
             let agent = find(t);
             // The send-only prep assistant must never be a delivery target —
@@ -2079,6 +2090,28 @@ impl Hive {
                 }
                 continue;
             }
+            // Hookless providers (kimi/copilot/custom — canReceiveInbox:false)
+            // and proxy-tier terminal-delivery providers (qwen/crush — a
+            // synthesized Stop can only advance the cursor) get the full
+            // message as a terminal work-order handoff INSTEAD of inbox
+            // mail — the renderer types it into the REPL. Upstream
+            // routeOnce arms 1c/1d (hive.ts:1740-1763); the port surfaces it
+            // through Delivery.handoff for the event emit in lib.rs. God is
+            // exempt (the bounce target).
+            let provider = agent.map(|a| a.provider.as_str()).unwrap_or("");
+            let hookless = !crate::misc::can_receive_inbox(provider);
+            let proxy_terminal = crate::misc::inbox_delivery_terminal(provider);
+            let handoff = t != &god_id && (hookless || proxy_terminal);
+            if handoff {
+                let _ = self.log(&serde_json::json!({
+                    "kind": "terminal-handoff", "from": msg.from, "to": t,
+                    "act": msg.act, "subject": msg.subject, "id": msg.id,
+                    "delivered": true
+                }));
+                handoffs.insert(t.clone());
+                delivered.push(t.clone());
+                continue;
+            }
             if self.deliver_to(msg, t) {
                 delivered.push(t.clone());
                 continue;
@@ -2117,6 +2150,21 @@ impl Hive {
                 targets: targets.clone(),
                 needs_human: msg.to.trim() == "human",
                 bounced: !delivered.iter().any(|d| d == t),
+                // The upstream `hive:terminalHandoff` payload — the WHOLE
+                // message, not a stub (the renderer builds a work order out
+                // of subject+body verbatim).
+                handoff: handoffs.contains(t).then(|| {
+                    serde_json::json!({
+                        "id": msg.id,
+                        "from": msg.from,
+                        "to": t,
+                        "act": msg.act,
+                        "subject": msg.subject,
+                        "body": msg.body,
+                        "requiresReply": msg.requires_reply,
+                        "createdAt": msg.created_at,
+                    })
+                }),
             })
             .collect())
     }

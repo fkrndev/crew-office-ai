@@ -46,7 +46,9 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | `store/useHive` wiring | upstream `store.ts` + `useHive.ts` (68KB) verbatim — roster/status/tool streaming flows through the same code paths as Electron. |
 | i18n (en/zh-CN/ar, godName interpolation) | verbatim, `@shared` → `src/shared` alias |
 | Monaco IDE + CodeMirror editors + xterm WebGL/unicode11 | deps installed (`monaco-editor`, `@monaco-editor/react`, `@uiw/react-codemirror`, `@xterm/addon-{webgl,unicode11}`), wired through the same components |
-| `realtime:action{,:confirm,:cancel}` | backend `realtimeActions.ts` NOT yet ported — shim returns null + console warn (TODO) |
+| `realtime:action{,:confirm,:cancel}` | `realtime_actions.rs` (885-line port) — full verb table (20 verbs), soft/destructive tiers, single-slot pending + distinct-token confirm (bare "yes" rejected), mass-target + god allowlist, SETTING_POLICY table, scoreCard/findCard task matching, per-provider clear verbs, michael-voice attribution + god cross-notify | DONE |
+| `hive:terminalHandoff` | routed mail to hookless providers (kimi/copilot/custom) + proxy-tier terminal-delivery (qwen/crush) emits the full-message event INSTEAD of inbox write — upstream routeOnce arms 1c/1d | DONE |
+| All `on*` event channels | renamed to the upstream colon-style (`hive:hookEvent`, `hive:contextUpdate`, `hive:agentSpawned/Archived`, `app:closingTime`, `control:breakerState`, `update:status`, `missions:updated`, `triggerHistory:updated`, `config:changed`, `app:closeRequested`, `realtime:completion`, `control:approvalRequest`) + `pty:data:<id>`/`pty:exit:<id>`/`pty:relaunch:<id>` per-id channels | DONE |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
 
 ## Env contract at agent spawn (from ptyEnv.ts + hive.ts:803)

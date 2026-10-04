@@ -17,8 +17,38 @@ const on = <T>(channel: string, cb: (e: T) => void): (() => void) => {
   return () => { void p.then((u) => u()); };
 };
 
+// Clipboard cache backing `readClipboardSync` — Tauri IPC is async-only, so
+// the sync surface upstream's terminal paste relies on reads a value we keep
+// warm (polled on a short interval + on window focus).
+let clipboardCache = '';
+const clipboardPoll = () => {
+  void invoke<string | null>('app_clipboard_read').then((t) => {
+    if (typeof t === 'string') clipboardCache = t;
+  });
+};
+
 export function installCth(): void {
+  // Seed + refresh: focus refreshes are the cheap way to stay fresh without
+  // an aggressive interval (a paste within ~2s of copy still lands).
+  clipboardPoll();
+  window.setInterval(clipboardPoll, 2000);
+  window.addEventListener('focus', clipboardPoll);
+
+  const ua = navigator.userAgent;
+  const platform = ua.includes('Windows') ? 'win32' : ua.includes('Mac') ? 'darwin' : 'linux';
+  const arch = navigator.userAgent.includes('ARM64') || navigator.userAgent.includes('ARM')
+    ? 'arm64'
+    : 'x64';
+
   window.cth = {
+    // Properties (not methods) — upstream exposes process.platform/arch.
+    platform,
+    arch,
+    // webUtils.getPathForFile — WebView2 File objects expose the real path
+    // on the non-standard `.path` property already.
+    pathForFile: (file: File): string => (file as File & { path?: string }).path ?? '',
+    // Sync clipboard: cached (see clipboardPoll). Exact upstream signature.
+    readClipboardSync: (): string => clipboardCache,
     trackMessageSent: (...args: unknown[]) => invoke('analytics_message_sent', pack(args, ["event","props","Value>>"])),
     spawnPty: (...args: unknown[]) => invoke('spawn_agent', pack(args, ["args"])),
     writePty: (...args: unknown[]) => invoke('pty_write', pack(args, ["id","data"])),
@@ -149,7 +179,8 @@ export function installCth(): void {
     getOrgTrigger: (...args: unknown[]) => invoke('org_get_trigger', pack(args, [])),
     setOrgTrigger: (...args: unknown[]) => invoke('org_set_trigger', pack(args, ["arg"])),
     listTriggerHistory: (...args: unknown[]) => invoke('triggers_list', pack(args, [])),
-    decideTriggerHistory: missing('decideTriggerHistory'),
+    decideTriggerHistory: (arg: { id: string; decision: 'approved' | 'rejected' }) =>
+      invoke('trigger_history_decide', { arg }),
     clearTriggerHistory: (...args: unknown[]) => invoke('triggers_clear', pack(args, ["source"])),
     freeflowSetConfig: (...args: unknown[]) => invoke('freeflow_set_config', pack(args, ["patch"])),
     freeflowTranscribe: (...args: unknown[]) => invoke('freeflow_transcribe', pack(args, ["audioB64","mime","filename","language"])),
@@ -164,9 +195,9 @@ export function installCth(): void {
     providerKeyClear: (...args: unknown[]) => invoke('provider_key_clear', pack(args, ["provider"])),
     realtimeHasOpenAiKey: (...args: unknown[]) => invoke('realtime_has_key', pack(args, [])),
     realtimeMintToken: (...args: unknown[]) => invoke('realtime_mint_token', pack(args, ["model"])),
-    realtimeAction: missing('realtimeAction'),
-    realtimeActionConfirm: missing('realtimeActionConfirm'),
-    realtimeActionCancel: missing('realtimeActionCancel'),
+    realtimeAction: (payload?: unknown) => invoke('realtime_action', { payload }),
+    realtimeActionConfirm: (payload?: unknown) => invoke('realtime_action_confirm', { payload }),
+    realtimeActionCancel: () => invoke('realtime_action_cancel'),
     realtimeSetSessionLive: (...args: unknown[]) => invoke('realtime_set_session_live', pack(args, ["live"])),
     realtimeDrainCompletions: (...args: unknown[]) => invoke('realtime_drain_completions', pack(args, [])),
     realtimeWaitFor: (...args: unknown[]) => invoke('realtime_wait_for', pack(args, ["taskIdOrAgent","timeoutMs"])),
@@ -178,10 +209,13 @@ export function installCth(): void {
     updateDownload: (...args: unknown[]) => invoke('update_download', pack(args, [])),
     updateOpenRelease: (...args: unknown[]) => invoke('update_open_release', pack(args, ["url"])),
     updateSimulate: (...args: unknown[]) => invoke('update_simulate', pack(args, ["version","notes"])),
+    // ── events — upstream channel names verbatim (colon-style). ──────────
     onHiveMessage: (cb: (e: HiveRouteEvent) => void) => on<HiveRouteEvent>('hive:message', cb),
     onHiveDeliver: (cb: (e: unknown) => void) => on<unknown>('hive-deliver', cb),
     onHiveLog: (cb: (e: unknown) => void) => on<unknown>('hive-log', cb),
-    onHiveContext: (cb: (e: unknown) => void) => on<unknown>('hive-context', cb),
+    onHiveContext: (cb: (e: unknown) => void) => on<unknown>('hive:contextUpdate', cb),
+    onHiveContextUpdate: (cb: (e: { agentId: string; tokens: number; limit: number }) => void) =>
+      on<{ agentId: string; tokens: number; limit: number }>('hive:contextUpdate', cb),
     // Per-id channels, exactly like upstream's `pty:data:<id>`/`pty:exit:<id>`
     // — the backend emits those alongside the aggregate events.
     onPtyData: (id: string, cb: (data: string) => void) =>
@@ -190,18 +224,38 @@ export function installCth(): void {
       id: string,
       cb: (info: { exitCode: number | null; signal: number | null }) => void
     ) => on<{ exitCode: number | null; signal: number | null }>(`pty:exit:${id}`, cb),
-    onHookEvent: (cb: (e: unknown) => void) => on<unknown>('hook-event', cb),
+    onPtyRelaunch: (id: string, cb: () => void) => on<void>(`pty:relaunch:${id}`, () => cb()),
+    onHookEvent: (cb: (e: unknown) => void) => on<unknown>('hive:hookEvent', cb),
+    onHiveHookEvent: (cb: (e: unknown) => void) => on<unknown>('hive:hookEvent', cb),
     onAgentStatus: (cb: (e: unknown) => void) => on<unknown>('agent-status', cb),
-    onAgentSpawned: (cb: (e: unknown) => void) => on<unknown>('hive-agent-spawned', cb),
-    onAgentArchived: (cb: (e: unknown) => void) => on<unknown>('hive-agent-archived', cb),
-    onBreakerState: (cb: (e: unknown) => void) => on<unknown>('breaker-state', cb),
-    onRealtimeCompletion: (cb: (e: unknown) => void) => on<unknown>('realtime-completion', cb),
-    onUpdateState: (cb: (e: unknown) => void) => on<unknown>('update-state', cb),
-    onTriggerHistory: (cb: (e: unknown) => void) => on<unknown>('trigger-history-updated', cb),
-    onMissionsUpdated: (cb: (e: unknown) => void) => on<unknown>('missions-updated', cb),
-    onConfigChanged: (cb: (e: unknown) => void) => on<unknown>('config-changed', cb),
-    onCloseRequested: (cb: (e: unknown) => void) => on<unknown>('close-requested', cb),
+    onAgentSpawned: (cb: (e: unknown) => void) => on<unknown>('hive:agentSpawned', cb),
+    onHiveAgentSpawned: (cb: (e: unknown) => void) => on<unknown>('hive:agentSpawned', cb),
+    onAgentArchived: (cb: (e: unknown) => void) => on<unknown>('hive:agentArchived', cb),
+    onHiveAgentArchived: (cb: (e: { id: string }) => void) => on<{ id: string }>('hive:agentArchived', cb),
+    onBreakerState: (cb: (e: unknown) => void) => on<unknown>('control:breakerState', cb),
+    onRealtimeCompletion: (cb: (e: unknown) => void) => on<unknown>('realtime:completion', cb),
+    onUpdateState: (cb: (e: unknown) => void) => on<unknown>('update:status', cb),
+    onUpdateStatus: (cb: (e: unknown) => void) => on<unknown>('update:status', cb),
+    onTriggerHistory: (cb: (e: unknown) => void) => on<unknown>('triggerHistory:updated', cb),
+    onMissionsUpdated: (cb: (e: unknown) => void) => on<unknown>('missions:updated', cb),
+    onConfigChanged: (cb: (e: unknown) => void) => on<unknown>('config:changed', cb),
+    onCloseRequested: (cb: (e: unknown) => void) => on<unknown>('app:closeRequested', cb),
+    onClosingTime: (cb: (e: unknown) => void) => on<unknown>('app:closingTime', cb),
     onHirePending: (cb: (e: unknown) => void) => on<unknown>('hire-pending', cb),
-    onHiveTerminalHandoff: (cb: (e: unknown) => void) => on<unknown>('hive-terminal-handoff', cb),
+    onHireImport: (cb: (e: unknown) => void) => on<unknown>('hire:import', cb),
+    onHireError: (cb: (e: { error: string }) => void) => on<{ error: string }>('hire:error', cb),
+    onPowerResume: (cb: (e: unknown) => void) => on<unknown>('power:resume', cb),
+    onAutoCompact: (cb: () => void) => on<unknown>('mission:autoCompact', () => cb()),
+    onSlackMessage: (cb: (e: unknown) => void) => on<unknown>('slack:incomingMessage', cb),
+    onTelemetryEvent: (cb: (e: unknown) => void) => on<unknown>('telemetry:event', cb),
+    onRealtimeFloorDelta: (cb: (e: { text: string }) => void) => on<{ text: string }>('realtime:floorDelta', cb),
+    onHiveTerminalHandoff: (cb: (e: unknown) => void) => on<unknown>('hive:terminalHandoff', cb),
+    // Dead channel upstream too (no producer — legacy seam), but the hook
+    // still registers the listener; map it so copied code never crashes.
+    onHiveEnqueue: (cb: (e: { targetId: string; text: string }) => void) =>
+      on<{ targetId: string; text: string }>('hive:enqueueToAgent', cb),
+    // clear_context's commit path emits this — the renderer queue drains it.
+    onRealtimeEnqueue: (cb: (e: { agentId: string; text: string }) => void) =>
+      on<{ agentId: string; text: string }>('realtime:enqueue', cb),
   };
 }

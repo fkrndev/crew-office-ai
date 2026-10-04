@@ -431,7 +431,7 @@ impl CompletionWatcher {
                 if let Some(app) = app {
                     // Listener throwing must not stall the watcher — emit is
                     // best-effort by construction (returns Result we drop).
-                    let _ = app.emit("realtime-completion", event);
+                    let _ = app.emit("realtime:completion", event);
                 } else {
                     self.queue(event.clone());
                 }

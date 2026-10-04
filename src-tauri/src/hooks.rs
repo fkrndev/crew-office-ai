@@ -117,7 +117,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     // frontend already listens on it). `blocked` is always false here —
     // upstream's emit never sets it true in hooks.ts either.
     let _ = app.emit(
-        "hook-event",
+        "hive:hookEvent",
         json!({
             "agentId": agent_id,
             "event": event,
@@ -144,7 +144,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
                     .insert(agent_id.clone(), (t, l));
             }
             let _ = app.emit(
-                "hive-context",
+                "hive:contextUpdate",
                 json!({ "agentId": agent_id, "tokens": t, "limit": l }),
             );
         }
@@ -229,7 +229,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             );
             if let Some(reason) = deny {
                 let _ = app.emit(
-                    "control-approval",
+                    "control:approvalRequest",
                     json!({ "agentId": agent_id, "tool": p.get("tool_name"), "reason": reason }),
                 );
                 return json!({

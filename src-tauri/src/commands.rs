@@ -750,7 +750,7 @@ pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
     if was_worker {
         // Mirrors teardownPty's hive:agentArchived broadcast — the dead
         // worker's floor card comes down even on a manual stop.
-        let _ = app.emit("hive-agent-archived", serde_json::json!({ "id": id }));
+        let _ = app.emit("hive:agentArchived", serde_json::json!({ "id": id }));
     }
     st.hive.set_status(&id, "gone").map_err(err_str)?;
     let _ = app.emit(
@@ -846,7 +846,7 @@ pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
         cfg.auto_mode = enabled;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    let _ = app.emit("config-changed", serde_json::json!({ "auto_mode": enabled }));
+    let _ = app.emit("config:changed", serde_json::json!({ "auto_mode": enabled }));
     Ok(())
 }
 
@@ -938,7 +938,7 @@ pub fn missions_save(
     }
     // The scheduler polls config — a save takes effect on the next tick for
     // free (no re-arm plumbing; that's the poll design's payoff).
-    let _ = app.emit("missions-updated", serde_json::json!({}));
+    let _ = app.emit("missions:updated", serde_json::json!({}));
     Ok(())
 }
 
@@ -1765,7 +1765,7 @@ pub(crate) fn emit_closing(app: &AppHandle, phase: &str) {
     let st = state(app);
     let (acked, total) = st.closing.progress();
     let _ = app.emit(
-        "closing-time",
+        "app:closingTime",
         serde_json::json!({ "phase": phase, "acked": acked, "total": total }),
     );
 }

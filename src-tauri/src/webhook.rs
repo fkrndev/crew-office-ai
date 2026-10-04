@@ -587,7 +587,7 @@ impl WebhookServer {
                 // No ledger = no way to decide later — still hold honestly.
                 self.held_set(app, &token_hash, "");
             }
-            let _ = app.emit("trigger-history-updated", json!({}));
+            let _ = app.emit("triggerHistory:updated", json!({}));
             return Dispatch::Pending { token };
         }
 
@@ -608,7 +608,7 @@ impl WebhookServer {
             e.task_id = Some(task_id.clone());
             h.append(e);
         }
-        let _ = app.emit("trigger-history-updated", json!({}));
+        let _ = app.emit("triggerHistory:updated", json!({}));
         Dispatch::Routed { token, task_id }
     }
 
@@ -633,7 +633,7 @@ impl WebhookServer {
         }
         if decision == "rejected" {
             let next = hist.update(entry_id, Some("rejected".into()), None, None, None);
-            let _ = app.emit("trigger-history-updated", json!({}));
+            let _ = app.emit("triggerHistory:updated", json!({}));
             return next.and_then(|e| serde_json::to_value(e).ok());
         }
         if decision != "approved" {
@@ -672,7 +672,7 @@ impl WebhookServer {
             None,
         );
         self.prune_held(app, &hist);
-        let _ = app.emit("trigger-history-updated", json!({}));
+        let _ = app.emit("triggerHistory:updated", json!({}));
         next.and_then(|e| serde_json::to_value(e).ok())
     }
 
@@ -876,7 +876,7 @@ pub fn poll_done_tasks(
         wrote = true;
     }
     if wrote {
-        let _ = app.emit("trigger-history-updated", json!({}));
+        let _ = app.emit("triggerHistory:updated", json!({}));
     }
 }
 

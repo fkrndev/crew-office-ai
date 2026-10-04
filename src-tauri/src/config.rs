@@ -156,11 +156,52 @@ impl ConfigStore {
             .unwrap_or_default()
     }
 
+    /// Raw on-disk JSON, unknown keys preserved (upstream's untyped config
+    /// object — the renderer reads keys the typed `Config` doesn't model,
+    /// e.g. officeTheme/terminalTheme, and voice settings can write them).
+    pub fn raw_value(&self) -> serde_json::Value {
+        fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    }
+
+    /// Merge a top-level patch into the raw file without dropping unknown
+    /// keys (upstream `writeConfig(patch)` semantics), then return the
+    /// reloaded typed Config.
+    pub fn patch_raw(&self, patch: &serde_json::Map<String, serde_json::Value>) -> Result<Config> {
+        let mut raw = self.raw_value();
+        if !raw.is_object() {
+            raw = serde_json::json!({});
+        }
+        let dst = raw.as_object_mut().unwrap();
+        for (k, v) in patch {
+            dst.insert(k.clone(), v.clone());
+        }
+        fs::write(&self.path, serde_json::to_string_pretty(&raw)?)?;
+        Ok(self.load())
+    }
+
+    /// Serialize the typed config but merge it over the raw file so keys the
+    /// struct doesn't model survive a save round-trip — upstream's
+    /// `writeConfig` writes the whole parsed object, unknown keys included.
     pub fn save(&self, cfg: &Config) -> Result<()> {
         if let Some(p) = self.path.parent() {
             fs::create_dir_all(p)?;
         }
-        fs::write(&self.path, serde_json::to_string_pretty(cfg)?)?;
+        let mut merged = self.raw_value();
+        if !merged.is_object() {
+            merged = serde_json::json!({});
+        }
+        if let (Some(dst), Some(src)) = (
+            merged.as_object_mut(),
+            serde_json::to_value(cfg)?.as_object().cloned(),
+        ) {
+            for (k, v) in src {
+                dst.insert(k, v);
+            }
+        }
+        fs::write(&self.path, serde_json::to_string_pretty(&merged)?)?;
         Ok(())
     }
 }

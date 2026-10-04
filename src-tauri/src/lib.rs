@@ -13,6 +13,7 @@ mod cmd_freeflow;
 mod github;
 mod cmd_github;
 mod realtime;
+mod realtime_actions;
 mod cmd_realtime;
 mod cmd_misc;
 mod cmd_update;
@@ -150,7 +151,13 @@ pub fn run() {
                         let live = !st.ptys.lock().unwrap().is_empty();
                         if live && !st.closing.is_active() {
                             api.prevent_close();
-                            let _ = win2.emit("close-requested", true);
+                            // Upstream 'app:closeRequested' carries the live
+                            // PTY count — the QuitWarningModal renders it.
+                            let count = st.ptys.lock().unwrap().len();
+                            let _ = win2.emit(
+                                "app:closeRequested",
+                                serde_json::json!({ "ptyCount": count }),
+                            );
                         }
                     }
                 });
@@ -262,28 +269,13 @@ pub fn run() {
                             }
                             for d in deliveries {
                                 let _ = handle.emit("hive-deliver", &d);
-                                // Hookless-provider handoff (upstream
-                                // agentInbox → terminal handoff): when the
-                                // target's CLI can't take a typed inbox
-                                // nudge the mail still lands, but the
-                                // renderer is told to surface a handoff
-                                // instead of the agent being silently nudged.
-                                let provider = st
-                                    .hive
-                                    .registry()
-                                    .iter()
-                                    .find(|a| a.id == d.to)
-                                    .map(|a| a.provider.clone())
-                                    .unwrap_or_default();
-                                if !crate::misc::can_receive_inbox(&provider) {
-                                    let _ = handle.emit(
-                                        "hive-terminal-handoff",
-                                        serde_json::json!({
-                                            "agent_id": d.to,
-                                            "provider": provider,
-                                            "msg_id": d.msg_id,
-                                        }),
-                                    );
+                                // Terminal work-order handoff (upstream
+                                // `hive:terminalHandoff`, hive.ts:1806): the
+                                // router already decided mail-to-inbox was
+                                // impossible and attached the full message —
+                                // emit it under the upstream channel name.
+                                if let Some(h) = &d.handoff {
+                                    let _ = handle.emit("hive:terminalHandoff", h);
                                 }
                             }
                         }
@@ -410,7 +402,7 @@ pub fn run() {
                         &cfg.agent_token_caps,
                     );
                     for d in decisions {
-                        let _ = handle2.emit("breaker-state", &d.state);
+                        let _ = handle2.emit("control:breakerState", &d.state);
                         let id = d.state.agent_id.clone();
                         let name = st
                             .hive
@@ -729,7 +721,7 @@ pub fn run() {
                             }
                         }
                         let _ = st.config_store.save(&cfg);
-                        let _ = handle3.emit("missions-updated", serde_json::json!({}));
+                        let _ = handle3.emit("missions:updated", serde_json::json!({}));
                     }
                 }
             });
@@ -855,6 +847,9 @@ pub fn run() {
             cmd_analytics::analytics_status,
             cmd_realtime::realtime_set_session_live,
             cmd_realtime::realtime_wait_for,
+            realtime_actions::realtime_action,
+            realtime_actions::realtime_action_confirm,
+            realtime_actions::realtime_action_cancel,
             cmd_realtime::realtime_has_key,
             cmd_realtime::realtime_mint_token,
             cmd_realtime::realtime_drain_completions,

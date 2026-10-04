@@ -46,7 +46,15 @@ pub fn harness_home(app: &AppHandle) -> PathBuf {
 /// nudges return false: the router hands their delivery off to the frontend
 /// as a terminal handoff instead of pretending it landed.
 pub fn can_receive_inbox(provider: &str) -> bool {
-    !matches!(provider, "kimi" | "copilot")
+    !matches!(provider, "kimi" | "copilot" | "custom")
+}
+
+/// Upstream `bridgeOf(provider)` proxy-tier check: `kind==='proxy'` AND
+/// `inboxDelivery==='terminal'` — qwen + crush CAN receive inbox on paper,
+/// but only via a synthesized Stop that advances the cursor, so the real mail
+/// rides the terminal work-order handoff verbatim (hive.ts 1d).
+pub fn inbox_delivery_terminal(provider: &str) -> bool {
+    matches!(provider, "qwen" | "crush")
 }
 
 pub fn expand_tilde(p: &str) -> String {

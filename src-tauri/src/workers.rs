@@ -468,7 +468,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
     // A god-hired worker is a main-initiated spawn — broadcast the card so
     // the floor sees it (upstream 'hive:agentSpawned').
     let _ = app.emit(
-        "hive-agent-spawned",
+        "hive:agentSpawned",
         json!({
             "id": worker_id, "name": name, "provider": provider,
             "cwd": cwd, "command": command, "role": "worker",

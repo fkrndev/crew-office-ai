@@ -23,7 +23,7 @@ fn emit(app: &AppHandle, status: Value) {
     if let Some(st) = app.try_state::<UpdateState>() {
         *st.0.lock().unwrap() = status.clone();
     }
-    let _ = app.emit("update-state", status);
+    let _ = app.emit("update:status", status);
 }
 
 /// shared/updateState.isNewer — numeric-triple compare, `v` prefix tolerated.
