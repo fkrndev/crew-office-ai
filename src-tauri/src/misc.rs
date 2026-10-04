@@ -656,7 +656,7 @@ curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
 /// healthCheckPtys (index.ts) — after a detected resume, probe each live
 /// PTY's pid liveness; ones whose process vanished but whose PTY is still
 /// registered are the `dead` the renderer auto-revives with --resume.
-pub fn power_resume_probe(app: &tauri::AppHandle, away_ms: u64) {
+pub fn power_resume_probe(app: &tauri::AppHandle, reason: &str, away_ms: u64) {
     use tauri::Emitter;
     let st = crate::commands::state(app);
     let ids: Vec<(String, Option<u32>)> = st
@@ -673,7 +673,7 @@ pub fn power_resume_probe(app: &tauri::AppHandle, away_ms: u64) {
         .collect();
     if !dead.is_empty() {
         eprintln!(
-            "[power] resume (away ~{}s): {}/{} PTY(s) look wedged (process gone): {}",
+            "[power] {reason} (away ~{}s): {}/{} PTY(s) look wedged (process gone): {}",
             away_ms / 1000,
             dead.len(),
             ids.len(),
@@ -683,7 +683,7 @@ pub fn power_resume_probe(app: &tauri::AppHandle, away_ms: u64) {
     let _ = app.emit(
         "power:resume",
         serde_json::json!({
-            "reason": "resume-detected", "awayMs": away_ms,
+            "reason": reason, "awayMs": away_ms,
             "dead": dead, "total": ids.len(),
         }),
     );

@@ -66,6 +66,9 @@ pub struct AppState {
     /// on every config save. `missions:save` notifies; the scheduler loop
     /// wakes immediately instead of waiting out its sleep.
     pub mission_rearm: tokio::sync::Notify,
+    /// Loopback port of the sync-IPC server (sync_api.rs) — the renderer's
+    /// sendSync equivalents ride synchronous XHR here. 0 = not bound.
+    pub sync_port: std::sync::atomic::AtomicU16,
     /// Closing-time protocol (closing_time.rs) — graceful shutdown via the
     /// hive rails: god brief + worker ACKs + verified COMPLETE.
     pub closing: crate::closing_time::ClosingTime,
@@ -146,6 +149,7 @@ impl AppState {
             cost_moved: Mutex::new(HashMap::new()),
             roster: crate::roster::RosterStore::new(harness_home.clone()),
             mission_rearm: tokio::sync::Notify::new(),
+            sync_port: std::sync::atomic::AtomicU16::new(0),
             closing: crate::closing_time::ClosingTime::default(),
             slack: std::sync::Arc::new(crate::slack::SlackServer::new()),
             slack_reply: std::sync::Arc::new(crate::slack::SlackReplyServer::new()),
@@ -1911,6 +1915,13 @@ pub(crate) fn write_fleet_snapshot(app: &AppHandle) {
 #[tauri::command]
 pub fn roster_read(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
     Ok(state(&app).roster.read())
+}
+
+/// app:syncPort — the loopback sync-IPC port (sync_api.rs); the shim needs
+/// it before its first sendSync-equivalent call.
+#[tauri::command]
+pub fn sync_port(app: AppHandle) -> Result<u16, String> {
+    Ok(state(&app).sync_port.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 #[tauri::command]

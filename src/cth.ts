@@ -18,24 +18,38 @@ const on = <T>(channel: string, cb: (e: T) => void): (() => void) => {
   return () => { void p.then((u) => u()); };
 };
 
-// Clipboard cache backing `readClipboardSync` — Tauri IPC is async-only, so
-// the sync surface upstream's terminal paste relies on reads a value we keep
-// warm (polled on a short interval + on window focus).
+// Sync IPC — upstream's sendSync surface (clipboard + roster reads) rides a
+// synchronous XHR against the loopback server (sync_api.rs), blocking the
+// renderer thread exactly like Electron's sendSync. The caches remain as the
+// pre-bind / failure fallback.
 let clipboardCache = '';
+let rosterCache: unknown = null;
+let syncPort = 0;
 const clipboardPoll = () => {
   void invoke<string | null>('app_clipboard_read').then((t) => {
     if (typeof t === 'string') clipboardCache = t;
   });
 };
-
-// Roster cache backing `rosterReadSync` — the store reads the roster
-// synchronously at boot. Same trick: a value kept warm by async reads +
-// refresh on rosterWrite so writes are visible immediately.
-let rosterCache: unknown = null;
 const rosterPoll = () => {
   void invoke<unknown>('roster_read').then((r) => {
     if (r && typeof r === 'object') rosterCache = r;
   });
+};
+
+/** sendSync — synchronous XHR against the loopback sync server. WebView2
+ *  honours sync XHR (deprecated but functional); a null return means the
+ *  server isn't bound yet — callers fall back to the warm caches. */
+const syncGet = (path: string): string | null => {
+  if (!syncPort) return null;
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `http://127.0.0.1:${syncPort}${path}`, false);
+    xhr.send();
+    if (xhr.status === 200) return xhr.responseText;
+  } catch {
+    /* sync XHR rejected — cache fallback */
+  }
+  return null;
 };
 
 // Drag-drop file paths — with dragDropEnabled the OS drop never reaches the
@@ -49,6 +63,9 @@ export function installCth(): void {
   // an aggressive interval (a paste within ~2s of copy still lands).
   clipboardPoll();
   rosterPoll();
+  void invoke<number>('sync_port').then((p) => {
+    if (typeof p === 'number' && p > 0) syncPort = p;
+  });
   window.setInterval(clipboardPoll, 500);
   window.setInterval(rosterPoll, 3000);
   window.addEventListener('focus', clipboardPoll);
@@ -100,7 +117,16 @@ export function installCth(): void {
     pathForFile: (file: File): string =>
       (file as File & { path?: string }).path ?? dropPaths.shift() ?? '',
     // Sync clipboard: cached (see clipboardPoll). Exact upstream signature.
-    readClipboardSync: (): string => clipboardCache,
+    readClipboardSync: (): string => {
+      const raw = syncGet('/sync/clipboard');
+      if (raw != null) {
+        try {
+          const t = (JSON.parse(raw) as { text?: string }).text;
+          if (typeof t === 'string') return (clipboardCache = t);
+        } catch { /* fall through to cache */ }
+      }
+      return clipboardCache;
+    },
     trackMessageSent: (...args: unknown[]) => invoke('analytics_message_sent', pack(args, ["event","props","Value>>"])),
     spawnPty: (...args: unknown[]) => invoke('spawn_agent', pack(args, ["args"])),
     writePty: (...args: unknown[]) => invoke('pty_write', pack(args, ["id","data"])),
@@ -255,7 +281,16 @@ export function installCth(): void {
     realtimeWaitFor: (...args: unknown[]) => invoke('realtime_wait_for', pack(args, ["taskIdOrAgent","timeoutMs"])),
     appInfo: (...args: unknown[]) => invoke('app_info', pack(args, [])),
     rosterRead: (...args: unknown[]) => invoke('roster_read', pack(args, [])),
-    rosterReadSync: (): unknown => rosterCache,
+    rosterReadSync: (): unknown => {
+      const raw = syncGet('/sync/roster');
+      if (raw != null) {
+        try {
+          const v = JSON.parse(raw) as unknown;
+          if (v != null) return (rosterCache = v);
+        } catch { /* fall through to cache */ }
+      }
+      return rosterCache;
+    },
     rosterWrite: (...args: unknown[]) =>
       invoke('roster_write', pack(args, ["snap"])).then((r) => {
         rosterCache = args[0];

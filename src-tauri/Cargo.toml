@@ -46,6 +46,7 @@ tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-notification = "2.5.1"
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop"] }
 junction = "1"
 winreg = "0.52"
 

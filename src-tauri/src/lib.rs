@@ -34,6 +34,8 @@ mod hire;
 mod hooks;
 pub mod missions;
 pub mod pricing;
+mod power_monitor;
+mod sync_api;
 mod pty;
 pub mod proxy;
 mod ptyenv;
@@ -234,6 +236,15 @@ pub fn run() {
                         }
                     }
                 });
+            }
+
+            // Sync-IPC loopback — upstream's sendSync surface (roster:readSync,
+            // clipboard:readSync) rides synchronous XHR; bind on an ephemeral
+            // port and publish it for the `sync_port` command.
+            if let Some(port) = sync_api::start(app.handle().clone()) {
+                app.state::<AppState>()
+                    .sync_port
+                    .store(port, std::sync::atomic::Ordering::Relaxed);
             }
 
             // Router loop — the Electron version watched outboxes via chokidar;
@@ -787,32 +798,82 @@ pub fn run() {
                 }
             });
 
-            // power:resume watchdog — a suspended machine freezes every
-            // timer; a 1s wall-clock gap detector sees sleeps as short as
-            // ~2s (upstream fires on ANY resume). The probe still waits
-            // upstream's 15s pipe-wake grace before judging PTYs dead.
-            let handle10 = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_secs(1));
-                tick.tick().await;
-                let mut last_wall = 0u64;
-                loop {
-                    tick.tick().await;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    if last_wall != 0 && now.saturating_sub(last_wall) > 5_000 {
-                        let away_ms = now - last_wall;
-                        let handle9 = handle10.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(15)).await;
-                            crate::misc::power_resume_probe(&handle9, away_ms);
-                        });
-                    }
-                    last_wall = now;
+            // powerMonitor — real OS power events where the platform exposes
+            // them (power_monitor.rs: WM_POWERBROADCAST + WTS session events
+            // on Windows). Suspend/lock stamp the clock; resume/unlock run
+            // upstream's onSystemResume: re-arm the scheduler immediately
+            // and, after the 15s pipe-wake grace, probe PTYs and emit
+            // power:resume {reason, awayMs, dead, total}.
+            {
+                let (pwx, prx) = std::sync::mpsc::channel::<crate::power_monitor::PowerEvent>();
+                let monitor_live = crate::power_monitor::start(pwx);
+                if monitor_live {
+                    let handle_p = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut suspend_at: u64 = 0;
+                        let now_ms = || {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        };
+                        while let Ok(ev) = prx.recv() {
+                            use crate::power_monitor::PowerEvent::*;
+                            match ev {
+                                Suspend | LockScreen => suspend_at = now_ms(),
+                                Resume | UnlockScreen => {
+                                    let reason = if ev == Resume {
+                                        "resume"
+                                    } else {
+                                        "unlock-screen"
+                                    };
+                                    let away_ms = now_ms().saturating_sub(suspend_at);
+                                    // Upstream re-arms every frozen timer on
+                                    // wake — our delay loop self-corrects but
+                                    // the notify makes the re-eval instant.
+                                    let st = handle_p.state::<AppState>();
+                                    st.mission_rearm.notify_waiters();
+                                    let handle9 = handle_p.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        tokio::time::sleep(Duration::from_secs(15)).await;
+                                        crate::misc::power_resume_probe(
+                                            &handle9, reason, away_ms,
+                                        );
+                                    });
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    // Fallback for platforms without a power-event API: a 1s
+                    // wall-clock gap watchdog — a suspended machine freezes
+                    // every timer, so a >5s gap means we slept.
+                    let handle10 = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut tick = tokio::time::interval(Duration::from_secs(1));
+                        tick.tick().await;
+                        let mut last_wall = 0u64;
+                        loop {
+                            tick.tick().await;
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            if last_wall != 0 && now.saturating_sub(last_wall) > 5_000 {
+                                let away_ms = now - last_wall;
+                                let handle9 = handle10.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(Duration::from_secs(15)).await;
+                                    crate::misc::power_resume_probe(
+                                        &handle9, "resume", away_ms,
+                                    );
+                                });
+                            }
+                            last_wall = now;
+                        }
+                    });
                 }
-            });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -852,6 +913,7 @@ pub fn run() {
             commands::cost_lifetime,
             commands::roster_read,
             commands::roster_write,
+            commands::sync_port,
             commands::roster_archive,
             commands::closing_time_start,
             commands::closing_time_cancel,
