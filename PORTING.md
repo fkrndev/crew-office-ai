@@ -55,6 +55,7 @@ faithfully), `SPEC.md` (terminal/event plane — mostly renderer), `DESIGN.md`
 | Compact-queue drain | parked compacts fire the provider verb at the next idle transition (hooks emit_status) — the queue previously had no consumer | DONE |
 | `power:resume` keepalive | Electron powerMonitor has no Tauri equivalent — channel is wired but nothing emits; dead-PT detection after OS sleep will not self-heal | PLATFORM GAP |
 | `munderdifflin://` deep-link hires | Tauri deep-link plugin not wired; `hire:import`/`hire:error` channels exist but only spawn-request files fire | GAP |
+| `pathForFile` drag-drop attach | WebView2 `File` objects carry no `.path` (an Electron extension); shim returns '' so drag-attach degrades — use the attach dialog. A real fix needs `onDragDropEvent` plumbing into the copied renderer | GAP |
 | `fs.ts` (renderer fs w/ path containment) | `fs.rs` cmds + explicit scope check — verify scope parity | PARTIAL |
 
 ## Env contract at agent spawn (from ptyEnv.ts + hive.ts:803)
