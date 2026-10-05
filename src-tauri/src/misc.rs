@@ -76,8 +76,8 @@ fn context_commands(provider: &str) -> (Option<&'static str>, Option<&'static st
         "qwen" => (Some("/compress"), Some("/clear"), true),
         "opencode" => (Some("/compact"), Some("/new"), false),
         "pi" => (Some("/compact"), Some("/new"), true),
-        // crush/copilot/cursor/custom/hermes → NO_CONTEXT_COMMANDS: leave the
-        // terminal alone rather than typing an untrusted verb.
+        // crush/copilot/cursor/custom/hermes/openclaw → NO_CONTEXT_COMMANDS:
+        // leave the terminal alone rather than typing an untrusted verb.
         _ => (None, None, false),
     }
 }

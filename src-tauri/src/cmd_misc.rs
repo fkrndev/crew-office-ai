@@ -273,8 +273,9 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
 #[tauri::command(async)]
 pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
     let _ = app;
-    const PROVIDERS: [&str; 10] = [
+    const PROVIDERS: [&str; 11] = [
         "claude", "codex", "gemini", "grok", "agy", "hermes", "pi", "opencode", "qwen", "crush",
+        "openclaw",
     ];
     let path_env = crate::pty::user_shell_path();
     Ok(PROVIDERS

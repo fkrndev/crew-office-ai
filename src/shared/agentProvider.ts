@@ -34,6 +34,8 @@ export type AgentProvider =
   | 'pi'
   | 'copilot'
   | 'cursor'
+  | 'hermes'
+  | 'openclaw'
   | 'custom';
 
 /** Structured descriptor for how a NON-hiveAware provider gets hive lifecycle
@@ -568,6 +570,41 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     docsUrl: 'https://cursor.com/docs/cli/install'
   },
   {
+    // OpenClaw — the open-source agentic CLI (openclaw.ai / openclaw/openclaw).
+    // Interactive TUI (`openclaw tui`) by default; `openclaw agent exec` is the
+    // headless one-shot path for CI. Non-hiveAware: no --append-system-prompt
+    // equivalent, so the hive protocol rides in as the initial prompt.
+    // OpenClaw has no `--yolo`-style spawn flag: auto-approve is configured
+    // persistently via `openclaw exec-policy preset yolo` (tools.exec.mode=full
+    // + approvals.ask=off), so no auto flag is spliced onto the command.
+    id: 'openclaw',
+    label: 'OpenClaw',
+    defaultCommand: 'openclaw tui',
+    commandGroups: [],
+    autoModeFlag: '',
+    autoFlag: '',
+    supportsModel: true,
+    modelFlag: '--model',
+    hiveAware: false,
+    // No hook bridge / proxy bridge yet — mail delivery uses the terminal
+    // work-order / idle-nudge fallback (same class as Cursor/Crush).
+    canReceiveInbox: true,
+    // `openclaw tui` parses argv as a TUI entry point; a positional initial
+    // prompt is not documented. Type the protocol in after boot.
+    initialPromptFlag: undefined,
+    seedDelivery: 'type-into-tui',
+    recommendedOrchestratorModel: undefined,
+    // `openclaw resume` exists for session handoff, but session-id capture
+    // for spawn-respawn is unverified. Spawn fresh on respawn.
+    resumeFlag: undefined,
+    // Trusted, hardcoded installer (openclaw.ai install script).
+    nativeInstallCommand: {
+      posix: 'curl -fsSL https://openclaw.ai/install | bash',
+      win32: 'irm https://openclaw.ai/install.ps1 | iex'
+    },
+    docsUrl: 'https://docs.openclaw.ai/cli'
+  },
+  {
     id: 'custom',
     label: 'Custom',
     defaultCommand: '',
@@ -594,6 +631,8 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
     value === 'pi' ||
     value === 'copilot' ||
     value === 'cursor' ||
+    value === 'hermes' ||
+    value === 'openclaw' ||
     value === 'custom'
   );
 }

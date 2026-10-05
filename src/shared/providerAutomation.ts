@@ -144,6 +144,15 @@ const CONTEXT_COMMANDS: Record<AgentProvider, ProviderContextCommands> = {
   // auto-compact. Revisit when a shipped command table is transcribed.
   cursor: NO_CONTEXT_COMMANDS,
 
+  // OpenClaw's TUI (`openclaw tui`) has no documented typed slash commands for
+  // compaction or clear — the session lifecycle verbs are `/new` and `/reset`
+  // but there is no `/compact` or `/clear`. Nothing safe to type: null.
+  openclaw: NO_CONTEXT_COMMANDS,
+
+  // Hermes CLI (`hermes --cli`) has no documented typed slash commands for
+  // compaction or clear — it is a headless/interactive shell, not a TUI.
+  hermes: NO_CONTEXT_COMMANDS,
+
   // An arbitrary user binary. We cannot know its command surface, and guessing
   // means typing slashes into someone's unknown REPL.
   custom: NO_CONTEXT_COMMANDS
