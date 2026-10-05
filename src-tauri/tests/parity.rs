@@ -286,3 +286,36 @@ fn skill_frontmatter_and_safe_name_contracts() {
  *   - nodeInstall/cliInstall — Electron had to bootstrap Node; Tauri ships
  *     a native binary (the porting win).
  */
+
+#[test]
+fn tokenize_command_respects_quotes() {
+    // shared/commandLine.ts: a model value with spaces stays one token.
+    let toks = agent_office_lib::misc::tokenize_command(
+        "claude --model \"Gemini 3.1 Pro (High)\" --permission-mode bypassPermissions",
+    );
+    assert_eq!(toks, vec![
+        "claude".to_string(),
+        "--model".to_string(),
+        "Gemini 3.1 Pro (High)".to_string(),
+        "--permission-mode".to_string(),
+        "bypassPermissions".to_string(),
+    ]);
+}
+
+#[test]
+fn tokenize_command_single_quotes() {
+    let toks = agent_office_lib::misc::tokenize_command("grok --model 'Gemini 3.1 Pro (High)'");
+    assert_eq!(toks, vec!["grok", "--model", "Gemini 3.1 Pro (High)"]);
+}
+
+#[test]
+fn tokenize_command_no_quotes() {
+    let toks = agent_office_lib::misc::tokenize_command("claude --model sonnet");
+    assert_eq!(toks, vec!["claude", "--model", "sonnet"]);
+}
+
+#[test]
+fn tokenize_command_empty() {
+    assert!(agent_office_lib::misc::tokenize_command("").is_empty());
+    assert!(agent_office_lib::misc::tokenize_command("   ").is_empty());
+}

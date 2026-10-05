@@ -289,6 +289,49 @@ pub fn install_script(
     None
 }
 
+/// tokenizeCommand (shared/commandLine.ts) — split a command string into
+/// argv respecting double/single quotes so a model value with spaces
+/// (`--model "Gemini 3.1 Pro (High)"`) stays one token. Quotes are stripped.
+/// Shared because BOTH sides split command lines: the renderer's spawn flows
+/// and main's god-hired-worker path. A worker whose command line splits
+/// differently from the renderer's is exactly the class of silent breakage
+/// the spawn-request fix exists to prevent.
+pub fn tokenize_command(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = command.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            let quote = c;
+            chars.next();
+            let mut token = String::new();
+            while let Some(&ch) = chars.peek() {
+                if ch == quote {
+                    chars.next();
+                    break;
+                }
+                token.push(ch);
+                chars.next();
+            }
+            out.push(token);
+        } else {
+            let mut token = String::new();
+            while let Some(&ch) = chars.peek() {
+                if ch.is_whitespace() || ch == '"' || ch == '\'' {
+                    break;
+                }
+                token.push(ch);
+                chars.next();
+            }
+            out.push(token);
+        }
+    }
+    out
+}
+
 pub fn expand_tilde(p: &str) -> String {
     let t = p.trim();
     if t.is_empty() {
@@ -477,7 +520,11 @@ fn fetch_text(url: &str, timeout_ms: u64) -> Result<String, String> {
         .timeout_global(Some(std::time::Duration::from_millis(timeout_ms)))
         .build();
     let agent = ureq::Agent::new_with_config(config);
-    let mut resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    let mut resp = agent
+        .get(url)
+        .header("user-agent", "munder-difflin")
+        .call()
+        .map_err(|e| e.to_string())?;
     if !(200..300).contains(&resp.status().as_u16()) {
         return Err(format!("http {}", resp.status()));
     }

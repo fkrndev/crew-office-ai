@@ -637,11 +637,10 @@ pub(crate) fn spawn_inner(
     }
 
     // Resolve the program for a direct-argv spawn (exe) vs cmd-wrap (scripts).
-    let first_tok = command_line
-        .split_whitespace()
+    let first_tok = crate::misc::tokenize_command(&command_line)
+        .into_iter()
         .next()
-        .unwrap_or("")
-        .to_string();
+        .unwrap_or_default();
 
     // Missing-CLI auto-install (spawnAgentCore → pendingInstallRelaunch): the
     // provider binary can't be resolved — run the bundled installer in the
@@ -669,10 +668,9 @@ pub(crate) fn spawn_inner(
 
     let handle = match pty::resolve_program(&first_tok, &path) {
         Some(pty::Resolved::Exe(prog)) => {
-            let mut av: Vec<String> = command_line
-                .split_whitespace()
+            let mut av: Vec<String> = crate::misc::tokenize_command(&command_line)
+                .into_iter()
                 .skip(1)
-                .map(String::from)
                 .collect();
             if is_claude {
                 av.push("--append-system-prompt".into());
@@ -695,7 +693,7 @@ pub(crate) fn spawn_inner(
                 let mut av: Vec<String> = script
                     .map(|s| vec![s.display().to_string()])
                     .unwrap_or_default();
-                av.extend(command_line.split_whitespace().skip(1).map(String::from));
+                av.extend(crate::misc::tokenize_command(&command_line).into_iter().skip(1).map(String::from));
                 if is_claude {
                     av.push("--append-system-prompt".into());
                     av.push(injected.clone());
@@ -713,7 +711,7 @@ pub(crate) fn spawn_inner(
             // at all — upstream truncates at it; collapsing is strictly less
             // destructive.)
             let mut parts = vec![prog.display().to_string()];
-            parts.extend(command_line.split_whitespace().skip(1).map(String::from));
+            parts.extend(crate::misc::tokenize_command(&command_line).into_iter().skip(1).map(String::from));
             if is_claude {
                 parts.push("--append-system-prompt".into());
                 parts.push(pty::cmd_sanitize(&injected));
@@ -727,7 +725,7 @@ pub(crate) fn spawn_inner(
         }
         None => {
             let mut parts: Vec<String> =
-                command_line.split_whitespace().map(String::from).collect();
+                crate::misc::tokenize_command(&command_line).into_iter().map(String::from).collect();
             if is_claude {
                 parts.push("--append-system-prompt".into());
                 parts.push(pty::cmd_sanitize(&injected));

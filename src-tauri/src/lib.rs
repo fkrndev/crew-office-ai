@@ -17,7 +17,7 @@ mod realtime_actions;
 mod cmd_realtime;
 mod cmd_misc;
 mod cmd_update;
-mod misc;
+pub mod misc;
 pub mod commands;
 pub mod config;
 pub mod cost_lifetime;

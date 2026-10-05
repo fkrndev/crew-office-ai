@@ -418,7 +418,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             auto,
         ),
     };
-    let bin = command.split_whitespace().next().unwrap_or("").to_string();
+    let bin = crate::misc::tokenize_command(&command).into_iter().next().unwrap_or_default();
     // A spawn-request file is untrusted input — the bin must be a plain
     // command token or an absolute path, never a shell-reinterpretable string.
     if !crate::pty::is_safe_command_name(&bin) && !Path::new(&bin).is_absolute() {
