@@ -1277,16 +1277,13 @@ pub fn config_update(
     patch: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let st = state(&app);
-    let mut raw = st.config_store.raw_value();
-    if let (Some(dst), Some(src)) = (raw.as_object_mut(), patch.as_object()) {
-        for (k, val) in src {
-            dst.insert(k.clone(), val.clone());
-        }
-    }
-    let mut cfg = st.config.lock().unwrap();
-    *cfg = serde_json::from_value(raw).map_err(|e| e.to_string())?;
-    st.config_store.save(&cfg).map_err(err_str)?;
-    drop(cfg);
+    let patch_obj = patch.as_object().cloned().unwrap_or_default();
+    // Goes through ConfigStore::update so patch keys the typed Config doesn't
+    // model (onboardingComplete, godProvider, officeTheme…) persist — the old
+    // save(&cfg) path re-read the PRE-patch file and silently dropped them,
+    // which is why the wizard's Finish button could never complete.
+    let (cfg, _raw) = st.config_store.update(&patch_obj)?;
+    *st.config.lock().unwrap() = cfg;
     // onConfigWritten → syncMissions re-arm (upstream re-arms on EVERY
     // config write, not just missions:save).
     st.mission_rearm.notify_waiters();

@@ -201,33 +201,39 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const finish = async () => {
     setBusy(true);
     setError(undefined);
-    const harnessHome = home.trim(); // whitespace-only is not a folder
-    if (!harnessHome) { setError(t('onboarding.errPickHome')); setBusy(false); setStep('home'); return; }
-    // The orchestrator step already refuses to advance on this, but a late probe
-    // result can change the answer after the user has moved on. Never write a
-    // godProvider that is known to be unable to boot.
-    if (engineBlocked) {
-      setError(t('onboarding.errEngineNotInstalled', { label: providerPreset(godProvider).label }));
-      setBusy(false); setStep('orchestrator'); return;
-    }
-    const ensure = await window.cth.ensureHarnessHome(harnessHome);
-    if (!ensure.ok) {
-      setError(ensure.error ?? t('onboarding.errCreateHome'));
+    try {
+      const harnessHome = home.trim(); // whitespace-only is not a folder
+      if (!harnessHome) { setError(t('onboarding.errPickHome')); setStep('home'); return; }
+      // The orchestrator step already refuses to advance on this, but a late probe
+      // result can change the answer after the user has moved on. Never write a
+      // godProvider that is known to be unable to boot.
+      if (engineBlocked) {
+        setError(t('onboarding.errEngineNotInstalled', { label: providerPreset(godProvider).label }));
+        setStep('orchestrator'); return;
+      }
+      const ensure = await window.cth.ensureHarnessHome(harnessHome);
+      if (!ensure.ok) {
+        setError(ensure.error ?? t('onboarding.errCreateHome'));
+        return;
+      }
+      const next = await window.cth.updateConfig({
+        onboardingComplete: true,
+        audience: audience ?? 'technical',
+        harnessHome, // the same trimmed value we just mkdir'd, not the raw field
+        registeredRepos: repos,
+        autoMode,
+        godProvider,
+        godModel,
+        telemetryEnabled: shareStats
+      });
+      onComplete(next);
+    } catch (e) {
+      // A rejected invoke used to leave busy stuck true — the button sat on
+      // "saving…" forever with no hint why. Surface the error instead.
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
-      return;
     }
-    const next = await window.cth.updateConfig({
-      onboardingComplete: true,
-      audience: audience ?? 'technical',
-      harnessHome, // the same trimmed value we just mkdir'd, not the raw field
-      registeredRepos: repos,
-      autoMode,
-      godProvider,
-      godModel,
-      telemetryEnabled: shareStats
-    });
-    setBusy(false);
-    onComplete(next);
   };
 
   return (

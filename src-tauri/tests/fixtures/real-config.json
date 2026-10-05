@@ -1,0 +1,110 @@
+{
+  "agentCostCaps": {},
+  "agentTokenCaps": {},
+  "agent_token_caps": {},
+  "autoMode": true,
+  "auto_mode": false,
+  "circuitBreaker": {
+    "enabled": null,
+    "errorStormLimit": null,
+    "hardStop": null,
+    "repeatedToolLimit": null,
+    "tokenVelocityPerMin": null
+  },
+  "circuit_breaker": {
+    "enabled": null,
+    "error_storm_limit": null,
+    "hard_stop": null,
+    "repeated_tool_limit": null,
+    "token_velocity_per_min": null
+  },
+  "compactSeeded": true,
+  "compact_seeded": true,
+  "contextTrigger": {
+    "clear": {
+      "enabled": false,
+      "everyMs": 7200000,
+      "message": "",
+      "minContextPct": 90,
+      "minContextPctLargeWindow": 80
+    },
+    "compact": {
+      "enabled": true,
+      "everyMs": 7200000,
+      "message": "Keep the current task, recent decisions, open questions, and file paths in play. Drop resolved tangents.",
+      "minContextPct": 60,
+      "minContextPctLargeWindow": 40
+    }
+  },
+  "context_trigger": {
+    "enabled": false,
+    "every_ms": 900000,
+    "message": "Keep the current task, recent decisions, open questions, and file paths in play. Drop resolved tangents.",
+    "min_context_pct": 70
+  },
+  "costCapTokens": null,
+  "costCapUsd": null,
+  "cost_cap_tokens": null,
+  "cost_cap_usd": null,
+  "defaultWorkerTokenCap": 0,
+  "default_worker_token_cap": 0,
+  "godName": "Michael",
+  "god_name": "Michael",
+  "heartbeatSeeded": true,
+  "heartbeat_seeded": true,
+  "maxConcurrentWorkers": 4,
+  "max_concurrent_workers": 4,
+  "missions": [
+    {
+      "autoCompact": false,
+      "body": "Hourly ops standup. Review every agent: who is doing what, and confirm each is still running (not stalled or idle-stale). Check the task board â€” are in-flight tasks on track, and is anything blocked or unowned? Flag stale items and re-engage whoever needs it.",
+      "enabled": true,
+      "id": "ops-standup",
+      "intervalMs": 0,
+      "kind": null,
+      "label": "Hourly ops standup",
+      "lastFiredAt": 0,
+      "quietThresholdMs": null,
+      "to": "god",
+      "weekly": null
+    },
+    {
+      "autoCompact": false,
+      "body": "Floor heartbeat: the team has gone quiet. Review the digest in your inbox, re-engage anyone stalled or blocked, and keep the board accurate â€” or rest if the work is genuinely done.",
+      "enabled": false,
+      "id": "heartbeat",
+      "intervalMs": 0,
+      "kind": "heartbeat",
+      "label": "Floor heartbeat",
+      "lastFiredAt": 0,
+      "quietThresholdMs": null,
+      "to": "god",
+      "weekly": null
+    },
+    {
+      "autoCompact": false,
+      "body": "",
+      "enabled": false,
+      "id": "compact-maintenance",
+      "intervalMs": 0,
+      "kind": "compact",
+      "label": "Auto-compact (maintenance)",
+      "lastFiredAt": 0,
+      "quietThresholdMs": null,
+      "to": "",
+      "weekly": null
+    }
+  ],
+  "notifications": true,
+  "opsStandupSeeded": true,
+  "ops_standup_seeded": true,
+  "orchestratorMaySpawn": false,
+  "orchestrator_may_spawn": false,
+  "secretEnvKeys": [],
+  "secret_env_keys": [],
+  "webhookPort": 8787,
+  "webhook_port": 8787,
+  "webhooks": [],
+  "workerIdleTimeoutMinutes": 20,
+  "worker_idle_timeout_minutes": 20
+}

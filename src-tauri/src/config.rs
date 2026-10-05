@@ -229,6 +229,40 @@ impl ConfigStore {
         Ok(self.load())
     }
 
+    /// config_update's write path, factored so integration tests can drive it.
+    /// Merge the patch into the raw object, validate the result parses to the
+    /// typed Config (Err on a known field with a wrong type — the renderer
+    /// sees the rejection), then persist the MERGED object verbatim.
+    ///
+    /// Writing `raw` — not `save(&cfg)` — is the point: `save` re-reads the
+    /// on-disk file, so patch keys the typed Config doesn't model
+    /// (onboardingComplete, godProvider, harnessHome, themes…) would vanish.
+    /// That is exactly what the onboarding Finish button relied on.
+    ///
+    /// Returns the typed Config and the merged object as written — the same
+    /// shape get_config returns, so callers do not re-merge.
+    pub fn update(
+        &self,
+        patch: &serde_json::Map<String, serde_json::Value>,
+    ) -> std::result::Result<(Config, serde_json::Value), String> {
+        let mut raw = self.raw_value();
+        if !raw.is_object() {
+            raw = serde_json::json!({});
+        }
+        if let Some(dst) = raw.as_object_mut() {
+            for (k, v) in patch {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        let cfg: Config = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+        if let Some(p) = self.path.parent() {
+            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+        }
+        fs::write(&self.path, serde_json::to_string_pretty(&raw).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        Ok((cfg, raw))
+    }
+
     /// Serialize the typed config but merge it over the raw file so keys the
     /// struct doesn't model survive a save round-trip — upstream's
     /// `writeConfig` writes the whole parsed object, unknown keys included.
