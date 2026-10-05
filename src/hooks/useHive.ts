@@ -830,7 +830,7 @@ export function useHive(config: HarnessConfig | null): void {
       if (!canDeliverToAgent(target.status, ptyQuietMs(target.ptyId, now), QUIESCE_IDLE_MS)) {
         return { sent: false };
       }
-      const control = await window.cth.controlSnapshot(target.id);
+      const control = await window.cth.controlSnapshot(target.id).catch(() => null);
       // The pause gate holds everything EXCEPT messages the user explicitly
       // released with "send now" (m.manual) â€” otherwise a paused floor leaves
       // the queue with no escape hatch at all. Idle/draft/picker safety below
@@ -957,6 +957,10 @@ export function useHive(config: HarnessConfig | null): void {
           if (sent && message?.compactUsed !== undefined) {
             lastCompactUsed.current[a.id] = message.compactUsed;
           }
+        // A dispatch that THREW (dead bridge mid-drain) used to surface as an
+        // unhandled rejection and the message silently stayed queued forever.
+        }).catch((err) => {
+          console.warn(`[queue-drain] dispatch to ${a.id} threw:`, err);
         });
       }
     };

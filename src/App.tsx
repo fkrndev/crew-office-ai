@@ -179,8 +179,14 @@ export function App() {
   }), []);
 
   const startClosingTime = async () => {
-    const res = await window.cth.startClosingTime();
-    if (!res.ok) setClosing({ phase: 'error', acked: 0, total: 0, error: res.error });
+    try {
+      const res = await window.cth.startClosingTime();
+      if (!res.ok) setClosing({ phase: 'error', acked: 0, total: 0, error: res.error });
+    } catch (err) {
+      // A throwing bridge must not leave the user unable to close the app —
+      // surface it as a failed closing phase, not a silent dead modal.
+      setClosing({ phase: 'error', acked: 0, total: 0, error: String(err) });
+    }
   };
   const cancelClosingTime = () => {
     void window.cth.cancelClosingTime();
@@ -504,7 +510,10 @@ export function App() {
             window.cth.cancelClose();
             setQuitWarn(null);
           }}
-          onConfirm={async () => { await window.cth.confirmClose(); }}
+          onConfirm={() => { void window.cth.confirmClose().catch((err) => {
+            console.error('[close] confirmClose threw:', err);
+            setQuitWarn(null); // don't trap the user — let them retry or force-quit
+          }); }}
           onClosingTime={startClosingTime}
         />
       )}
