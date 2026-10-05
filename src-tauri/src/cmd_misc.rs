@@ -219,7 +219,7 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
     }
     #[cfg(windows)]
     {
-        let path_env = std::env::var("PATH").unwrap_or_default();
+        let path_env = crate::pty::user_shell_path();
         let spawned = if crate::pty::resolve_program("wt", &path_env).is_some() {
             std::process::Command::new("cmd")
                 .args(["/c", "start", "", "wt", "-d", p.as_str()])
@@ -240,7 +240,7 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let path_env = std::env::var("PATH").unwrap_or_default();
+        let path_env = crate::pty::user_shell_path();
         let mut launched = false;
         for term in ["x-terminal-emulator", "gnome-terminal", "konsole"] {
             if crate::pty::resolve_program(term, &path_env).is_some() {
@@ -267,7 +267,7 @@ pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
     const PROVIDERS: [&str; 10] = [
         "claude", "codex", "gemini", "grok", "agy", "hermes", "pi", "opencode", "qwen", "crush",
     ];
-    let path_env = std::env::var("PATH").unwrap_or_default();
+    let path_env = crate::pty::user_shell_path();
     Ok(PROVIDERS
         .iter()
         .map(|id| {

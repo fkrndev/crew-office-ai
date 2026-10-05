@@ -355,6 +355,55 @@ pub fn is_safe_command_name(command: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
+/// The user's interactive-shell PATH (shellEnv.ts userShellPath).
+///
+/// A GUI-launched app on macOS inherits no login-shell PATH, so a bare
+/// `claude` installed via nvm/homebrew would ENOENT. We spawn the user's
+/// interactive login shell once, capture its PATH between two fence markers
+/// (rc-file chatter like "Restored session: …" would otherwise poison the
+/// value), and cache the result for the session. Windows has no login-shell
+/// PATH problem — the process PATH is used directly.
+static SHELL_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn user_shell_path() -> String {
+    if let Some(p) = SHELL_PATH.get() {
+        return p.clone();
+    }
+    let path = capture_shell_path();
+    let v = SHELL_PATH.get_or_init(|| path);
+    v.clone()
+}
+
+fn capture_shell_path() -> String {
+    if cfg!(windows) {
+        return std::env::var("PATH").unwrap_or_default();
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let mark = "__MD_SHELL_FENCE__";
+    let script = format!("printf %s {mark}; printf %s \"$PATH\"; printf %s {mark}");
+    let Ok(out) = std::process::Command::new(&shell)
+        .args(["-ilc", &script])
+        .output()
+    else {
+        return std::env::var("PATH").unwrap_or_default();
+    };
+    let s = String::from_utf8_lossy(&out.stdout);
+    let start = s.find(mark);
+    let end = s.rfind(mark);
+    match (start, end) {
+        (Some(st), Some(en)) if en > st => {
+            let captured = s[st + mark.len()..en].to_string();
+            // A PATH is a single colon-joined line; multi-line = rc noise.
+            if !captured.is_empty() && !captured.contains('\n') {
+                captured
+            } else {
+                std::env::var("PATH").unwrap_or_default()
+            }
+        }
+        _ => std::env::var("PATH").unwrap_or_default(),
+    }
+}
+
 /// Spawn `cmd.exe /d /s /c` with each token as a SEPARATE argv entry.
 /// portable-pty's append_quoted applies MSDN/CRT quoting per arg — tokens
 /// containing spaces or quotes arrive wrapped in `"..."` with inner quotes

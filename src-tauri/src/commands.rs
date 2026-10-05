@@ -551,7 +551,10 @@ pub(crate) fn spawn_inner(
     // withHiveRuntimeFallback: the hive's bundled-runtime dir (if any) is
     // APPENDED to the child PATH so provider subprocesses that shell out to
     // `node` work even on machines without a system install.
-    let mut path = parent.get("PATH").cloned().unwrap_or_default();
+    // Use the login-shell PATH (shellEnv.ts userShellPath) — a GUI-launched
+    // app on macOS inherits no nvm/homebrew PATH, so a bare `claude` would
+    // ENOENT without this.
+    let mut path = crate::pty::user_shell_path();
     let runtime_dir = st.hive.root.join("bin").join("runtime");
     if runtime_dir.is_dir()
         && !path
@@ -1420,7 +1423,7 @@ pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde
     let st = state(&app);
     let settings = crate::reflect::ReflectSettings { enabled: true, ..Default::default() };
     let hive_root = st.hive.root.clone();
-    let path = std::env::var("PATH").unwrap_or_default();
+    let path = crate::pty::user_shell_path();
     let claude = match pty::resolve_program("claude", &path) {
         Some(pty::Resolved::Exe(p)) | Some(pty::Resolved::Script(p)) => p.display().to_string(),
         None => "claude".to_string(),
