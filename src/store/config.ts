@@ -151,6 +151,10 @@ export interface HarnessConfig {
   orgTrigger?: OrgTriggerConfig;
   /** One-time guard for the main-process triggers migration; read-only here. */
   triggersMigratedV1?: boolean;
+  /** Saved one-click hire presets (Add Agent modal → "Save as template").
+   *  Raw config key — the typed Rust Config doesn't model it, so it survives
+   *  save round-trips like officeTheme does. */
+  agentTemplates?: import('@shared/agentTemplates').AgentTemplate[];
 }
 
 /** The Sonnet model with the 1M-token context window — used for Michael's prep

@@ -11,6 +11,7 @@ import { type AccentColorName } from '@/design/tokens';
 import type { HireManifest } from '@shared/hire';
 import { hireQueueProgress } from '@shared/hireQueue';
 import { MCP_CATALOG } from '@shared/mcpCatalog';
+import { sanitizeTemplates, type AgentTemplate } from '@shared/agentTemplates';
 import {
   OSS_LOCAL_PICKS,
   OSS_PROVIDER_PICKS,
@@ -244,6 +245,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const [folderNote, setFolderNote] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  // One-click spawn presets — raw config key `agentTemplates`, sanitized on
+  // read so a hand-edited config.json can't crash the modal.
+  const [templates, setTemplates] = useState<AgentTemplate[]>(() =>
+    sanitizeTemplates(config.agentTemplates)
+  );
+  const [tplSaving, setTplSaving] = useState(false);
+  const [tplLabel, setTplLabel] = useState('');
+  const [tplSaved, setTplSaved] = useState(false);
   // Which config section the left sidebar index is showing.
   const [section, setSection] = useState<SectionKey>('identity');
   // "Generate a hire with AI" helper — reveals a copy-paste prompt (item 7).
@@ -351,6 +360,69 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     setResumeSessionId('');
     setFolderNote(undefined);
     setSection('identity');
+  };
+
+  /** Apply a saved spawn preset to every form field. The stored command is
+   *  used verbatim (it may carry deliberate power-user edits); provider/model
+   *  just light up the right chips. Applying a template never spawns — the
+   *  user still reviews and hits spawn. */
+  const applyTemplate = (t: AgentTemplate) => {
+    setHireMeta(null);
+    setName(t.name ?? '');
+    setCharacter(knownCharacter(t.character));
+    setAccent(knownAccent(t.accent));
+    setProvider(t.provider);
+    setModel(t.model);
+    setCommand(t.command);
+    setDescription(t.description ?? '');
+    setGoal(t.goal ?? '');
+    setIsolate(t.isolate ?? false);
+    setResumeSessionId('');
+    setFolderNote(undefined);
+    setError(undefined);
+    setSection('identity');
+  };
+
+  /** Persist a new template built from the CURRENT form state. */
+  const saveTemplate = async () => {
+    const label = tplLabel.trim() || name.trim();
+    if (!label) { setError(tr('addAgent.errName')); setSection('identity'); return; }
+    if (!command.trim()) { setError(tr('addAgent.errCommand')); setSection('engine'); return; }
+    const next: AgentTemplate[] = [
+      ...templates,
+      {
+        id: crypto.randomUUID(),
+        label,
+        provider,
+        model,
+        command: command.trim(),
+        name: name.trim() || undefined,
+        description: description.trim() || undefined,
+        goal: goal.trim() || undefined,
+        isolate,
+        character,
+        accent
+      }
+    ];
+    setTemplates(next);
+    setTplSaving(false);
+    setTplLabel('');
+    try {
+      const updated = await window.cth.updateConfig({ agentTemplates: next });
+      onConfigChange?.(updated);
+      setTplSaved(true);
+      setTimeout(() => setTplSaved(false), 1500);
+    } catch { /* best-effort persist — local list already updated */ }
+  };
+
+  /** Remove a template chip. */
+  const deleteTemplate = async (id: string) => {
+    const next = templates.filter((t) => t.id !== id);
+    setTemplates(next);
+    try {
+      const updated = await window.cth.updateConfig({ agentTemplates: next });
+      onConfigChange?.(updated);
+    } catch { /* best-effort */ }
   };
 
   // Advancing a batch keeps this modal mounted. Re-seed every form field when
@@ -626,6 +698,82 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     </div>
                   );
                 })()}
+              </div>
+            )}
+
+            {/* Template bar — one-click spawn presets saved in config. Hidden
+                while reviewing an imported hire (the manifest owns the form). */}
+            {!hireMeta && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
+                  color: 'var(--cth-ink-500)', textTransform: 'uppercase'
+                }}>
+                  {tr('addAgent.agentTemplates')}
+                </span>
+                {templates.map((t) => (
+                  <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+                    <button
+                      onClick={() => applyTemplate(t)}
+                      title={t.command}
+                      style={{
+                        padding: '3px 8px 1px', border: 'none', cursor: 'pointer',
+                        background: 'var(--cth-cream-100)',
+                        boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                        fontFamily: 'var(--cth-font-ui)', fontSize: 12,
+                        color: 'var(--cth-ink-900)', borderRadius: '3px 0 0 3px'
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                    <button
+                      onClick={() => deleteTemplate(t.id)}
+                      title={tr('addAgent.templateDeleteTitle')}
+                      style={{
+                        padding: '3px 6px 1px', border: 'none', cursor: 'pointer',
+                        background: 'var(--cth-cream-100)',
+                        boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                        fontFamily: 'var(--cth-font-ui)', fontSize: 12,
+                        color: 'var(--cth-ink-500)', borderRadius: '0 3px 3px 0'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {tplSaving ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      autoFocus
+                      value={tplLabel}
+                      onChange={(e) => setTplLabel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveTemplate();
+                        if (e.key === 'Escape') { setTplSaving(false); setTplLabel(''); }
+                      }}
+                      placeholder={tr('addAgent.templateLabelPlaceholder')}
+                      style={{ ...inputStyle, width: 140, padding: '3px 7px', fontSize: 12 }}
+                    />
+                    <PixelButton size="sm" onClick={saveTemplate}>{tr('addAgent.saveAsTemplate')}</PixelButton>
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setTplSaving(true)}
+                    title={tr('addAgent.saveAsTemplateTitle')}
+                    style={{
+                      padding: '3px 8px 1px', border: 'none', cursor: 'pointer',
+                      background: 'var(--cth-cream-100)',
+                      boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                      fontFamily: 'var(--cth-font-ui)', fontSize: 12,
+                      color: 'var(--cth-ink-500)'
+                    }}
+                  >
+                    {tplSaved ? tr('addAgent.templateSaved') : `+ ${tr('addAgent.saveAsTemplate')}`}
+                  </button>
+                )}
+                <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                  {tr('addAgent.agentTemplatesHint')}
+                </span>
               </div>
             )}
 
