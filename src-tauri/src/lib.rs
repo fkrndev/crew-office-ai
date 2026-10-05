@@ -18,6 +18,7 @@ mod cmd_realtime;
 mod cmd_misc;
 mod cmd_update;
 pub mod misc;
+pub mod hidden_claude;
 pub mod commands;
 pub mod config;
 pub mod cost_lifetime;

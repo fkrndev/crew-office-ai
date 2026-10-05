@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+
 
 use serde_json::{json, Value};
 
@@ -21,7 +21,7 @@ pub const BUDGET_BYTES: u64 = 131_072;
 /// The cheap tail-summarizer (the verify gate covers quality).
 const CONDENSE_MODEL: &str = "claude-haiku-4-5";
 /// Hard cap so a wedged headless run can't stall the loop.
-const TIMEOUT_MS: u64 = 180_000;
+/// (Now lives in hidden_claude.rs — kept here for the doc reference.)
 
 pub const PINNED_HEADING: &str = "## 📌 Durable facts (pinned — never condensed)";
 pub const CONDENSED_HEADING: &str = "## 🗜 Condensed history";
@@ -348,41 +348,24 @@ fn atomic_write(path: &Path, text: &str) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// Run a hidden headless `claude -p` and return its final text — the
-/// one LLM step. disallowedTools keeps it a pure text transform.
+/// Run a hidden interactive claude session (PTY-based, not `claude -p`) and
+/// return the assistant's final text response. Uses the user's interactive
+/// plan quota, not the Agent SDK credit. Port of `hiddenClaude.ts`.
 fn run_hidden_claude(command: &str, prompt: &str, cwd: &Path) -> Result<String, String> {
-    let mut child = Command::new(command)
-        .args([
-            "-p", prompt,
-            "--output-format", "json",
-            "--model", CONDENSE_MODEL,
-            "--disallowedTools", "Edit,Write,NotebookEdit,Bash",
-        ])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn claude: {e}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(TIMEOUT_MS);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(100))
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                return Err("condense: hidden session timed out".into());
-            }
-            Err(e) => return Err(format!("wait: {e}")),
-        }
+    let opts = crate::hidden_claude::HiddenClaudeOptions {
+        model: CONDENSE_MODEL.into(),
+        cwd: cwd.display().to_string(),
+        command: Some(command.into()),
+        disallowed_tools: vec!["Edit".into(), "Write".into(), "NotebookEdit".into(), "Bash".into()],
+        ..Default::default()
+    };
+    let result = crate::hidden_claude::run_hidden_claude(prompt, &opts);
+    match (result.ok, result.text, result.error) {
+        (true, Some(text), _) => Ok(text),
+        (true, None, _) => Err("no assistant response found in transcript".into()),
+        (false, _, Some(e)) => Err(e),
+        (false, _, None) => Err("hidden session failed".into()),
     }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!("claude exited {}", out.status));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// The dual trigger: bytes > pct% of budget, OR section sprawl above the
