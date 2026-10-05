@@ -103,7 +103,10 @@ pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
             .fold(0u8, |acc, (x, y)| acc | (x ^ y));
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// SHA-256 hex of a capability token — the only form persisted (card stamp
@@ -219,7 +222,11 @@ impl WebhookServer {
 
     /// Drop mappings whose history entry has aged out of the capped ledger —
     /// the operator can no longer decide them (upstream pruneHeldTokens).
-    pub fn prune_held(&self, app: &tauri::AppHandle, hist: &crate::trigger_history::TriggerHistory) {
+    pub fn prune_held(
+        &self,
+        app: &tauri::AppHandle,
+        hist: &crate::trigger_history::TriggerHistory,
+    ) {
         let map = self.held_tokens(app);
         if map.is_empty() {
             return;
@@ -310,10 +317,7 @@ impl WebhookServer {
         let seg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         match seg.len() {
             0 => Some(LEGACY_ENDPOINT_ID.into()),
-            1 => Some(
-                percent_decode(seg[0])
-                    .unwrap_or_else(|| seg[0].to_string()),
-            ),
+            1 => Some(percent_decode(seg[0]).unwrap_or_else(|| seg[0].to_string())),
             _ => None,
         }
     }
@@ -374,7 +378,11 @@ impl WebhookServer {
                 ),
             }
         };
-        let bucket = if real { id.as_deref().unwrap() } else { UNKNOWN_BUCKET };
+        let bucket = if real {
+            id.as_deref().unwrap()
+        } else {
+            UNKNOWN_BUCKET
+        };
         if !self.rate_ok(bucket, PER_ENDPOINT_RATE_LIMIT) {
             return (429, json!({ "ok": false, "error": "rate limited" }));
         }
@@ -455,7 +463,10 @@ impl WebhookServer {
             let map = self.endpoints.lock().unwrap();
             if let Some((_, Some(vv))) = map.get(&endpoint_id) {
                 if !vv.is_valid(&v) {
-                    return (400, json!({ "ok": false, "error": "schema validation failed" }));
+                    return (
+                        400,
+                        json!({ "ok": false, "error": "schema validation failed" }),
+                    );
                 }
             }
         }
@@ -507,12 +518,14 @@ impl WebhookServer {
                     "detail": "accepted — waiting for the operator to approve it before the hive sees it"
                 }),
             ),
-            Dispatch::Routed { token, task_id } => {
-                (200, json!({ "ok": true, "token": token, "taskId": task_id }))
-            }
-            Dispatch::Failed => {
-                (500, json!({ "ok": false, "error": "could not create task" }))
-            }
+            Dispatch::Routed { token, task_id } => (
+                200,
+                json!({ "ok": true, "token": token, "taskId": task_id }),
+            ),
+            Dispatch::Failed => (
+                500,
+                json!({ "ok": false, "error": "could not create task" }),
+            ),
         }
     }
 
@@ -547,15 +560,13 @@ impl WebhookServer {
         let kind = kind
             .map(|k| k.to_string())
             .unwrap_or_else(|| crate::trigger_history::classify_inbound_kind(message).to_string());
-        let peer = from
-            .map(|f| f.to_string())
-            .unwrap_or_else(|| {
-                if endpoint_name.is_empty() {
-                    endpoint_id.to_string()
-                } else {
-                    endpoint_name.to_string()
-                }
-            });
+        let peer = from.map(|f| f.to_string()).unwrap_or_else(|| {
+            if endpoint_name.is_empty() {
+                endpoint_id.to_string()
+            } else {
+                endpoint_name.to_string()
+            }
+        });
         let correlation_id = rand_hex(8);
 
         let hist = app
@@ -648,7 +659,11 @@ impl WebhookServer {
                 entry.body.clone()
             }
         });
-        let origin = if entry.source == "org" { "org" } else { "webhook" };
+        let origin = if entry.source == "org" {
+            "org"
+        } else {
+            "webhook"
+        };
         if !dispatch_webhook_work(
             hive,
             &task_id,
@@ -664,13 +679,7 @@ impl WebhookServer {
         if let Some(h) = &token_hash {
             self.held_remove(app, h);
         }
-        let next = hist.update(
-            entry_id,
-            Some("approved".into()),
-            Some(task_id),
-            None,
-            None,
-        );
+        let next = hist.update(entry_id, Some("approved".into()), Some(task_id), None, None);
         self.prune_held(app, &hist);
         let _ = app.emit("triggerHistory:updated", json!({}));
         next.and_then(|e| serde_json::to_value(e).ok())
@@ -741,7 +750,13 @@ pub fn dispatch_webhook_work(
     let body = format!(
         "{message}\n\n(Inbound via the generic {origin} API, tracked as kanban card {task_id}. When this work is finished, set that card's status to 'done' and fill its 'result' so the caller's status check reflects the outcome.)"
     );
-    let _ = hive.send_virtual("webhook", "god", "request", &format!("[{origin}] {title}"), &body);
+    let _ = hive.send_virtual(
+        "webhook",
+        "god",
+        "request",
+        &format!("[{origin}] {title}"),
+        &body,
+    );
     true
 }
 
@@ -826,7 +841,9 @@ pub fn poll_done_tasks(
     app: &tauri::AppHandle,
 ) {
     let Ok(doc) = hive.read_tasks() else { return };
-    let Some(tasks) = doc["tasks"].as_array() else { return };
+    let Some(tasks) = doc["tasks"].as_array() else {
+        return;
+    };
     let history = hist.list();
     let recorded: std::collections::HashSet<String> = history
         .iter()

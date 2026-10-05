@@ -32,7 +32,11 @@ pub struct RosterStore {
 
 impl RosterStore {
     pub fn new(home: PathBuf) -> Self {
-        Self { home, wrote: std::sync::Mutex::new(false), seq: std::sync::Mutex::new(0) }
+        Self {
+            home,
+            wrote: std::sync::Mutex::new(false),
+            seq: std::sync::Mutex::new(0),
+        }
     }
 
     fn roster_path(&self) -> PathBuf {
@@ -51,7 +55,12 @@ impl RosterStore {
     fn entry_count(v: &Value) -> usize {
         ["agents", "archived", "restorable"]
             .iter()
-            .map(|k| v.get(k).and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0))
+            .map(|k| {
+                v.get(k)
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0)
+            })
             .sum()
     }
 
@@ -76,7 +85,11 @@ impl RosterStore {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let _ = fs::copy(&p, self.backup_dir().join(format!("roster-{ts}-{reason}-{}.json", *seq)));
+        let _ = fs::copy(
+            &p,
+            self.backup_dir()
+                .join(format!("roster-{ts}-{reason}-{}.json", *seq)),
+        );
     }
 
     /// Write the roster, backing up the previous contents first.
@@ -92,7 +105,10 @@ impl RosterStore {
         let existing = self.read();
         let mut wrote = self.wrote.lock().unwrap();
         if !*wrote
-            && existing.as_ref().map(|e| Self::entry_count(e) > 0).unwrap_or(false)
+            && existing
+                .as_ref()
+                .map(|e| Self::entry_count(e) > 0)
+                .unwrap_or(false)
             && Self::entry_count(snap) == 0
         {
             // Back up anyway — what's on disk is what we're protecting.
@@ -110,8 +126,11 @@ impl RosterStore {
             "selectedId": snap.get("selectedId").filter(|s| s.is_string()).cloned().unwrap_or(serde_json::Value::Null),
         });
         let tmp = self.roster_path().with_extension("tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        fs::write(
+            &tmp,
+            serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         fs::rename(&tmp, self.roster_path()).map_err(|e| e.to_string())?;
         *wrote = true;
         Ok(())
@@ -144,7 +163,9 @@ mod tests {
     }
 
     fn snap(n: usize) -> Value {
-        let agents: Vec<Value> = (0..n).map(|i| serde_json::json!({"id": format!("a{i}")})).collect();
+        let agents: Vec<Value> = (0..n)
+            .map(|i| serde_json::json!({"id": format!("a{i}")}))
+            .collect();
         serde_json::json!({"agents": agents, "archived": [], "restorable": [], "queues": {}, "selectedId": null})
     }
 
@@ -155,7 +176,10 @@ mod tests {
         // A fresh store instance (fresh process): the on-disk roster has 2
         // entries and this run has written nothing — an empty write declines.
         let st2 = RosterStore::new(dir.clone());
-        assert!(st2.write(&snap(0)).unwrap_err().contains("empty-first-write"));
+        assert!(st2
+            .write(&snap(0))
+            .unwrap_err()
+            .contains("empty-first-write"));
         assert!(st2.read().unwrap()["agents"].as_array().unwrap().len() == 2);
         // A non-empty write lands and disarms the guard for later empties.
         st2.write(&snap(1)).unwrap();
@@ -170,11 +194,15 @@ mod tests {
         st.write(&snap(1)).unwrap();
         st.write(&snap(2)).unwrap();
         // First-ever write has nothing to back up; the second backs up write #1.
-        let backups = std::fs::read_dir(dir.join("roster-backups")).unwrap().count();
+        let backups = std::fs::read_dir(dir.join("roster-backups"))
+            .unwrap()
+            .count();
         assert!(backups >= 1, "prior file backed up");
         st.archive();
         assert!(!roster_path(&dir).exists());
-        let backups = std::fs::read_dir(dir.join("roster-backups")).unwrap().count();
+        let backups = std::fs::read_dir(dir.join("roster-backups"))
+            .unwrap()
+            .count();
         assert!(backups >= 2, "reset backup");
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -17,9 +17,24 @@ pub struct ModelPrice {
 }
 
 // Anthropic list prices, USD/M tokens. Approximate, fallback-only.
-const OPUS: ModelPrice = ModelPrice { input_per_m: 15.0, output_per_m: 75.0, cache_read_per_m: 1.5, cache_write_per_m: 18.75 };
-const SONNET: ModelPrice = ModelPrice { input_per_m: 3.0, output_per_m: 15.0, cache_read_per_m: 0.3, cache_write_per_m: 3.75 };
-const HAIKU: ModelPrice = ModelPrice { input_per_m: 0.8, output_per_m: 4.0, cache_read_per_m: 0.08, cache_write_per_m: 1.0 };
+const OPUS: ModelPrice = ModelPrice {
+    input_per_m: 15.0,
+    output_per_m: 75.0,
+    cache_read_per_m: 1.5,
+    cache_write_per_m: 18.75,
+};
+const SONNET: ModelPrice = ModelPrice {
+    input_per_m: 3.0,
+    output_per_m: 15.0,
+    cache_read_per_m: 0.3,
+    cache_write_per_m: 3.75,
+};
+const HAIKU: ModelPrice = ModelPrice {
+    input_per_m: 0.8,
+    output_per_m: 4.0,
+    cache_read_per_m: 0.08,
+    cache_write_per_m: 1.0,
+};
 const DEFAULT_PRICE: ModelPrice = SONNET;
 
 /// Strip Claude Code's variant suffix so `claude-opus-4-8[1m]` and the base
@@ -50,7 +65,13 @@ pub fn price_for(model: &str) -> ModelPrice {
 /// (used by the transcript reconciler; callers priced per-token-split
 /// inline use price_for directly).
 #[allow(dead_code)]
-pub fn estimate_cost_usd(model: &str, input: f64, output: f64, cache_read: f64, cache_write: f64) -> f64 {
+pub fn estimate_cost_usd(
+    model: &str,
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+) -> f64 {
     let p = price_for(model);
     (input / 1_000_000.0) * p.input_per_m
         + (output / 1_000_000.0) * p.output_per_m

@@ -87,7 +87,11 @@ pub struct WorkerWakeFacts {
 }
 
 fn live_ids(f: &WorkerWakeFacts) -> HashSet<String> {
-    f.inbox_ids.iter().filter(|s| !s.is_empty()).cloned().collect()
+    f.inbox_ids
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect()
 }
 
 fn is_stalled_worker(f: &WorkerWakeFacts, now: u64) -> bool {
@@ -124,7 +128,10 @@ impl WorkerWakeWatchdog {
         }
         self.hook_seen_at.insert(agent_id.to_string(), at);
         if is_turn_hook(event) {
-            let e = self.last_turn_hook_at.entry(agent_id.to_string()).or_insert(0);
+            let e = self
+                .last_turn_hook_at
+                .entry(agent_id.to_string())
+                .or_insert(0);
             if at > *e {
                 *e = at;
             }
@@ -201,7 +208,10 @@ impl WorkerWakeWatchdog {
         if now.saturating_sub(f.last_output_at) < WORKER_WAKE_IDLE_MS && !stalled {
             return Some("mid-turn");
         }
-        let spawned = *self.spawned_at.get(f.pty_id.as_deref().unwrap_or("")).unwrap_or(&0);
+        let spawned = *self
+            .spawned_at
+            .get(f.pty_id.as_deref().unwrap_or(""))
+            .unwrap_or(&0);
         if spawned > 0 && now.saturating_sub(spawned) < WORKER_WAKE_BOOT_GRACE_MS {
             return Some("boot-grace");
         }
@@ -239,7 +249,8 @@ impl WorkerWakeWatchdog {
                 continue;
             }
             self.last_nudge_at.insert(f.agent_id.clone(), now);
-            self.announced_inbox_ids.insert(f.agent_id.clone(), inbox_ids);
+            self.announced_inbox_ids
+                .insert(f.agent_id.clone(), inbox_ids);
             out.push(f.agent_id.clone());
         }
         out

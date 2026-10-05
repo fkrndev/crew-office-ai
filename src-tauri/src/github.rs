@@ -79,18 +79,27 @@ fn gh_get(path_and_query: &str) -> Result<Value, String> {
     let url = format!("{API_BASE}{path_and_query}");
     let mut req = agent()
         .get(url.as_str())
-        .header("user-agent", concat!("agent-office/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "user-agent",
+            concat!("agent-office/", env!("CARGO_PKG_VERSION")),
+        )
         .header("accept", "application/vnd.github+json");
     if let Some(t) = token() {
         req = req.header("authorization", &format!("Bearer {t}"));
     }
-    let mut resp = req.call().map_err(|e| format!("github request failed: {e}"))?;
+    let mut resp = req
+        .call()
+        .map_err(|e| format!("github request failed: {e}"))?;
     let status = resp.status().as_u16();
     let text = resp.body_mut().read_to_string().unwrap_or_default();
     if !(200..300).contains(&status) {
         let msg = serde_json::from_str::<Value>(&text)
             .ok()
-            .and_then(|j| j.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .and_then(|j| {
+                j.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| text.chars().take(200).collect());
         return Err(format!("GitHub {status}: {msg}"));
     }
@@ -100,7 +109,8 @@ fn gh_get(path_and_query: &str) -> Result<Value, String> {
 /// GET /repos/{owner}/{repo}/actions/runs?per_page=10 — the 10 most recent
 /// workflow runs, normalized for the renderer.
 pub fn list_ci_runs(owner_repo: &str) -> Result<Vec<CiRun>, String> {
-    let repo = valid_repo(owner_repo).ok_or_else(|| format!("bad repo {owner_repo:?} (want owner/repo)"))?;
+    let repo = valid_repo(owner_repo)
+        .ok_or_else(|| format!("bad repo {owner_repo:?} (want owner/repo)"))?;
     let v = gh_get(&format!("/repos/{repo}/actions/runs?per_page=10"))?;
     let runs = v
         .get("workflow_runs")
@@ -111,8 +121,16 @@ pub fn list_ci_runs(owner_repo: &str) -> Result<Vec<CiRun>, String> {
         .iter()
         .map(|r| CiRun {
             id: r.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
-            name: r.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            status: r.get("status").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            name: r
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            status: r
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
             conclusion: r
                 .get("conclusion")
                 .and_then(|x| x.as_str())
@@ -140,7 +158,8 @@ pub fn list_ci_runs(owner_repo: &str) -> Result<Vec<CiRun>, String> {
 /// NOTE: the REST issues endpoint also lists PRs; they are filtered out so the
 /// result matches `gh issue list` semantics.
 pub fn list_issues(owner_repo: &str) -> Result<Vec<GhIssue>, String> {
-    let repo = valid_repo(owner_repo).ok_or_else(|| format!("bad repo {owner_repo:?} (want owner/repo)"))?;
+    let repo = valid_repo(owner_repo)
+        .ok_or_else(|| format!("bad repo {owner_repo:?} (want owner/repo)"))?;
     let v = gh_get(&format!("/repos/{repo}/issues?state=open&per_page=30"))?;
     let raw = v.as_array().cloned().unwrap_or_default();
     Ok(raw
@@ -148,8 +167,16 @@ pub fn list_issues(owner_repo: &str) -> Result<Vec<GhIssue>, String> {
         .filter(|i| i.get("pull_request").is_none())
         .map(|i| GhIssue {
             number: i.get("number").and_then(|x| x.as_u64()).unwrap_or(0),
-            title: i.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            body: i.get("body").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            title: i
+                .get("title")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            body: i
+                .get("body")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
             url: i
                 .get("html_url")
                 .and_then(|x| x.as_str())

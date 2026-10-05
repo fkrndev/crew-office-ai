@@ -54,10 +54,7 @@ pub fn integrations_upsert(app: AppHandle, record: Value) -> Result<Value, Strin
 /// `integrations:remove` — drops the record AND its stored secret.
 #[tauri::command(async)]
 pub fn integrations_remove(app: AppHandle, payload: Value) -> Result<Value, String> {
-    let id = payload
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if id.is_empty() {
         return Ok(json!({ "ok": false, "error": "id required" }));
     }
@@ -75,10 +72,7 @@ pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, 
     if id.is_empty() {
         return Ok(json!({ "ok": false, "error": "id required" }));
     }
-    let secret = payload
-        .get("secret")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let secret = payload.get("secret").and_then(|v| v.as_str()).unwrap_or("");
     if secret.is_empty() {
         return Ok(json!({ "ok": false, "error": "secret required" }));
     }
@@ -98,11 +92,12 @@ pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, 
 #[tauri::command(async)]
 pub fn integrations_test(app: AppHandle, payload: Value) -> Result<Value, String> {
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    let path = payload
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    Ok(integrations::test_integration(&harness_home(&app), id, path))
+    let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    Ok(integrations::test_integration(
+        &harness_home(&app),
+        id,
+        path,
+    ))
 }
 
 /// Start the loopback broker (idempotent). `preferred_port` 0/absent ⇒ OS pick.

@@ -129,7 +129,10 @@ pub fn install_pi_hooks(dir: &Path) -> Result<PathBuf> {
         }))?,
     )?;
     // Pi keeps model creds in ~/.pi/agent — carry them into the isolated dir.
-    let user_pi = dirs::home_dir().unwrap_or_default().join(".pi").join("agent");
+    let user_pi = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".pi")
+        .join("agent");
     for name in ["models.json", "models-store.json"] {
         let (src, dst) = (user_pi.join(name), home.join(name));
         if src.exists() && !dst.exists() {
@@ -145,7 +148,11 @@ pub fn install_pi_hooks(dir: &Path) -> Result<PathBuf> {
 /// different-wire provider would hit the wrong endpoint — left to its real
 /// upstream, mail still drains via the nudge path). CRUSH_GLOBAL_DATA isolates
 /// session state from ~/.config/crush.
-pub fn install_crush_config(dir: &Path, loopback_url: &str, api_openai: bool) -> Result<(PathBuf, PathBuf)> {
+pub fn install_crush_config(
+    dir: &Path,
+    loopback_url: &str,
+    api_openai: bool,
+) -> Result<(PathBuf, PathBuf)> {
     let config = dir.join("crush.json");
     let data = dir.join(".crush-data");
     fs::create_dir_all(&data)?;

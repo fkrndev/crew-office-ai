@@ -69,8 +69,8 @@ fn project_key(cwd: &str) -> String {
 /// spelling only — legacy fallback is not needed for hidden sessions, which
 /// always run against a modern Claude Code install).
 fn project_dir(cwd: &str) -> Option<PathBuf> {
-    let home = std::env::home_dir()
-        .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
+    let home =
+        std::env::home_dir().or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
     let dir = home.join(".claude").join("projects").join(project_key(cwd));
     dir.is_dir().then_some(dir)
 }
@@ -86,7 +86,9 @@ fn extract_last_assistant_text(cwd: &str, spawned_at: u64) -> Option<String> {
         if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(meta) = fs::metadata(&path) else { continue };
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
         let Ok(mtime) = meta.modified() else { continue };
         let mtime_ms = mtime
             .duration_since(std::time::UNIX_EPOCH)

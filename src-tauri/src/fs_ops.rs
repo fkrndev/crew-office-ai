@@ -14,7 +14,10 @@ use std::path::{Component, Path, PathBuf};
 pub enum FsRead {
     Text(String),
     /// image/* bytes, base64 — preview pane data.
-    Image { mime: String, base64: String },
+    Image {
+        mime: String,
+        base64: String,
+    },
     TooLarge(u64),
 }
 
@@ -132,7 +135,9 @@ fn canonicalize(real_root: &Path, abs: &Path) -> Option<PathBuf> {
 /// path — the only links left to catch are DANGLING ones (a write would
 /// follow the link and create the file at its external target).
 fn has_symlink_component(real_root: &Path, abs: &Path) -> bool {
-    let Ok(rel) = abs.strip_prefix(real_root) else { return true };
+    let Ok(rel) = abs.strip_prefix(real_root) else {
+        return true;
+    };
     let mut cur = real_root.to_path_buf();
     for part in rel.components() {
         cur.push(part.as_os_str());
@@ -254,7 +259,9 @@ mod tests {
     fn list_and_read() {
         let d = ws("lr");
         let entries = list_dir(&d, "").unwrap();
-        assert!(entries.iter().any(|e| e["name"] == "sub" && e["kind"] == "dir"));
+        assert!(entries
+            .iter()
+            .any(|e| e["name"] == "sub" && e["kind"] == "dir"));
         match read_file(&d, "file.txt") {
             Some(FsRead::Text(t)) => assert_eq!(t, "hello"),
             _ => panic!("expected text"),

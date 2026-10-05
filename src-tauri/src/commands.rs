@@ -168,11 +168,12 @@ impl AppState {
 }
 
 fn stage_hook_bin(harness_home: &PathBuf) -> Option<PathBuf> {
-    let name = if cfg!(windows) { "hive-hook.exe" } else { "hive-hook" };
-    let src = std::env::current_exe()
-        .ok()?
-        .parent()?
-        .join(name);
+    let name = if cfg!(windows) {
+        "hive-hook.exe"
+    } else {
+        "hive-hook"
+    };
+    let src = std::env::current_exe().ok()?.parent()?.join(name);
     if !src.is_file() {
         return None;
     }
@@ -233,9 +234,8 @@ pub struct Spawned {
 /// Upstream `pendingInstallRelaunch` — install PTYs armed to re-run their
 /// agent spawn on a clean exit (the retry carries `no_auto_install` so the
 /// ladder can never loop).
-pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<
-    Mutex<HashMap<String, SpawnArgs>>,
-> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<Mutex<HashMap<String, SpawnArgs>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[tauri::command(async)]
 pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
@@ -301,9 +301,20 @@ pub(crate) fn spawn_inner(
     if args.isolate && crate::git_ops::is_repo(std::path::Path::new(&args.cwd)) {
         let seg: String = id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
-        let wt_root = st.hive.root.parent().unwrap_or(&st.hive.root).join("worktrees");
+        let wt_root = st
+            .hive
+            .root
+            .parent()
+            .unwrap_or(&st.hive.root)
+            .join("worktrees");
         let wt_path = wt_root.join(&seg);
         // Path-safety: the resolved worktree path must stay under wt_root.
         if wt_path.starts_with(&wt_root) {
@@ -319,10 +330,10 @@ pub(crate) fn spawn_inner(
             ) {
                 Ok(_) => {
                     effective_cwd = wt_path.display().to_string();
-                    st.worktree_paths.lock().unwrap().insert(
-                        id.clone(),
-                        (wt_path.clone(), PathBuf::from(&args.cwd)),
-                    );
+                    st.worktree_paths
+                        .lock()
+                        .unwrap()
+                        .insert(id.clone(), (wt_path.clone(), PathBuf::from(&args.cwd)));
                     if let Err(e) = crate::git_ops::link_worktree_deps(
                         std::path::Path::new(&args.cwd),
                         &wt_path,
@@ -497,10 +508,7 @@ pub(crate) fn spawn_inner(
             ));
             match bridge.clone().start() {
                 Ok(port) => {
-                    st.proxy_bridges
-                        .lock()
-                        .unwrap()
-                        .insert(id.clone(), bridge);
+                    st.proxy_bridges.lock().unwrap().insert(id.clone(), bridge);
                     let loopback = format!("http://127.0.0.1:{port}");
                     if args.provider == "qwen" {
                         agent_env.insert("OPENAI_BASE_URL".into(), loopback);
@@ -515,7 +523,9 @@ pub(crate) fn spawn_inner(
                     // Upstream proxy-bind failure (hive.ts): log proxy-degraded
                     // + emit hive:degraded — the agent still spawns, just
                     // without hive events.
-                    let msg = format!("proxy bridge failed to bind — agent spawns without hive events: {e}");
+                    let msg = format!(
+                        "proxy bridge failed to bind — agent spawns without hive events: {e}"
+                    );
                     let _ = st.hive.log(&serde_json::json!({
                         "kind": "proxy-degraded", "agentId": id,
                         "name": args.name, "provider": args.provider,
@@ -683,7 +693,16 @@ pub(crate) fn spawn_inner(
                 av.push("--resume".into());
                 av.push(sid.clone());
             }
-            pty::spawn_argv(&id, &prog, &av, &cwd, &env, args.cols, args.rows, app.clone())
+            pty::spawn_argv(
+                &id,
+                &prog,
+                &av,
+                &cwd,
+                &env,
+                args.cols,
+                args.rows,
+                app.clone(),
+            )
         }
         Some(pty::Resolved::Script(prog)) => {
             // resolveWindowsShimSpawn (pty.ts): decode the .cmd shim to its
@@ -696,7 +715,12 @@ pub(crate) fn spawn_inner(
                 let mut av: Vec<String> = script
                     .map(|s| vec![s.display().to_string()])
                     .unwrap_or_default();
-                av.extend(crate::misc::tokenize_command(&command_line).into_iter().skip(1).map(String::from));
+                av.extend(
+                    crate::misc::tokenize_command(&command_line)
+                        .into_iter()
+                        .skip(1)
+                        .map(String::from),
+                );
                 if is_claude {
                     av.push("--append-system-prompt".into());
                     av.push(injected.clone());
@@ -705,30 +729,46 @@ pub(crate) fn spawn_inner(
                     av.push("--resume".into());
                     av.push(sid.clone());
                 }
-                pty::spawn_argv(&id, &exe, &av, &cwd, &env, args.cols, args.rows, app.clone())
+                pty::spawn_argv(
+                    &id,
+                    &exe,
+                    &av,
+                    &cwd,
+                    &env,
+                    args.cols,
+                    args.rows,
+                    app.clone(),
+                )
             } else {
-            // Fallback when the shim can't be decoded: route through cmd.exe
-            // as RAW tokens — portable-pty CRT-quotes each arg, which is the
-            // same line shape upstream's buildCmdCommandLine emits verbatim.
-            // (cmd_sanitize still applies: cmd cannot carry a literal newline
-            // at all — upstream truncates at it; collapsing is strictly less
-            // destructive.)
-            let mut parts = vec![prog.display().to_string()];
-            parts.extend(crate::misc::tokenize_command(&command_line).into_iter().skip(1).map(String::from));
-            if is_claude {
-                parts.push("--append-system-prompt".into());
-                parts.push(pty::cmd_sanitize(&injected));
-            }
-            if let Some(sid) = &resume_session {
-                parts.push("--resume".into());
-                parts.push(sid.clone());
-            }
-            pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
+                // Fallback when the shim can't be decoded: route through cmd.exe
+                // as RAW tokens — portable-pty CRT-quotes each arg, which is the
+                // same line shape upstream's buildCmdCommandLine emits verbatim.
+                // (cmd_sanitize still applies: cmd cannot carry a literal newline
+                // at all — upstream truncates at it; collapsing is strictly less
+                // destructive.)
+                let mut parts = vec![prog.display().to_string()];
+                parts.extend(
+                    crate::misc::tokenize_command(&command_line)
+                        .into_iter()
+                        .skip(1)
+                        .map(String::from),
+                );
+                if is_claude {
+                    parts.push("--append-system-prompt".into());
+                    parts.push(pty::cmd_sanitize(&injected));
+                }
+                if let Some(sid) = &resume_session {
+                    parts.push("--resume".into());
+                    parts.push(sid.clone());
+                }
+                pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
             }
         }
         None => {
-            let mut parts: Vec<String> =
-                crate::misc::tokenize_command(&command_line).into_iter().map(String::from).collect();
+            let mut parts: Vec<String> = crate::misc::tokenize_command(&command_line)
+                .into_iter()
+                .map(String::from)
+                .collect();
             if is_claude {
                 parts.push("--append-system-prompt".into());
                 parts.push(pty::cmd_sanitize(&injected));
@@ -759,10 +799,15 @@ pub(crate) fn spawn_inner(
         let id2 = id.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let Some(st) = app2.try_state::<AppState>() else { return };
+            let Some(st) = app2.try_state::<AppState>() else {
+                return;
+            };
             let mut ptys = st.ptys.lock().unwrap();
             if let Some(h) = ptys.get_mut(&id2) {
-                let _ = h.write(&format!("{}\r", text.split_whitespace().collect::<Vec<_>>().join(" ")));
+                let _ = h.write(&format!(
+                    "{}\r",
+                    text.split_whitespace().collect::<Vec<_>>().join(" ")
+                ));
             }
         });
     }
@@ -839,11 +884,7 @@ pub fn hive_registry(app: AppHandle) -> Result<serde_json::Value, String> {
     let (god_id, agents) = state(&app).hive.read_registry_doc();
     let map: serde_json::Map<String, serde_json::Value> = agents
         .into_iter()
-        .filter_map(|a| {
-            serde_json::to_value(&a)
-                .ok()
-                .map(|v| (a.id.clone(), v))
-        })
+        .filter_map(|a| serde_json::to_value(&a).ok().map(|v| (a.id.clone(), v)))
         .collect();
     Ok(serde_json::json!({ "godId": god_id, "agents": map }))
 }
@@ -859,7 +900,10 @@ pub fn hive_send(
     from: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let sender = from.unwrap_or_else(|| "system".into());
-    let msg = state(&app).hive.send_partial(&partial, &sender).map_err(err_str)?;
+    let msg = state(&app)
+        .hive
+        .send_partial(&partial, &sender)
+        .map_err(err_str)?;
     Ok(serde_json::json!({ "ok": true, "message": msg }))
 }
 
@@ -935,7 +979,11 @@ pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
 // ─── operator control (control.ts IPC equivalents) ──────────────────────────
 
 #[tauri::command(async)]
-pub fn control_pause(app: AppHandle, agent_id: String, on: bool) -> Result<ControlSnapshot, String> {
+pub fn control_pause(
+    app: AppHandle,
+    agent_id: String,
+    on: bool,
+) -> Result<ControlSnapshot, String> {
     let st = state(&app);
     let mut c = st.control.lock().unwrap();
     c.pause(&agent_id, on);
@@ -1208,7 +1256,8 @@ pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| e.to_string())?).unwrap_or_default();
+        serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| e.to_string())?)
+            .unwrap_or_default();
     let _ = std::fs::remove_file(&p);
     Ok(v.get("src").and_then(|s| s.as_str()).map(String::from))
 }
@@ -1223,7 +1272,10 @@ pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
 /// nested object REPLACES its subtree wholesale, matching upstream's spread),
 /// onto the RAW file so unknown keys survive, then re-parse the typed Config.
 /// Returns the same merged view get_config produces.
-pub fn config_update(app: AppHandle, patch: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn config_update(
+    app: AppHandle,
+    patch: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let st = state(&app);
     let mut raw = st.config_store.raw_value();
     if let (Some(dst), Some(src)) = (raw.as_object_mut(), patch.as_object()) {
@@ -1258,7 +1310,9 @@ pub fn webhook_set_config(
         let st = state(&app);
         let mut cfg = st.config.lock().unwrap();
         let prior = cfg.webhooks.iter().find(|e| e.id == "legacy").cloned();
-        let next_secret = secret.clone().or_else(|| prior.as_ref().map(|p| p.secret.clone()));
+        let next_secret = secret
+            .clone()
+            .or_else(|| prior.as_ref().map(|p| p.secret.clone()));
         if let Some(sec) = next_secret.filter(|s| !s.is_empty()) {
             let row = crate::webhook::WebhookEndpoint {
                 id: "legacy".into(),
@@ -1267,10 +1321,7 @@ pub fn webhook_set_config(
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| "Default webhook".into()),
                 secret: sec,
-                schema: prior
-                    .as_ref()
-                    .map(|p| p.schema.clone())
-                    .unwrap_or_default(),
+                schema: prior.as_ref().map(|p| p.schema.clone()).unwrap_or_default(),
                 mode: prior
                     .as_ref()
                     .map(|p| p.mode.clone())
@@ -1328,7 +1379,9 @@ pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
     let raw = crate::hire::read_manifest_file(path)?;
     let (manifest, errors, warns) = crate::hire::validate_hire_manifest(&raw);
     if let Some(m) = manifest {
-        Ok(serde_json::json!({ "ok": true, "manifest": m, "warnings": warns, "path": path.display().to_string() }))
+        Ok(
+            serde_json::json!({ "ok": true, "manifest": m, "warnings": warns, "path": path.display().to_string() }),
+        )
     } else {
         Ok(serde_json::json!({ "ok": false, "errors": errors }))
     }
@@ -1408,7 +1461,10 @@ pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
         .map(|s| s.path)
         .ok_or_else(|| "unknown skill".to_string())?;
     #[cfg(windows)]
-    std::process::Command::new("explorer").arg(&dir).spawn().ok();
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .ok();
     #[cfg(not(windows))]
     std::process::Command::new("open").arg(&dir).spawn().ok();
     Ok(true)
@@ -1419,9 +1475,15 @@ pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
 /// Manually condense one agent's memory.md — skips the trigger (on-demand);
 /// the full backup→summarize→rebuild→verify→swap pipeline still runs.
 #[tauri::command(async)]
-pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+pub fn reflect_now(
+    app: AppHandle,
+    agent_id: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
     let st = state(&app);
-    let settings = crate::reflect::ReflectSettings { enabled: true, ..Default::default() };
+    let settings = crate::reflect::ReflectSettings {
+        enabled: true,
+        ..Default::default()
+    };
     let hive_root = st.hive.root.clone();
     let path = crate::pty::user_shell_path();
     let claude = match pty::resolve_program("claude", &path) {
@@ -1429,7 +1491,9 @@ pub fn reflect_now(app: AppHandle, agent_id: Option<String>) -> Result<Vec<serde
         None => "claude".to_string(),
     };
     if let Some(id) = agent_id {
-        return Ok(vec![crate::reflect::condense_one(&hive_root, &id, &claude, &settings, true)]);
+        return Ok(vec![crate::reflect::condense_one(
+            &hive_root, &id, &claude, &settings, true,
+        )]);
     }
     Ok(crate::reflect::reflect_scan(&hive_root, &claude, &settings))
 }
@@ -1459,7 +1523,11 @@ pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, St
 /// List a directory inside an agent's workspace — `root` is the agent's cwd
 /// (or any path the caller confines); `rel` must stay inside it.
 #[tauri::command(async)]
-pub fn fs_list(app: AppHandle, root: String, rel: String) -> Result<Vec<serde_json::Value>, String> {
+pub fn fs_list(
+    app: AppHandle,
+    root: String,
+    rel: String,
+) -> Result<Vec<serde_json::Value>, String> {
     let _ = app;
     crate::fs_ops::list_dir(std::path::Path::new(&root), &rel)
         .ok_or_else(|| "path escapes the workspace".to_string())
@@ -1498,19 +1566,44 @@ pub fn kv_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<b
 
 /// Record one user-submitted prompt (db.ts addHistory).
 #[tauri::command(async)]
-pub fn command_history_add(app: AppHandle, agent_id: String, cwd: Option<String>, text: String) -> Result<bool, String> {
-    state(&app).persist.lock().unwrap().add_history(&agent_id, cwd.as_deref(), &text);
+pub fn command_history_add(
+    app: AppHandle,
+    agent_id: String,
+    cwd: Option<String>,
+    text: String,
+) -> Result<bool, String> {
+    state(&app)
+        .persist
+        .lock()
+        .unwrap()
+        .add_history(&agent_id, cwd.as_deref(), &text);
     Ok(true)
 }
 
 #[tauri::command(async)]
-pub fn command_history_list(app: AppHandle, agent_id: Option<String>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
-    Ok(state(&app).persist.lock().unwrap().list_history(agent_id.as_deref(), limit.unwrap_or(100)))
+pub fn command_history_list(
+    app: AppHandle,
+    agent_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state(&app)
+        .persist
+        .lock()
+        .unwrap()
+        .list_history(agent_id.as_deref(), limit.unwrap_or(100)))
 }
 
 #[tauri::command(async)]
-pub fn command_history_search(app: AppHandle, query: String, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
-    Ok(state(&app).persist.lock().unwrap().search_history(&query, limit.unwrap_or(50)))
+pub fn command_history_search(
+    app: AppHandle,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state(&app)
+        .persist
+        .lock()
+        .unwrap()
+        .search_history(&query, limit.unwrap_or(50)))
 }
 
 // ─── hire manifests (munderdifflin://hire deep link + file import) ──────────
@@ -1665,16 +1758,14 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
     // ever seeing the bot token (upstream SlackReplyServer). Per-session
     // token + the discovery file under the harness home.
     let app4 = app.clone();
-    match st.slack_reply.start(
-        0,
-        move || secret_get(&app4, "SLACK_BOT_TOKEN"),
-        {
+    match st
+        .slack_reply
+        .start(0, move || secret_get(&app4, "SLACK_BOT_TOKEN"), {
             let st2 = std::sync::Arc::clone(&st.directly_replied);
             move |thread_ts| {
                 st2.lock().unwrap().insert(thread_ts);
             }
-        },
-    ) {
+        }) {
         Ok(reply_port) => {
             let cfg_path = crate::misc::harness_home(&app).join("slack-reply.json");
             let _ = std::fs::write(
@@ -1724,7 +1815,12 @@ pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
 /// token (it comes from the credential store at send time). The
 /// channel+thread are explicit (CLAUSE-1 — no channel-root posts).
 #[tauri::command(async)]
-pub fn slack_reply(app: AppHandle, channel: String, thread_ts: String, text: String) -> Result<bool, String> {
+pub fn slack_reply(
+    app: AppHandle,
+    channel: String,
+    thread_ts: String,
+    text: String,
+) -> Result<bool, String> {
     let token = secret_get(&app, "SLACK_BOT_TOKEN")
         .ok_or_else(|| "SLACK_BOT_TOKEN not in credential store".to_string())?;
     crate::slack::post_slack_reply(&token, &channel, &thread_ts, &text)?;
@@ -1740,9 +1836,8 @@ pub fn slack_reply(app: AppHandle, channel: String, thread_ts: String, text: Str
 /// Ids already 'done' when the observer started — baselined (never notified)
 /// so a summary only fires on a live …→done transition (upstream
 /// slackDoneBaseline; re-seeded on every slack_start).
-static SLACK_DONE_BASELINE: std::sync::OnceLock<
-    Mutex<Option<std::collections::HashSet<String>>>,
-> = std::sync::OnceLock::new();
+static SLACK_DONE_BASELINE: std::sync::OnceLock<Mutex<Option<std::collections::HashSet<String>>>> =
+    std::sync::OnceLock::new();
 
 /// Reset the done-observer's baseline — startSlackDoneObserver's
 /// `slackDoneBaseline = null` (re-seeds on the poller's next tick).
@@ -1757,8 +1852,12 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
     let Some(token) = secret_get(app, "SLACK_BOT_TOKEN") else {
         return; // can't post without the token — nothing to do
     };
-    let Ok(doc) = st.hive.read_tasks() else { return };
-    let Some(tasks) = doc["tasks"].as_array() else { return };
+    let Ok(doc) = st.hive.read_tasks() else {
+        return;
+    };
+    let Some(tasks) = doc["tasks"].as_array() else {
+        return;
+    };
 
     // Exactly-once across re-reads AND restarts — ids only, persisted under
     // the harness home (out of the repo, out of MemPalace).
@@ -1790,7 +1889,10 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
 
     let persist = |set: &std::collections::HashSet<String>| {
         let v: Vec<&String> = set.iter().collect();
-        let _ = std::fs::write(&notified_path, serde_json::to_string(&v).unwrap_or_default());
+        let _ = std::fs::write(
+            &notified_path,
+            serde_json::to_string(&v).unwrap_or_default(),
+        );
     };
     for t in tasks {
         if t["status"].as_str() != Some("done") {
@@ -1922,7 +2024,9 @@ pub fn roster_read(app: AppHandle) -> Result<Option<serde_json::Value>, String> 
 /// it before its first sendSync-equivalent call.
 #[tauri::command(async)]
 pub fn sync_port(app: AppHandle) -> Result<u16, String> {
-    Ok(state(&app).sync_port.load(std::sync::atomic::Ordering::Relaxed))
+    Ok(state(&app)
+        .sync_port
+        .load(std::sync::atomic::Ordering::Relaxed))
 }
 
 #[tauri::command(async)]
@@ -1970,7 +2074,11 @@ pub fn task_update(
 /// the card, and mails god the answer — the two-channel contract upstream
 /// spells out in the orchestrator prompt.
 #[tauri::command(async)]
-pub fn task_answer(app: AppHandle, id: String, answer: String) -> Result<serde_json::Value, String> {
+pub fn task_answer(
+    app: AppHandle,
+    id: String,
+    answer: String,
+) -> Result<serde_json::Value, String> {
     state(&app).hive.task_answer(&id, &answer).map_err(err_str)
 }
 
@@ -1986,7 +2094,10 @@ pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>,
 }
 
 #[tauri::command(async)]
-pub fn skills_catalog(app: AppHandle, force: Option<bool>) -> Result<crate::skills::CatalogResult, String> {
+pub fn skills_catalog(
+    app: AppHandle,
+    force: Option<bool>,
+) -> Result<crate::skills::CatalogResult, String> {
     let cache = state(&app).hive.root.join("skills-catalog.json");
     Ok(crate::skills::load_catalog(&cache, force.unwrap_or(false)))
 }
@@ -2005,7 +2116,9 @@ pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Result<bool, String>
 // ─── trigger ledger (inbound webhook history + verdicts) ────────────────────
 
 #[tauri::command(async)]
-pub fn triggers_list(app: AppHandle) -> Result<Vec<crate::trigger_history::TriggerHistoryEntry>, String> {
+pub fn triggers_list(
+    app: AppHandle,
+) -> Result<Vec<crate::trigger_history::TriggerHistoryEntry>, String> {
     Ok(state(&app).trigger_history.list())
 }
 

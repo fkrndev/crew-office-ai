@@ -175,13 +175,18 @@ impl ProxyBridge {
     fn handle(&self, mut req: tiny_http::Request) {
         self.cancel_stop();
         if self.upstream.is_empty() {
-            let _ = req.respond(tiny_http::Response::from_string("proxy: no upstream").with_status_code(502));
+            let _ = req.respond(
+                tiny_http::Response::from_string("proxy: no upstream").with_status_code(502),
+            );
             return;
         }
         let target = format!("{}{}", self.upstream, req.url());
         let mut body = Vec::new();
-        if std::io::Read::read_to_end(&mut std::io::Read::take(req.as_reader(), BODY_CAP as u64 + 1), &mut body)
-            .is_err()
+        if std::io::Read::read_to_end(
+            &mut std::io::Read::take(req.as_reader(), BODY_CAP as u64 + 1),
+            &mut body,
+        )
+        .is_err()
             || body.len() > BODY_CAP
         {
             let _ = req.respond(tiny_http::Response::empty(413));
@@ -196,8 +201,10 @@ impl ProxyBridge {
             .uri(&target);
         for h in req.headers() {
             let name = h.field.as_str().as_str();
-            if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("accept-encoding")
-                || name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("connection")
+            if name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("accept-encoding")
+                || name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("connection")
             {
                 continue;
             }
@@ -277,7 +284,9 @@ impl ProxyBridge {
         let mut objs: Vec<Value> = Vec::new();
         if is_sse {
             for ln in body.lines() {
-                let Some(idx) = ln.find("data:") else { continue };
+                let Some(idx) = ln.find("data:") else {
+                    continue;
+                };
                 let data = ln[idx + 5..].trim();
                 if data.is_empty() || data == "[DONE]" {
                     continue;
@@ -310,33 +319,60 @@ impl ProxyBridge {
                     match o.get("type").and_then(|v| v.as_str()) {
                         Some("message_start") => {
                             let u = o.pointer("/message/usage");
-                            input += u.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
-                            cache_read += u.and_then(|u| u.get("cache_read_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
-                            cache_creation += u.and_then(|u| u.get("cache_creation_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+                            input += u
+                                .and_then(|u| u.get("input_tokens"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            cache_read += u
+                                .and_then(|u| u.get("cache_read_input_tokens"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            cache_creation += u
+                                .and_then(|u| u.get("cache_creation_input_tokens"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                             if let Some(m) = o.pointer("/message/model").and_then(|v| v.as_str()) {
                                 model = m.to_string();
                             }
                             saw_usage = true;
                         }
                         Some("message_delta") => {
-                            output += o.pointer("/usage/output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            output += o
+                                .pointer("/usage/output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                             saw_usage = true;
                         }
                         Some("content_block_start") => {
                             let cb = o.get("content_block");
-                            if cb.and_then(|c| c.get("type")).and_then(|v| v.as_str()) == Some("tool_use") {
+                            if cb.and_then(|c| c.get("type")).and_then(|v| v.as_str())
+                                == Some("tool_use")
+                            {
                                 tool_calls.push((
-                                    cb.and_then(|c| c.get("name")).and_then(|v| v.as_str()).unwrap_or("tool").into(),
-                                    cb.and_then(|c| c.get("input")).cloned().unwrap_or(json!({})),
+                                    cb.and_then(|c| c.get("name"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .into(),
+                                    cb.and_then(|c| c.get("input"))
+                                        .cloned()
+                                        .unwrap_or(json!({})),
                                 ));
                             }
                         }
                         _ => {
                             if let Some(u) = o.get("usage").filter(|_| o.get("type").is_none()) {
-                                input += u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                output += u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                cache_read += u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                cache_creation += u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                input +=
+                                    u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                output +=
+                                    u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                cache_read += u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                cache_creation += u
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
                                 saw_usage = true;
                             }
                         }
@@ -345,7 +381,10 @@ impl ProxyBridge {
                         for blk in content {
                             if blk.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
                                 tool_calls.push((
-                                    blk.get("name").and_then(|v| v.as_str()).unwrap_or("tool").into(),
+                                    blk.get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .into(),
                                     blk.get("input").cloned().unwrap_or(json!({})),
                                 ));
                             }
@@ -355,14 +394,22 @@ impl ProxyBridge {
                 ProxyApi::OpenAi => {
                     if let Some(u) = o.get("usage") {
                         input += u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        output += u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        output += u
+                            .get("completion_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         cache_read += u
                             .pointer("/prompt_tokens_details/cached_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
                         saw_usage = true;
                     }
-                    for ch in o.get("choices").and_then(|v| v.as_array()).into_iter().flatten() {
+                    for ch in o
+                        .get("choices")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
                         for tc in ch
                             .pointer("/message/tool_calls")
                             .and_then(|v| v.as_array())
@@ -371,7 +418,10 @@ impl ProxyBridge {
                         {
                             if let Some(f) = tc.get("function") {
                                 tool_calls.push((
-                                    f.get("name").and_then(|v| v.as_str()).unwrap_or("tool").into(),
+                                    f.get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .into(),
                                     safe_args(f.get("arguments")),
                                 ));
                             }
@@ -464,9 +514,8 @@ fn safe_args(v: Option<&Value>) -> Value {
 }
 
 fn safe_args_str(s: &str) -> Value {
-    serde_json::from_str(s).unwrap_or_else(|_| {
-        json!({ "_raw": s.chars().take(500).collect::<String>() })
-    })
+    serde_json::from_str(s)
+        .unwrap_or_else(|_| json!({ "_raw": s.chars().take(500).collect::<String>() }))
 }
 
 #[cfg(test)]

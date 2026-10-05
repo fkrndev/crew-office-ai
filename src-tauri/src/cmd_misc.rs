@@ -57,7 +57,9 @@ pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
 /// app:copyToClipboard.
 #[tauri::command(async)]
 pub fn app_clipboard_write(app: AppHandle, text: String) -> Result<bool, String> {
-    app.clipboard().write_text(text).map_err(|e| e.to_string())?;
+    app.clipboard()
+        .write_text(text)
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -82,7 +84,9 @@ pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, Stri
         .decode(s.trim())
         .map_err(|e| format!("base64: {e}"))?;
     let img = tauri::image::Image::from_bytes(&bytes).map_err(|e| format!("decode image: {e}"))?;
-    app.clipboard().write_image(&img).map_err(|e| e.to_string())?;
+    app.clipboard()
+        .write_image(&img)
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -139,7 +143,12 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
             Err(e) => errors.push(format!("{}: {e}", hive_dir.display())),
         }
     }
-    for name in ["roster.json", "harness.db", "harness.db-wal", "harness.db-shm"] {
+    for name in [
+        "roster.json",
+        "harness.db",
+        "harness.db-wal",
+        "harness.db-shm",
+    ] {
         let p = home.join(name);
         if p.exists() {
             match std::fs::remove_file(&p) {
@@ -428,7 +437,9 @@ pub fn dialog_attach_files(app: AppHandle) -> Result<Value, String> {
         .set_title("Attach images or files")
         .add_filter(
             "Images",
-            &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "tiff", "avif"],
+            &[
+                "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "tiff", "avif",
+            ],
         )
         .add_filter("All Files", &["*"])
         .blocking_pick_files()
@@ -495,10 +506,17 @@ pub fn roster_read_sync(app: AppHandle) -> Result<Option<Value>, String> {
 /// never crosses back.
 fn provider_key_name(provider: &str) -> Result<String, String> {
     let p = provider.trim();
-    if p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if p.is_empty()
+        || !p
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err("invalid provider".into());
     }
-    Ok(format!("PROVIDER_KEY_{}", p.to_uppercase().replace('-', "_")))
+    Ok(format!(
+        "PROVIDER_KEY_{}",
+        p.to_uppercase().replace('-', "_")
+    ))
 }
 
 #[tauri::command(async)]
@@ -570,9 +588,7 @@ static WEBHOOK_TUNNEL: std::sync::Mutex<Option<(String, std::process::Child)>> =
 #[tauri::command(async)]
 pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String> {
     if WEBHOOK_LATCHED.load(Ordering::SeqCst) {
-        return Err(
-            "webhook server was stopped this session; restart the app to rebind".into(),
-        );
+        return Err("webhook server was stopped this session; restart the app to rebind".into());
     }
     let st = state(&app);
     let (eps, cfg_port) = {
@@ -607,7 +623,11 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
             Err(e) => log::warn!("[webhook] tunnel unavailable: {e}"),
         }
     }
-    let tunnel_url = WEBHOOK_TUNNEL.lock().unwrap().as_ref().map(|(u, _)| u.clone());
+    let tunnel_url = WEBHOOK_TUNNEL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(u, _)| u.clone());
     Ok(json!({ "running": true, "port": port, "url": tunnel_url }))
 }
 
@@ -813,9 +833,7 @@ pub fn config_change_home(app: AppHandle, new_home: String) -> Result<Value, Str
         return Err("That is already the current home folder.".into());
     }
     if canon_new.starts_with(&canon_cur) || canon_cur.starts_with(&canon_new) {
-        return Err(
-            "Pick a folder that is not inside (or a parent of) the current home.".into(),
-        );
+        return Err("Pick a folder that is not inside (or a parent of) the current home.".into());
     }
     let st = state(&app);
     st.persist
@@ -957,12 +975,7 @@ fn sanitize_context_rule(patch: &Value, current: &Value) -> Value {
             .and_then(|v| v.as_f64())
             .filter(|n| n.is_finite())
             .map(|n| (n.round() as i64).clamp(min as i64, max as i64) as u64)
-            .unwrap_or_else(|| {
-                current
-                    .get(key)
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(min)
-            })
+            .unwrap_or_else(|| current.get(key).and_then(|v| v.as_u64()).unwrap_or(min))
     };
     json!({
         "enabled": patch
@@ -1016,15 +1029,13 @@ pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String>
         "compact": sanitize_context_rule(&compact_patch, &current["compact"]),
         "clear": sanitize_context_rule(&clear_patch, &current["clear"]),
     });
-    st.persist
-        .lock()
-        .unwrap()
-        .set_kv("triggers_context", &next);
+    st.persist.lock().unwrap().set_kv("triggers_context", &next);
     {
         let mut cfg = st.config.lock().unwrap();
         // Mirror BOTH halves into typed config — the struct now carries the
         // upstream {compact,clear} shape so the sanitized blob parses 1:1.
-        if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["compact"].clone()) {
+        if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["compact"].clone())
+        {
             cfg.context_trigger.compact = c;
         }
         if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["clear"].clone()) {
@@ -1075,9 +1086,6 @@ pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
             .map(String::from)
             .unwrap_or_else(|| current["mode"].as_str().unwrap_or("strict").to_string()),
     });
-    st.persist
-        .lock()
-        .unwrap()
-        .set_kv("org_trigger", &next);
+    st.persist.lock().unwrap().set_kv("org_trigger", &next);
     Ok(next)
 }

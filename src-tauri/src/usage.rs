@@ -41,8 +41,8 @@ fn project_key(cwd: &str) -> String {
 }
 
 fn project_dir(cwd: &str) -> Option<PathBuf> {
-    let home = std::env::home_dir()
-        .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
+    let home =
+        std::env::home_dir().or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
     let dir = home.join(".claude").join("projects").join(project_key(cwd));
     dir.is_dir().then_some(dir)
 }
@@ -160,9 +160,7 @@ impl UsageReader {
             let len = size.saturating_sub(entry.offset) as usize;
             if len > 0 {
                 let mut buf = vec![0u8; len];
-                if f.seek(SeekFrom::Start(entry.offset)).is_ok()
-                    && f.read_exact(&mut buf).is_ok()
-                {
+                if f.seek(SeekFrom::Start(entry.offset)).is_ok() && f.read_exact(&mut buf).is_ok() {
                     // Consume only up to the last complete line; a torn tail
                     // is re-read once the writer finishes it.
                     let text = String::from_utf8_lossy(&buf);
@@ -177,7 +175,11 @@ impl UsageReader {
 
         if cache.len() > CACHE_MAX {
             // Drop the oldest half — usageCache eviction parity.
-            let keys: Vec<PathBuf> = cache.keys().take(cache.len() - CACHE_MAX / 2).cloned().collect();
+            let keys: Vec<PathBuf> = cache
+                .keys()
+                .take(cache.len() - CACHE_MAX / 2)
+                .cloned()
+                .collect();
             for k in keys {
                 cache.remove(&k);
             }
@@ -268,11 +270,15 @@ mod tests {
     #[test]
     fn parse_sums_per_session_and_prices_per_model() {
         let text = concat!(
-            r#"{"type":"user","sessionId":"s1"}"#, "\n",
-            r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z","message":{"model":"claude-opus-4-8[1m]","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":1000}}}"#, "\n",
-            r#"{"type":"assistant","sessionId":"s2","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":200,"output_tokens":100}}}"#, "\n",
+            r#"{"type":"user","sessionId":"s1"}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z","message":{"model":"claude-opus-4-8[1m]","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":1000}}}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"s2","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":200,"output_tokens":100}}}"#,
+            "\n",
             // torn / malformed lines and non-assistant records are skipped
-            r#"{"type":"assistant""#, "\n",
+            r#"{"type":"assistant""#,
+            "\n",
         );
         let mut e = FileEntry {
             size: 0,
@@ -290,8 +296,12 @@ mod tests {
         assert_eq!(e.per_session["s2"].input, 200);
         // opus pricing: 100in*15/M + 50out*75/M + 1000cr*1.5/M + 10cw*18.75/M
         let s1 = &e.per_session["s1"];
-        let expected = 100.0 / 1e6 * 15.0 + 50.0 / 1e6 * 75.0 + 1000.0 / 1e6 * 1.5 + 10.0 / 1e6 * 18.75;
+        let expected =
+            100.0 / 1e6 * 15.0 + 50.0 / 1e6 * 75.0 + 1000.0 / 1e6 * 1.5 + 10.0 / 1e6 * 18.75;
         assert!((s1.usd - expected).abs() < 1e-9);
-        assert_eq!(e.per_session["s1"].model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(
+            e.per_session["s1"].model.as_deref(),
+            Some("claude-opus-4-8")
+        );
     }
 }

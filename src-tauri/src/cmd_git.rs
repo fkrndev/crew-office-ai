@@ -97,12 +97,16 @@ pub fn git_diff_refs(
     path: Option<String>,
 ) -> Result<Value, String> {
     let _ = app;
-    crate::git_ops::diff(Path::new(&cwd), &rev_a, &rev_b, path.as_deref())
-        .map(Value::from)
+    crate::git_ops::diff(Path::new(&cwd), &rev_a, &rev_b, path.as_deref()).map(Value::from)
 }
 
 #[tauri::command(async)]
-pub fn git_checkout(app: AppHandle, cwd: String, r#ref: String, detach: Option<bool>) -> Result<Value, String> {
+pub fn git_checkout(
+    app: AppHandle,
+    cwd: String,
+    r#ref: String,
+    detach: Option<bool>,
+) -> Result<Value, String> {
     let _ = app;
     crate::git_ops::checkout(Path::new(&cwd), &r#ref, detach.unwrap_or(false))
 }

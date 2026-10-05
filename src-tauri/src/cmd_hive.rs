@@ -66,7 +66,11 @@ pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<V
     // Upstream setArchived dep (index.ts:4530): the floor hears every
     // archive/unarchive regardless of who initiated it.
     let _ = app.emit(
-        if archived { "hive:agentArchived" } else { "hive:agentSpawned" },
+        if archived {
+            "hive:agentArchived"
+        } else {
+            "hive:agentSpawned"
+        },
         serde_json::json!({ "id": id }),
     );
     Ok(res)
@@ -87,10 +91,7 @@ pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Val
 /// them). `{godId, agents:[…]}`; a `files` param asks for one agent's hive
 /// folder listing instead (the port's per-agent file surface).
 #[tauri::command(async)]
-pub fn hive_agent_directory(
-    app: AppHandle,
-    id: Option<String>,
-) -> Result<Value, String> {
+pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value, String> {
     let st = state(&app);
     if let Some(id) = id {
         return Ok(json!(crate::hive_admin::agent_directory(&st.hive, &id)));
@@ -307,8 +308,7 @@ pub fn workers_list(app: AppHandle) -> Result<Value, String> {
 #[tauri::command(async)]
 pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
     let st = state(&app);
-    let live: std::collections::HashSet<String> =
-        st.ptys.lock().unwrap().keys().cloned().collect();
+    let live: std::collections::HashSet<String> = st.ptys.lock().unwrap().keys().cloned().collect();
     let extras = crate::hive_admin::all_extras(&st.hive);
     let mut out = Vec::new();
     for a in st.hive.registry() {

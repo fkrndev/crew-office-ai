@@ -239,11 +239,11 @@ pub fn weekly_delay_ms(w: &serde_json::Value, now_ms: u64, last_fired: u64) -> O
 /// Upstream ignores `weekly` on heartbeat missions (they self-cadence).
 pub fn is_mission_due(m: &ScheduledMission, now_ms: u64) -> bool {
     if m.kind.as_deref() != Some("heartbeat") {
-    if let Some(w) = &m.weekly {
-        if normalize_weekly(w).is_some() {
-            return weekly_delay_ms(w, now_ms, m.last_fired_at) == Some(0);
+        if let Some(w) = &m.weekly {
+            if normalize_weekly(w).is_some() {
+                return weekly_delay_ms(w, now_ms, m.last_fired_at) == Some(0);
+            }
         }
-    }
     }
     m.interval_ms > 0 && now_ms.saturating_sub(m.last_fired_at) >= m.interval_ms
 }
@@ -289,7 +289,11 @@ pub fn heartbeat_digest(hive: &crate::hive::Hive, quiet_ms: u64, actionable: usi
         .map(|a| a.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    let names = if names.is_empty() { "?".to_string() } else { names };
+    let names = if names.is_empty() {
+        "?".to_string()
+    } else {
+        names
+    };
     let board_head = hive
         .read_board()
         .unwrap_or_default()
@@ -330,11 +334,7 @@ pub fn heartbeat_digest(hive: &crate::hive::Hive, quiet_ms: u64, actionable: usi
 /// looksStuck (index.ts) ? an agent printing PTY output <15s ago whose
 /// coordination files have not moved in `window_ms`: it is busy but not
 /// coordinating, so the heartbeat tightens its cadence to watch it.
-pub fn looks_stuck(
-    st: &crate::commands::AppState,
-    window_ms: u64,
-    now: u64,
-) -> bool {
+pub fn looks_stuck(st: &crate::commands::AppState, window_ms: u64, now: u64) -> bool {
     let reg = st.hive.registry();
     let god = st.hive.god_id();
     let ptys = st.ptys.lock().unwrap();
@@ -345,13 +345,8 @@ pub fn looks_stuck(
         let Some(h) = ptys.get(&a.id) else {
             continue;
         };
-        let idle = now.saturating_sub(
-            h.last_output_at
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
-        if idle < 15_000
-            && now.saturating_sub(st.hive.last_coordination_at(&a.id)) > window_ms
-        {
+        let idle = now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed));
+        if idle < 15_000 && now.saturating_sub(st.hive.last_coordination_at(&a.id)) > window_ms {
             return true;
         }
     }
@@ -374,7 +369,11 @@ pub fn heartbeat_beat(st: &crate::commands::AppState, m: &ScheduledMission, now:
     let mut next = base;
     if st.hive.is_floor_quiet(quiet, &clocks) || actionable > 0 {
         let digest = heartbeat_digest(&st.hive, quiet, actionable);
-        let to = if m.to.is_empty() { "god" } else { m.to.as_str() };
+        let to = if m.to.is_empty() {
+            "god"
+        } else {
+            m.to.as_str()
+        };
         let _ = st
             .hive
             .send_virtual("heartbeat", to, "request", "Heartbeat", &digest);

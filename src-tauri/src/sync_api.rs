@@ -52,18 +52,12 @@ pub fn start(app: AppHandle) -> Option<u16> {
             tiny_http::Response::from_string(body)
                 .with_status_code(status)
                 .with_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Content-Type"[..],
-                        &b"application/json"[..],
-                    )
-                    .unwrap(),
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                        .unwrap(),
                 )
                 .with_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Access-Control-Allow-Origin"[..],
-                        &b"*"[..],
-                    )
-                    .unwrap(),
+                    tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                        .unwrap(),
                 ),
         );
     });

@@ -122,8 +122,12 @@ fn worker_done_at(hive: &crate::hive::Hive, worker_id: &str, spawned_at: u64) ->
             if p.extension().and_then(|x| x.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(t) = fs::read_to_string(&p) else { continue };
-            let Ok(m) = serde_json::from_str::<Value>(&t) else { continue };
+            let Ok(t) = fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(m) = serde_json::from_str::<Value>(&t) else {
+                continue;
+            };
             if m["act"].as_str() != Some("done") {
                 continue;
             }
@@ -150,7 +154,12 @@ fn worker_done_at(hive: &crate::hive::Hive, worker_id: &str, spawned_at: u64) ->
 
 /// informGod — an inform to the god agent (the human's proxy), with the
 /// request's Slack coords appended so god can close the loop in-thread.
-fn inform_god(hive: &crate::hive::Hive, subject: &str, body: &str, slack: Option<&(String, String)>) {
+fn inform_god(
+    hive: &crate::hive::Hive,
+    subject: &str,
+    body: &str,
+    slack: Option<&(String, String)>,
+) {
     let body = match slack {
         Some((ch, ts)) => format!("{body}\n(slack: channel {ch}, thread {ts})"),
         None => body.to_string(),
@@ -166,9 +175,7 @@ fn worker_tokens_used(app: &AppHandle, worker_id: &str) -> u64 {
     st.telemetry
         .sample(worker_id)
         .or_else(|| st.hive.usage_sample(worker_id))
-        .or_else(|| {
-            entry.and_then(|a| st.usage.sample(&a.cwd, a.session_id.as_deref()))
-        })
+        .or_else(|| entry.and_then(|a| st.usage.sample(&a.cwd, a.session_id.as_deref())))
         .map(|s| s.input + s.output + s.cache_read + s.cache_creation)
         .unwrap_or(0)
 }
@@ -182,7 +189,11 @@ fn remove_worker_scratch(st: &AppState, worker_id: &str) {
     let dir = st.hive.agent_dir(worker_id);
     let agents_root = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     if dir.parent() != Some(agents_root.as_path())
-        || dir.file_name().map(|n| n.to_string_lossy().into_owned()).as_deref() != Some(worker_id)
+        || dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .as_deref()
+            != Some(worker_id)
     {
         return;
     }
@@ -193,12 +204,7 @@ fn remove_worker_scratch(st: &AppState, worker_id: &str) {
 /// ONLY when it holds no unintegrated work; otherwise PRESERVE it and ping
 /// god, the sole integrator. Either way the hive scratch dir is registered
 /// for the deferred GC sweep (memory miner races an immediate delete).
-fn finalize_worker_worktree(
-    st: &AppState,
-    wt_path: &Path,
-    orig_cwd: &Path,
-    rec: &WorkerRec,
-) {
+fn finalize_worker_worktree(st: &AppState, wt_path: &Path, orig_cwd: &Path, rec: &WorkerRec) {
     if let Err(e) = crate::git_ops::unlink_worktree_deps(orig_cwd, wt_path) {
         log::warn!("[worktree] dependency unlink failed: {e}");
     }
@@ -219,7 +225,10 @@ fn finalize_worker_worktree(
     };
     match keep {
         Some((true, detail, branch)) => {
-            log::warn!("[worker] PRESERVING worktree with unintegrated work: {}", wt_path.display());
+            log::warn!(
+                "[worker] PRESERVING worktree with unintegrated work: {}",
+                wt_path.display()
+            );
             register(st);
             inform_god(
                 &st.hive,
@@ -241,7 +250,10 @@ fn finalize_worker_worktree(
             // deferred GC sweep — upstream does the same so the memory miner
             // can ingest memory.md before the dir is reclaimed.
             if keep.is_none() {
-                log::warn!("[worker] unintegrated check failed; keeping worktree {}", wt_path.display());
+                log::warn!(
+                    "[worker] unintegrated check failed; keeping worktree {}",
+                    wt_path.display()
+                );
                 register(st);
                 return;
             }
@@ -275,7 +287,13 @@ pub fn finalize_teardown(st: &AppState, id: &str) {
 /// worktree ONLY when its work is provably integrated (or the tree is gone).
 /// Any doubt KEEPS it — god is the sole integrator.
 pub fn gc_preserved_worktrees(st: &AppState) {
-    let keys: Vec<PathBuf> = st.preserved_worktrees.lock().unwrap().keys().cloned().collect();
+    let keys: Vec<PathBuf> = st
+        .preserved_worktrees
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     for key in keys {
         let e = {
             let p = st.preserved_worktrees.lock().unwrap();
@@ -314,7 +332,10 @@ pub fn gc_preserved_worktrees(st: &AppState) {
             _ => continue, // keep — fail-safe
         }
         if let Err(err) = crate::git_ops::remove_worktree(&e.wt_path) {
-            log::warn!("[worker gc] removeWorktree failed (keeping {}): {err}", e.worker_id);
+            log::warn!(
+                "[worker gc] removeWorktree failed (keeping {}): {err}",
+                e.worker_id
+            );
             continue;
         }
         remove_worker_scratch(st, &e.worker_id);
@@ -336,7 +357,10 @@ pub fn gc_preserved_worktrees(st: &AppState) {
 /// failures archive to .failed and inform god WITH the Slack coords.
 pub fn process_spawn_request(app: &AppHandle, path: &Path) {
     let st = state(app);
-    let raw: Value = match fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+    let raw: Value = match fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+    {
         Some(v) => v,
         None => {
             log::warn!("[worker] unparseable spawn-request: {}", path.display());
@@ -360,7 +384,11 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         (Some(c), Some(t)) => Some((c.to_string(), t.to_string())),
         _ => None,
     };
-    let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let fname = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     macro_rules! fail {
         ($reason:expr) => {{
             inform_god(
@@ -405,20 +433,30 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         .map(|s| crate::misc::expand_tilde(s.trim()))
         .unwrap_or_default();
     if cwd.is_empty() || !Path::new(&cwd).is_dir() {
-        fail!(format!("\"cwd\" missing or not found ({})", if cwd.is_empty() { "unset".to_string() } else { cwd.clone() }));
+        fail!(format!(
+            "\"cwd\" missing or not found ({})",
+            if cwd.is_empty() {
+                "unset".to_string()
+            } else {
+                cwd.clone()
+            }
+        ));
     }
 
     let provider = raw["provider"].as_str().unwrap_or("claude");
     let auto = st.config.lock().unwrap().auto_mode;
-    let command = match raw["command"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    let command = match raw["command"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         Some(c) => c.to_string(),
-        None => preset_command(
-            provider,
-            raw["model"].as_str(),
-            auto,
-        ),
+        None => preset_command(provider, raw["model"].as_str(), auto),
     };
-    let bin = crate::misc::tokenize_command(&command).into_iter().next().unwrap_or_default();
+    let bin = crate::misc::tokenize_command(&command)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     // A spawn-request file is untrusted input — the bin must be a plain
     // command token or an absolute path, never a shell-reinterpretable string.
     if !crate::pty::is_safe_command_name(&bin) && !Path::new(&bin).is_absolute() {
@@ -616,12 +654,9 @@ pub fn tick(app: &AppHandle) {
         }
         // Idle reap — no PTY output for the configured window and never
         // signaled done.
-        let idle_ms = st
-            .ptys
-            .lock()
-            .unwrap()
-            .get(&worker_id)
-            .map(|h| now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed)));
+        let idle_ms = st.ptys.lock().unwrap().get(&worker_id).map(|h| {
+            now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
+        });
         match idle_ms {
             None => continue, // PTY already gone — teardown paths clean up
             Some(ms) if ms > idle_timeout_ms => {
@@ -696,10 +731,7 @@ mod tests {
     use crate::hive::RegistryEntry;
 
     fn tmp_hive(tag: &str) -> (PathBuf, crate::hive::Hive) {
-        let root = std::env::temp_dir().join(format!(
-            "oa-workers-{tag}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("oa-workers-{tag}-{}", uuid::Uuid::new_v4()));
         let hive = crate::hive::Hive::ensure(&root.join("hive")).unwrap();
         hive.register_agent(&RegistryEntry {
             id: "worker-x".into(),
@@ -728,8 +760,11 @@ mod tests {
             .parse::<chrono::DateTime<chrono::Utc>>()
             .map(|d| d.timestamp_millis() as u64 + 1)
             .unwrap_or(1);
-        fs::write(outbox.join(format!("{}.json", stale.id)), serde_json::to_string(&stale).unwrap())
-            .unwrap();
+        fs::write(
+            outbox.join(format!("{}.json", stale.id)),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
         // Spawned AFTER the stale done was authored → not done.
         assert_eq!(worker_done_at(&hive, "worker-x", stale_at), None);
         // Spawned BEFORE it → the fresh done is returned.

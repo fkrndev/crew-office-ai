@@ -106,7 +106,14 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
                 .find(|a| a.id == id)
                 .map(|a| a.provider.clone())
                 .unwrap_or_default();
-            let focus = st.config.lock().unwrap().context_trigger.compact.message.clone();
+            let focus = st
+                .config
+                .lock()
+                .unwrap()
+                .context_trigger
+                .compact
+                .message
+                .clone();
             if let Some(cmd) = crate::misc::compact_command(&provider, &focus) {
                 let mut ptys = st.ptys.lock().unwrap();
                 if let Some(h) = ptys.get_mut(id) {
@@ -154,8 +161,10 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     if event == "Status" {
         let cw = p.get("context_window");
         if let (Some(t), Some(l)) = (
-            cw.and_then(|c| c.get("total_input_tokens")).and_then(|v| v.as_u64()),
-            cw.and_then(|c| c.get("context_window_size")).and_then(|v| v.as_u64()),
+            cw.and_then(|c| c.get("total_input_tokens"))
+                .and_then(|v| v.as_u64()),
+            cw.and_then(|c| c.get("context_window_size"))
+                .and_then(|v| v.as_u64()),
         ) {
             if !agent_id.is_empty() {
                 st.context_usage
@@ -207,14 +216,24 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             p.get("tool_input").unwrap_or(&Value::Null),
             now_ms,
         ),
-        "UserPromptSubmit" => st.breaker.lock().unwrap().record_user_prompt(&agent_id, now_ms),
+        "UserPromptSubmit" => st
+            .breaker
+            .lock()
+            .unwrap()
+            .record_user_prompt(&agent_id, now_ms),
         // Hermes api_request_error (translated via the shim's --hermes mode)
         // — the breaker's error-storm feed for engines without OTel.
         "ApiError" => st.breaker.lock().unwrap().record_error(&agent_id),
-        "PreCompact" => st.breaker.lock().unwrap().record_compact_start(&agent_id, now_ms),
-        "PostCompact" | "SessionStart" => {
-            st.breaker.lock().unwrap().record_compact_end(&agent_id, now_ms)
-        }
+        "PreCompact" => st
+            .breaker
+            .lock()
+            .unwrap()
+            .record_compact_start(&agent_id, now_ms),
+        "PostCompact" | "SessionStart" => st
+            .breaker
+            .lock()
+            .unwrap()
+            .record_compact_end(&agent_id, now_ms),
         _ => {}
     }
 
@@ -281,10 +300,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             // hooks.ts:586-592 — an idle-type Notification ("waiting for your
             // input") is "blocked on the human", worth a toast; a permission
             // request surfaces natively in the agent's own session instead.
-            let idle_notify = p
-                .get("notification_type")
-                .and_then(|v| v.as_str())
-                == Some("idle")
+            let idle_notify = p.get("notification_type").and_then(|v| v.as_str()) == Some("idle")
                 || p.get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -319,14 +335,13 @@ fn notify(app: &AppHandle, st: &AppState, agent_id: &str, body: &str) {
     if !st.config.lock().unwrap().notifications {
         return;
     }
-    let title = if agent_id.is_empty() { "Agent" } else { agent_id };
+    let title = if agent_id.is_empty() {
+        "Agent"
+    } else {
+        agent_id
+    };
     use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
     let _ = app.emit(
         "hive-notify",
         json!({ "agentId": agent_id, "title": title, "body": body }),
@@ -344,7 +359,11 @@ fn standing_goal(st: &AppState, agent_id: &str) -> Option<String> {
             continue;
         }
         let g = a.get("goal").and_then(|v| v.as_str()).unwrap_or("").trim();
-        return if g.is_empty() { None } else { Some(g.to_string()) };
+        return if g.is_empty() {
+            None
+        } else {
+            Some(g.to_string())
+        };
     }
     None
 }
@@ -419,11 +438,7 @@ pub(crate) fn fleet_rows(st: &AppState) -> Vec<Value> {
                 .usd_for(&a.id)
                 .map(|u| (u * 10_000.0).round() / 10_000.0)
                 .unwrap_or(session_usd);
-            let last_tool = st
-                .telemetry
-                .spans(&a.id)
-                .last()
-                .map(|s| s.tool.clone());
+            let last_tool = st.telemetry.spans(&a.id).last().map(|s| s.tool.clone());
             let breaker = serde_json::to_value(st.breaker.lock().unwrap().level_for(&a.id))
                 .unwrap_or_else(|_| json!("healthy"));
             json!({
@@ -475,12 +490,11 @@ fn injected_context(st: &AppState, agent_id: &str, event: &str, p: &Value) -> Va
             "agents": agents,
         }));
         let ctx_map = st.context_usage.lock().unwrap().clone();
-        if let Some(r) = st
-            .hive
-            .roster_context(&agents, Some(chrono::Utc::now().timestamp_millis() as u64), |id| {
-                ctx_map.get(id).copied()
-            })
-        {
+        if let Some(r) = st.hive.roster_context(
+            &agents,
+            Some(chrono::Utc::now().timestamp_millis() as u64),
+            |id| ctx_map.get(id).copied(),
+        ) {
             parts.push(r);
         }
     }

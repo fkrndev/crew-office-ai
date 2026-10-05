@@ -112,7 +112,10 @@ pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> 
                         .collect()
                 })
                 .unwrap_or_else(|| shared_tags.clone());
-            let title = f.get("title").and_then(|t| t.as_str()).map(|s| s.to_string());
+            let title = f
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string());
             let caption = f
                 .get("caption")
                 .and_then(|c| c.as_str())
@@ -147,7 +150,9 @@ pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> 
                     Err(e) => json!({ "ok": false, "name": name, "error": e }),
                 });
             } else {
-                results.push(json!({ "ok": false, "name": name, "error": "file needs path or content" }));
+                results.push(
+                    json!({ "ok": false, "name": name, "error": "file needs path or content" }),
+                );
             }
         }
     }
@@ -181,9 +186,11 @@ pub fn kg_add_files(app: AppHandle, payload: Option<Value>) -> Result<Value, Str
             paths = arr
                 .iter()
                 .filter_map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+                    v.as_str().map(|s| s.to_string()).or_else(|| {
+                        v.get("path")
+                            .and_then(|p| p.as_str())
+                            .map(|s| s.to_string())
+                    })
                 })
                 .collect();
         }

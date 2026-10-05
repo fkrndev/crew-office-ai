@@ -39,7 +39,10 @@ fn link_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     #[cfg(not(any(windows, unix)))]
     {
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no dir link"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "no dir link",
+        ))
     }
 }
 
@@ -649,10 +652,7 @@ fn commands_md() -> String {
         lines.push(format!("## {title}"));
         lines.push(String::new());
         for it in *items {
-            let usage = it
-                .usage
-                .map(|u| format!(" e.g. `{u}`"))
-                .unwrap_or_default();
+            let usage = it.usage.map(|u| format!(" e.g. `{u}`")).unwrap_or_default();
             lines.push(format!(
                 "- `{}` _({})_ — {}{}",
                 it.cmd.trim(),
@@ -681,13 +681,25 @@ const HOP_CAP: i64 = 12;
 /// .gitignore upstream writes for the same reason (MINE_IGNORE_LINES,
 /// hive.ts:239): a Codex worker's private CODEX_HOME session data once grew
 /// the hive's .git to 7.5GB. Append-only into <agentDir>/.gitignore.
-const MINE_IGNORE_LINES: &[&str] = &["settings.json", "cursor.json", "inbox/", "outbox/", ".codex/"];
+const MINE_IGNORE_LINES: &[&str] = &[
+    "settings.json",
+    "cursor.json",
+    "inbox/",
+    "outbox/",
+    ".codex/",
+];
 
 /// Churny/ephemeral live files kept out of the hive git repo (upstream
 /// ensureHive's root .gitignore list, hive.ts:656). `crashes/` is deliberately
 /// ignored — raw PTY output can carry secrets and the repo is committed on
 /// every change.
-const HIVE_GITIGNORE_LINES: &[&str] = &["fleet.json", "hooks.sock", "cost-ledger.jsonl", "crashes/", ".DS_Store"];
+const HIVE_GITIGNORE_LINES: &[&str] = &[
+    "fleet.json",
+    "hooks.sock",
+    "cost-ledger.jsonl",
+    "crashes/",
+    ".DS_Store",
+];
 
 /// Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z
 /// (upstream stamp(): ISO with `:` and `.` replaced by `-`).
@@ -876,8 +888,8 @@ impl Hive {
     ) -> Result<bool> {
         let path = self.root.join("registry.json");
         let text = fs::read_to_string(&path).unwrap_or_default();
-        let mut doc: Value =
-            serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({ "godId": null, "agents": {} }));
+        let mut doc: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|_| serde_json::json!({ "godId": null, "agents": {} }));
         // Tolerate a legacy array-shaped agents list by converting to a map.
         if let Some(Value::Array(arr)) = doc.get("agents").cloned() {
             let mut map = serde_json::Map::new();
@@ -989,8 +1001,11 @@ impl Hive {
             .map(|a| {
                 let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let mut bits: Vec<String> =
-                    vec![a.get("role").and_then(|v| v.as_str()).unwrap_or("agent").into()];
+                let mut bits: Vec<String> = vec![a
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("agent")
+                    .into()];
                 match a.get("lastActiveSecAgo").and_then(|v| v.as_u64()) {
                     Some(s) => bits.push(format!("active {}", ago(Some(s)))),
                     None => bits.push("no activity yet".into()),
@@ -1031,7 +1046,11 @@ impl Hive {
                 }
                 format!(
                     "{id}{}{}",
-                    if name.is_empty() { String::new() } else { format!(" \"{name}\"") },
+                    if name.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" \"{name}\"")
+                    },
                     format!(" ({})", bits.join(", "))
                 )
             })
@@ -1112,7 +1131,10 @@ impl Hive {
             s.input += v.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
             s.output += v.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
             s.cache_read += v.get("cache_read").and_then(|x| x.as_u64()).unwrap_or(0);
-            s.cache_creation += v.get("cache_creation").and_then(|x| x.as_u64()).unwrap_or(0);
+            s.cache_creation += v
+                .get("cache_creation")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
             if let Some(ts) = v.get("ts").and_then(|x| x.as_u64()) {
                 s.ts = ts;
             } else if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
@@ -1205,24 +1227,23 @@ impl Hive {
             p.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
             p.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
             p.get("cache_read").and_then(|v| v.as_u64()).unwrap_or(0),
-            p.get("cache_creation").and_then(|v| v.as_u64()).unwrap_or(0),
+            p.get("cache_creation")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
         );
-        let usd = p
-            .get("usd")
-            .and_then(|v| v.as_f64())
-            .unwrap_or_else(|| {
-                // The proxy emits token deltas — accumulate an estimate onto
-                // the session's running counter so the fold's monotonic
-                // segment holds.
-                self.last_session_usd(agent_id, session_id)
-                    + crate::pricing::estimate_cost_usd(
-                        model,
-                        input as f64,
-                        output as f64,
-                        cr as f64,
-                        cw as f64,
-                    )
-            });
+        let usd = p.get("usd").and_then(|v| v.as_f64()).unwrap_or_else(|| {
+            // The proxy emits token deltas — accumulate an estimate onto
+            // the session's running counter so the fold's monotonic
+            // segment holds.
+            self.last_session_usd(agent_id, session_id)
+                + crate::pricing::estimate_cost_usd(
+                    model,
+                    input as f64,
+                    output as f64,
+                    cr as f64,
+                    cw as f64,
+                )
+        });
         let row = serde_json::json!({
             "agent_id": agent_id,
             "session_id": session_id,
@@ -1380,7 +1401,9 @@ impl Hive {
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
         if !cfg.lines().any(|l| l.starts_with("hooks_auto_accept:")) {
-            cfg.push_str("\n# --- agent-office hive bridge (auto-generated) ---\nhooks_auto_accept: true\n");
+            cfg.push_str(
+                "\n# --- agent-office hive bridge (auto-generated) ---\nhooks_auto_accept: true\n",
+            );
         }
         // A pre-existing user `hooks:` block wins — merging dict-keyed YAML
         // blocks safely needs a real YAML writer; log-shaped skip instead.
@@ -1519,23 +1542,29 @@ impl Hive {
             return;
         }
         use sha1::{Digest, Sha1};
-        let hive_id = format!("{:x}", Sha1::digest(self.root.display().to_string().as_bytes()));
+        let hive_id = format!(
+            "{:x}",
+            Sha1::digest(self.root.display().to_string().as_bytes())
+        );
         let hive_id = &hive_id[..12.min(hive_id.len())];
         let user_home = dirs::home_dir().unwrap_or_default().join(".codex");
         for kind in ["sessions", "archived_sessions"] {
             let source = agent_dir.join(".codex").join(kind);
-            let target = user_home.join(kind).join("agent-office").join(hive_id).join(agent_id);
+            let target = user_home
+                .join(kind)
+                .join("agent-office")
+                .join(hive_id)
+                .join(agent_id);
             let _ = fs::create_dir_all(target.parent().unwrap());
             let source_is_dir = source.is_dir() && !source.is_symlink();
             if source_is_dir && target.exists() {
                 continue; // both sides have data — never clobber (upstream throws)
             }
             if source_is_dir && !target.exists() {
-                let _ = fs::rename(&source, &target)
-                    .or_else(|_| {
-                        copy_dir(&source, &target)?;
-                        fs::remove_dir_all(&source)
-                    });
+                let _ = fs::rename(&source, &target).or_else(|_| {
+                    copy_dir(&source, &target)?;
+                    fs::remove_dir_all(&source)
+                });
             } else if !target.exists() {
                 let _ = fs::create_dir_all(&target);
             }
@@ -1610,7 +1639,12 @@ impl Hive {
             entry.capabilities.join(", ")
         };
         let role = if entry.role.trim().is_empty() {
-            if entry.is_god { "orchestrator (god)" } else { "agent" }.to_string()
+            if entry.is_god {
+                "orchestrator (god)"
+            } else {
+                "agent"
+            }
+            .to_string()
         } else {
             entry.role.clone()
         };
@@ -1647,8 +1681,20 @@ impl Hive {
     /// dates/UUIDs/volatile state).
     pub fn injected_prompt(&self, entry: &RegistryEntry, opts: &PromptOpts) -> String {
         let dir = self.agent_dir(&entry.id);
-        let in_dir = |parts: &[&str]| parts.iter().fold(dir.clone(), |p, s| p.join(s)).display().to_string();
-        let in_root = |parts: &[&str]| parts.iter().fold(self.root.clone(), |p, s| p.join(s)).display().to_string();
+        let in_dir = |parts: &[&str]| {
+            parts
+                .iter()
+                .fold(dir.clone(), |p, s| p.join(s))
+                .display()
+                .to_string()
+        };
+        let in_root = |parts: &[&str]| {
+            parts
+                .iter()
+                .fold(self.root.clone(), |p, s| p.join(s))
+                .display()
+                .to_string()
+        };
         let god_name = self.resolve_god_name();
 
         let ctx_line = "LIVE CONTEXT: each agent row in the LIVE ROSTER carries a `ctx NN%` tag — its live context-window occupancy. Treat it as the real headroom signal when routing: prefer an agent with a LOW `ctx` for a big task; treat a HIGH `ctx` (near 100%) as busy rather than idle, even if the cumulative token count looks modest.";
@@ -1659,10 +1705,13 @@ impl Hive {
             ""
         };
 
-        let kg_cli = opts
-            .kg_cli_path
-            .clone()
-            .unwrap_or_else(|| if cfg!(windows) { "%KG_CLI%".into() } else { "$KG_CLI".into() });
+        let kg_cli = opts.kg_cli_path.clone().unwrap_or_else(|| {
+            if cfg!(windows) {
+                "%KG_CLI%".into()
+            } else {
+                "$KG_CLI".into()
+            }
+        });
         let knowledge_line = if opts.knowledge_graph {
             format!("Enterprise knowledge: this organisation has a private Knowledge Graph of its own documents, policies, and business context. When a task needs that context — company-specific facts, house style, internal processes — query it instead of guessing: run `\"{}\" \"{}\" search \"<query>\"` for ranked passages, `\"{}\" \"{}\" list` to see what is available, and `\"{}\" \"{}\" get <id>` for a full document. (That first path is the harness's bundled Node — use it instead of bare `node`, which may not be on your PATH.)",
                 opts.hive_node, kg_cli, opts.hive_node, kg_cli, opts.hive_node, kg_cli)
@@ -1749,7 +1798,10 @@ impl Hive {
         for sub in ["inbox", "inbox/.done", "outbox", "outbox/.sent"] {
             fs::create_dir_all(dir.join(sub))?;
         }
-        Self::seed(&dir.join("cursor.json"), "{\n  \"lastProcessed\": null\n}\n")?;
+        Self::seed(
+            &dir.join("cursor.json"),
+            "{\n  \"lastProcessed\": null\n}\n",
+        )?;
 
         // Merge over the prior registry row (upstream `{...prev, ...meta}`):
         // spawn-time fields win, lifetime fields (sessionId, createdAt) are
@@ -1787,7 +1839,11 @@ impl Hive {
         }
         // Resolve the durable role before writing identity.md — a restart can
         // pass a status caption; the registry keeps the last real hire role.
-        merged.role = preferred_agent_role(Some(&merged.role), prev.as_ref().map(|p| p.role.as_str()), merged.is_god);
+        merged.role = preferred_agent_role(
+            Some(&merged.role),
+            prev.as_ref().map(|p| p.role.as_str()),
+            merged.is_god,
+        );
         // A (re)spawn always means a live terminal — clear the archived flag
         // and stamp the cwd-validity probe, same as upstream.
         merged.archived = false;
@@ -1798,7 +1854,10 @@ impl Hive {
         fs::write(dir.join("identity.md"), Self::identity_text(&merged))?;
         Self::seed(
             &dir.join("memory.md"),
-            &format!("# Memory — {} ({})\n\n_Append durable facts, decisions, and context below._\n", merged.name, merged.id),
+            &format!(
+                "# Memory — {} ({})\n\n_Append durable facts, decisions, and context below._\n",
+                merged.name, merged.id
+            ),
         )?;
         // Keep settings/cursor/mail out of mempalace's index AND out of git.
         self.ensure_gitignore_lines(&dir.join(".gitignore"), MINE_IGNORE_LINES);
@@ -1971,7 +2030,9 @@ impl Hive {
         }
         self.atomic_write(
             &inbox.join(format!("{}.json", msg.id)),
-            serde_json::to_string_pretty(msg).unwrap_or_default().as_bytes(),
+            serde_json::to_string_pretty(msg)
+                .unwrap_or_default()
+                .as_bytes(),
         )
         .is_ok()
     }
@@ -2013,7 +2074,11 @@ impl Hive {
         // to each agent's session. A message aimed at "human" is handled by
         // the god/orchestrator, the human's proxy here.
         let resolve_to = |to: &str| -> String {
-            if to == "human" || to == "god" { god_id.clone() } else { to.to_string() }
+            if to == "human" || to == "god" {
+                god_id.clone()
+            } else {
+                to.to_string()
+            }
         };
         // Broadcast fans out over the ACTIVE registry: skip the sender, the
         // send-only prep assistant, and archived agents (upstream
@@ -2189,7 +2254,9 @@ impl Hive {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let outbox = sender_dir.join("outbox");
-            let Ok(rd) = fs::read_dir(&outbox) else { continue };
+            let Ok(rd) = fs::read_dir(&outbox) else {
+                continue;
+            };
             let sent_dir = outbox.join(".sent");
             let _ = fs::create_dir_all(&sent_dir); // hives predating .sent
             let mut files: Vec<PathBuf> = rd
@@ -2204,7 +2271,9 @@ impl Hive {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let Ok(text) = fs::read_to_string(&file) else { continue };
+                let Ok(text) = fs::read_to_string(&file) else {
+                    continue;
+                };
                 let mut partial = serde_json::from_str::<PartialMessage>(&text).ok();
                 if partial.is_none() {
                     // Malformed JSON — attempt the narrow repair (literal
@@ -2332,7 +2401,10 @@ impl Hive {
             let _ = self.log(&serde_json::json!({
                 "kind": "inbox-settled", "agentId": id, "count": out.moved
             }));
-            self.commit(&format!("hive: settle inbox of {id} ({} unread)", out.moved));
+            self.commit(&format!(
+                "hive: settle inbox of {id} ({} unread)",
+                out.moved
+            ));
         }
         out
     }
@@ -2340,7 +2412,9 @@ impl Hive {
     pub fn inbox(&self, id: &str) -> Result<Vec<Message>> {
         let inbox = self.agent_dir(id).join("inbox");
         let mut out = Vec::new();
-        let Ok(rd) = fs::read_dir(&inbox) else { return Ok(out) };
+        let Ok(rd) = fs::read_dir(&inbox) else {
+            return Ok(out);
+        };
         let mut files: Vec<PathBuf> = rd
             .flatten()
             .map(|e| e.path())
@@ -2460,7 +2534,11 @@ impl Hive {
             .iter()
             .rposition(|q| q.get("a").is_none() && q.get("dismissedAt").is_none())
             .ok_or_else(|| anyhow::anyhow!("no open question on {id}"))?;
-        let open_q = asks[qi].get("q").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let open_q = asks[qi]
+            .get("q")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let mut patch = serde_json::Map::new();
         let mut qa = asks.clone();
         qa[qi]["a"] = Value::String(answer.to_string());
@@ -2486,14 +2564,16 @@ impl Hive {
     }
 
     pub fn read_memory(&self, agent_id: &str) -> Result<String> {
-        Ok(fs::read_to_string(self.agent_dir(agent_id).join("memory.md"))
-            .unwrap_or_default())
+        Ok(fs::read_to_string(self.agent_dir(agent_id).join("memory.md")).unwrap_or_default())
     }
 
     pub fn append_memory(&self, agent_id: &str, entry: &str) -> Result<()> {
         use std::io::Write;
         let path = self.agent_dir(agent_id).join("memory.md");
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         writeln!(f, "\n{entry}")?;
         self.log(&serde_json::json!({
             "kind": "memory_append", "agentId": agent_id
@@ -2562,10 +2642,12 @@ pub fn redact_secrets(text: &str) -> String {
         return String::new();
     }
     let s = text.to_string();
-    let s = Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
-        .unwrap()
-        .replace_all(&s, "[redacted]")
-        .to_string();
+    let s = Regex::new(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    )
+    .unwrap()
+    .replace_all(&s, "[redacted]")
+    .to_string();
     let s = Regex::new(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")
         .unwrap()
         .replace_all(&s, "[redacted]")
@@ -2598,13 +2680,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let hook_bin = dir.join("hive-hook.exe");
-        let home = hive.install_codex_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let home = hive
+            .install_codex_hooks(&dir.join("agent"), &hook_bin)
+            .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.toml")).unwrap();
-        for ev in ["PreToolUse", "PostToolUse", "Stop", "SubagentStop",
-                   "SessionStart", "UserPromptSubmit", "PreCompact", "PostCompact"] {
+        for ev in [
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "SubagentStop",
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreCompact",
+            "PostCompact",
+        ] {
             assert!(cfg.contains(&format!("[[hooks.{ev}]]")), "missing {ev}");
         }
-        assert!(cfg.contains("timeout = 30"), "codex floors timeout 0 to 1s - never emit it");
+        assert!(
+            cfg.contains("timeout = 30"),
+            "codex floors timeout 0 to 1s - never emit it"
+        );
         assert!(cfg.contains("hive-hook.exe"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2615,12 +2710,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let hook_bin = dir.join("hive-hook.exe");
-        let home = hive.install_hermes_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let home = hive
+            .install_hermes_hooks(&dir.join("agent"), &hook_bin)
+            .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(cfg.contains("hooks_auto_accept: true"));
-        for ev in ["pre_tool_call", "post_tool_call", "pre_verify",
-                   "agent_loop_stopped", "on_session_start", "subagent_stop",
-                   "api_request_error"] {
+        for ev in [
+            "pre_tool_call",
+            "post_tool_call",
+            "pre_verify",
+            "agent_loop_stopped",
+            "on_session_start",
+            "subagent_stop",
+            "api_request_error",
+        ] {
             assert!(cfg.contains(&format!(" {ev}:")), "missing {ev}");
         }
         // argv override carries the canonical event; the shim's --hermes
@@ -2637,7 +2740,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let hook_bin = dir.join("hive-hook.exe");
-        let path = hive.install_gemini_hooks(&dir.join("agent"), &hook_bin).unwrap();
+        let path = hive
+            .install_gemini_hooks(&dir.join("agent"), &hook_bin)
+            .unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["hooksConfig"]["enabled"], serde_json::json!(true));
@@ -2648,7 +2753,9 @@ mod tests {
             ("AfterTool", "PostToolUse"),
             ("AfterAgent", "Stop"),
         ] {
-            let cmd = v["hooks"][ge][0]["hooks"][0]["command"].as_str().unwrap_or("");
+            let cmd = v["hooks"][ge][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or("");
             assert!(cmd.contains(&format!("--gemini {ce}")), "{ge} → {ce}");
         }
         std::fs::remove_dir_all(&dir).ok();
@@ -2675,7 +2782,10 @@ mod tests {
         patch.insert("customField".into(), Value::Null); // explicit null clears
         let card = hive.update_task("t1", &patch).unwrap();
         assert_eq!(card["status"], "in-progress");
-        assert!(card.get("customField").map(|v| v.is_null()).unwrap_or(false));
+        assert!(card
+            .get("customField")
+            .map(|v| v.is_null())
+            .unwrap_or(false));
         assert_eq!(card["title"], "a"); // untouched fields survive
         assert_eq!(card["humanQA"][0]["q"], "ok?");
         // A stray `id` in the patch must never rename the card (upstream
@@ -2769,7 +2879,10 @@ mod tests {
         assert_eq!(card["status"], "blocked");
         // The answer also lands in god's inbox (the two-channel contract).
         let inbox = hive.inbox("god").unwrap();
-        assert!(inbox.iter().any(|m| m.body.contains("yes")), "answer mails god");
+        assert!(
+            inbox.iter().any(|m| m.body.contains("yes")),
+            "answer mails god"
+        );
         // The still-open FIRST ask takes the next answer; only when no ask
         // remains open does the call error — never a silent no-op.
         let card2 = hive.task_answer("t1", "again").unwrap();
@@ -2783,7 +2896,8 @@ mod tests {
         let (hive, dir) = tmp_hive("life");
         reg(&hive, "god", true, &dir);
         reg(&hive, "w1", false, &dir);
-        hive.send(&Message::new("god", "w1", "request", "hi", "body")).unwrap();
+        hive.send(&Message::new("god", "w1", "request", "hi", "body"))
+            .unwrap();
         let deliveries = hive.router_tick().unwrap();
         assert_eq!(deliveries.len(), 1);
         let inbox = hive.inbox("w1").unwrap();
@@ -2792,12 +2906,15 @@ mod tests {
         hive.mark_done("w1", &inbox[0].id).unwrap();
         assert!(hive.inbox("w1").unwrap().is_empty());
         // "broadcast" fans out to every agent but the sender (HIVE.md §5).
-        hive.send(&Message::new("god", "broadcast", "inform", "b", "b")).unwrap();
+        hive.send(&Message::new("god", "broadcast", "inform", "b", "b"))
+            .unwrap();
         let ds = hive.router_tick().unwrap();
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].to, "w1");
         // A virtual sender (breaker/hive) delivers straight to inboxes.
-        let vs = hive.send_virtual("breaker", "w1", "request", "s", "b").unwrap();
+        let vs = hive
+            .send_virtual("breaker", "w1", "request", "s", "b")
+            .unwrap();
         assert_eq!(vs.len(), 1);
         assert_eq!(hive.inbox("w1").unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();

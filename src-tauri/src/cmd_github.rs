@@ -47,12 +47,18 @@ pub fn github_set_repo(app: AppHandle, owner_repo: String) -> Result<Value, Stri
     let st = state(&app);
     let trimmed = owner_repo.trim();
     if trimmed.is_empty() {
-        st.persist.lock().unwrap().set_kv(crate::github::KV_REPO, &json!(null));
+        st.persist
+            .lock()
+            .unwrap()
+            .set_kv(crate::github::KV_REPO, &json!(null));
         return Ok(json!({ "ok": true, "repo": null }));
     }
     let Some(valid) = crate::github::valid_repo(trimmed) else {
         return Err(format!("bad repo {owner_repo:?} (want owner/repo)"));
     };
-    st.persist.lock().unwrap().set_kv(crate::github::KV_REPO, &json!(valid));
+    st.persist
+        .lock()
+        .unwrap()
+        .set_kv(crate::github::KV_REPO, &json!(valid));
     Ok(json!({ "ok": true, "repo": valid }))
 }

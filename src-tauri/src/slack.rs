@@ -43,7 +43,11 @@ struct FifoSet {
 
 impl FifoSet {
     fn new(max: usize) -> Self {
-        Self { set: HashSet::new(), order: VecDeque::new(), max }
+        Self {
+            set: HashSet::new(),
+            order: VecDeque::new(),
+            max,
+        }
     }
     fn insert(&mut self, k: String) {
         if self.set.contains(&k) {
@@ -76,7 +80,10 @@ impl FifoSet {
 /// `channel:ts` — the only reliable cross-type key (app_mention + message.*
 /// deliveries share it; event_id/client_msg_id do not).
 fn dedup_key(ev: &Value) -> String {
-    let (c, t) = (ev["channel"].as_str().unwrap_or(""), ev["ts"].as_str().unwrap_or(""));
+    let (c, t) = (
+        ev["channel"].as_str().unwrap_or(""),
+        ev["ts"].as_str().unwrap_or(""),
+    );
     if c.is_empty() || t.is_empty() {
         String::new()
     } else {
@@ -99,9 +106,7 @@ fn should_trigger(
     }
     // Self-loop + subtype safety: never trigger on bot posts, edits, joins.
     // file_share IS eligible if it mentions the bot / hits an active thread.
-    if ev.get("bot_id").is_some()
-        || ev["subtype"].as_str().is_some_and(|s| s != "file_share")
-    {
+    if ev.get("bot_id").is_some() || ev["subtype"].as_str().is_some_and(|s| s != "file_share") {
         return (false, String::new(), vec![]);
     }
     let text = ev["text"].as_str().unwrap_or("").to_string();
@@ -216,19 +221,18 @@ impl SlackServer {
             let mut threads = FifoSet::new(ACTIVATED_THREADS_MAX);
             let mut seen = FifoSet::new(SEEN_EVENTS_MAX);
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(400)) else {
+                let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(400))
+                else {
                     continue;
                 };
                 if req.method().as_str() != "POST" {
-                    let _ = req.respond(tiny_http::Response::from_string("")
-                        .with_status_code(405));
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(405));
                     continue;
                 }
                 let mut body = Vec::new();
                 let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
                 if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
-                    let _ = req.respond(tiny_http::Response::from_string("")
-                        .with_status_code(413));
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(413));
                     continue;
                 }
                 let raw = String::from_utf8_lossy(&body).to_string();
@@ -258,13 +262,11 @@ impl SlackServer {
                     && given.len() == expected.len()
                     && crate::webhook::secret_eq(given, &expected);
                 if !ok {
-                    let _ = req.respond(tiny_http::Response::from_string("")
-                        .with_status_code(403));
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(403));
                     continue;
                 }
                 let Ok(payload) = serde_json::from_str::<Value>(&raw) else {
-                    let _ = req.respond(tiny_http::Response::from_string("")
-                        .with_status_code(400));
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(400));
                     continue;
                 };
                 // 2) url_verification handshake — echo the challenge.
@@ -305,7 +307,9 @@ impl SlackServer {
                             .filter(|t| !t.is_empty())
                             .unwrap_or(&ts)
                             .to_string();
-                        if (!text.is_empty() || !files.is_empty()) && !channel.is_empty() && !ts.is_empty()
+                        if (!text.is_empty() || !files.is_empty())
+                            && !channel.is_empty()
+                            && !ts.is_empty()
                         {
                             let key = dedup_key(ev);
                             if !seen.seen(&key) {
@@ -428,8 +432,7 @@ impl SlackReplyServer {
         let session_token = self.token.clone();
         let handle = std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(mut req)) =
-                    server.recv_timeout(std::time::Duration::from_millis(400))
+                let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(400))
                 else {
                     continue;
                 };
@@ -446,7 +449,10 @@ impl SlackReplyServer {
                 };
                 // Defense in depth: even bound loopback-only, refuse any
                 // non-loopback peer.
-                let remote = req.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+                let remote = req
+                    .remote_addr()
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_default();
                 let loopback = {
                     let a = remote.strip_prefix("::ffff:").unwrap_or(&remote);
                     a == "::1" || a.starts_with("127.")
@@ -455,8 +461,7 @@ impl SlackReplyServer {
                     respond(req, 403, "");
                     continue;
                 }
-                if req.method().as_str() != "POST"
-                    || req.url().split('?').next() != Some("/reply")
+                if req.method().as_str() != "POST" || req.url().split('?').next() != Some("/reply")
                 {
                     respond(req, 404, "");
                     continue;
@@ -530,7 +535,13 @@ fn sanitize_filename(name: Option<&str>, tag: &str) -> String {
         .unwrap_or("file");
     let safe: String = base
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let safe = safe.trim_start_matches('.');
     let safe = if safe.is_empty() { "file" } else { safe };
@@ -542,7 +553,11 @@ fn sanitize_filename(name: Option<&str>, tag: &str) -> String {
 /// token (Authorization header only — never logged). Returns the local
 /// {path,name,mimetype} or None on any failure; a partial list is still
 /// useful to the agent.
-pub fn download_slack_file(file: &Value, bot_token: &str, dest_dir: &std::path::Path) -> Option<Value> {
+pub fn download_slack_file(
+    file: &Value,
+    bot_token: &str,
+    dest_dir: &std::path::Path,
+) -> Option<Value> {
     let url = file["url_private"].as_str()?;
     if !url.starts_with("https://") {
         return None;
@@ -573,8 +588,14 @@ pub fn download_slack_file(file: &Value, bot_token: &str, dest_dir: &std::path::
 
 /// Download every raw file from a file_share event — silently dropping the
 /// failures (index.ts downloadSlackFiles).
-pub fn download_slack_files(raw_files: &[Value], bot_token: Option<&str>, dest_dir: &std::path::Path) -> Vec<Value> {
-    let Some(token) = bot_token else { return Vec::new() };
+pub fn download_slack_files(
+    raw_files: &[Value],
+    bot_token: Option<&str>,
+    dest_dir: &std::path::Path,
+) -> Vec<Value> {
+    let Some(token) = bot_token else {
+        return Vec::new();
+    };
     raw_files
         .iter()
         .filter_map(|f| download_slack_file(f, token, dest_dir))
@@ -609,7 +630,11 @@ pub fn done_summary(task: &Value) -> String {
         .to_string();
     let title = task["title"].as_str().unwrap_or("");
     let head = format!(":white_check_mark: *{title}*");
-    let text = if body.is_empty() { head } else { format!("{head}\n\n{body}") };
+    let text = if body.is_empty() {
+        head
+    } else {
+        format!("{head}\n\n{body}")
+    };
     if text.chars().count() > 2800 {
         format!("{}…", text.chars().take(2799).collect::<String>())
     } else {
@@ -649,7 +674,12 @@ mod tests {
     fn trigger_mentions_activated_threads_and_filters() {
         let mut th = FifoSet::new(ACTIVATED_THREADS_MAX);
         // app_mention triggers and activates the thread.
-        let (t, _, _) = should_trigger(&ev("C", "1.0", "app_mention", "<@B01> hi"), Some("B01"), None, &mut th);
+        let (t, _, _) = should_trigger(
+            &ev("C", "1.0", "app_mention", "<@B01> hi"),
+            Some("B01"),
+            None,
+            &mut th,
+        );
         assert!(t);
         assert!(th.contains("1.0"));
         // A later reply in that thread triggers without a mention.
@@ -658,9 +688,19 @@ mod tests {
         let (t2, _, _) = should_trigger(&rep, Some("B01"), None, &mut th);
         assert!(t2);
         // A text mention elsewhere triggers; unrelated messages don't.
-        let (t3, _, _) = should_trigger(&ev("C", "2", "message", "hey <@B01>"), Some("B01"), None, &mut th);
+        let (t3, _, _) = should_trigger(
+            &ev("C", "2", "message", "hey <@B01>"),
+            Some("B01"),
+            None,
+            &mut th,
+        );
         assert!(t3);
-        let (t4, _, _) = should_trigger(&ev("C", "3", "message", "noise"), Some("B01"), None, &mut th);
+        let (t4, _, _) = should_trigger(
+            &ev("C", "3", "message", "noise"),
+            Some("B01"),
+            None,
+            &mut th,
+        );
         assert!(!t4);
         // Bot posts + non-file_share subtypes are dropped (self-loop guard).
         let mut bot = ev("C", "4", "app_mention", "<@B01>");
@@ -670,7 +710,15 @@ mod tests {
         edit["subtype"] = json!("message_changed");
         assert!(!should_trigger(&edit, Some("B01"), None, &mut th).0);
         // Channel filter.
-        assert!(!should_trigger(&ev("OTHER", "6", "app_mention", "<@B01>"), Some("B01"), Some("C"), &mut th).0);
+        assert!(
+            !should_trigger(
+                &ev("OTHER", "6", "app_mention", "<@B01>"),
+                Some("B01"),
+                Some("C"),
+                &mut th
+            )
+            .0
+        );
     }
 
     #[test]
@@ -690,7 +738,10 @@ mod tests {
     fn mention_strip_only_leading() {
         assert_eq!(strip_leading_mention("<@B01> do x"), "do x");
         assert_eq!(strip_leading_mention("  <@B01>   do x"), "do x");
-        assert_eq!(strip_leading_mention("tell <@B01> something"), "tell <@B01> something");
+        assert_eq!(
+            strip_leading_mention("tell <@B01> something"),
+            "tell <@B01> something"
+        );
         assert_eq!(strip_leading_mention("no mention"), "no mention");
     }
 }

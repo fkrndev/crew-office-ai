@@ -17,7 +17,9 @@ fn serve_once(response: &str) -> (std::thread::JoinHandle<serde_json::Value>, St
     let h = std::thread::spawn(move || {
         let (mut s, _) = listener.accept().unwrap();
         let mut line = String::new();
-        BufReader::new(s.try_clone().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(s.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         s.write_all(resp.as_bytes()).unwrap();
         s.write_all(b"\n").unwrap();
         serde_json::from_str(&line).unwrap()
@@ -27,9 +29,7 @@ fn serve_once(response: &str) -> (std::thread::JoinHandle<serde_json::Value>, St
 
 fn run_shim(args: &[&str], env: &[(&str, &str)], stdin_data: &str) -> String {
     let mut cmd = Command::new(BIN);
-    cmd.args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+    cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped());
     // Guard against a stray HIVE_SOCK/AGENT_ID in the parent env (full
     // env_clear() on Windows would strip SystemRoot and break spawn).
     cmd.env_remove("HIVE_SOCK").env_remove("AGENT_ID");
@@ -49,7 +49,8 @@ fn run_shim(args: &[&str], env: &[(&str, &str)], stdin_data: &str) -> String {
 
 #[test]
 fn claude_mode_envelope_and_verbatim_response() {
-    let (h, addr) = serve_once(r#"{"hookSpecificOutput":{"permissionDecisionReason":"operator denied"}}"#);
+    let (h, addr) =
+        serve_once(r#"{"hookSpecificOutput":{"permissionDecisionReason":"operator denied"}}"#);
     let out = run_shim(
         &[],
         &[("HIVE_SOCK", &addr), ("AGENT_ID", "w1")],
@@ -67,7 +68,8 @@ fn claude_mode_envelope_and_verbatim_response() {
 
 #[test]
 fn hermes_mode_maps_event_and_translates_deny() {
-    let (h, addr) = serve_once(r#"{"hookSpecificOutput":{"permissionDecisionReason":"operator denied"}}"#);
+    let (h, addr) =
+        serve_once(r#"{"hookSpecificOutput":{"permissionDecisionReason":"operator denied"}}"#);
     let out = run_shim(
         &["--hermes", "PreToolUse"],
         &[("HIVE_SOCK", &addr), ("AGENT_ID", "h1")],
@@ -139,7 +141,11 @@ fn unreachable_socket_fails_open() {
 #[test]
 fn stdin_without_event_falls_to_payload_name() {
     let (h, addr) = serve_once("{}");
-    let _ = run_shim(&[], &[("HIVE_SOCK", &addr)], r#"{"hook_event_name":"SubagentStop"}"#);
+    let _ = run_shim(
+        &[],
+        &[("HIVE_SOCK", &addr)],
+        r#"{"hook_event_name":"SubagentStop"}"#,
+    );
     let env = h.join().unwrap();
     assert_eq!(env["event"], "SubagentStop");
 }

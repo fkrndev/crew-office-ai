@@ -29,7 +29,13 @@ use crate::pty::{self, Resolved};
 /// Non-memory files `mempalace mine` must not ingest (settings.json, cursor,
 /// inbox/outbox JSON, a Codex worker's private CODEX_HOME). `mempalace mine`
 /// honors .gitignore — kept in sync with upstream MINE_IGNORE_LINES.
-const MINE_IGNORE_LINES: &[&str] = &["settings.json", "cursor.json", "inbox/", "outbox/", ".codex/"];
+const MINE_IGNORE_LINES: &[&str] = &[
+    "settings.json",
+    "cursor.json",
+    "inbox/",
+    "outbox/",
+    ".codex/",
+];
 
 /// Re-mine changed memories every 10 min (upstream MINE_INTERVAL_MS).
 const MINE_INTERVAL_MS: u64 = 600_000;
@@ -60,8 +66,7 @@ fn mempalace_device() -> Option<&'static str> {
 fn ensure_mine_ignore(agent_dir: &Path) {
     let path = agent_dir.join(".gitignore");
     let existing = fs::read_to_string(&path).unwrap_or_default();
-    let have: std::collections::HashSet<&str> =
-        existing.lines().map(|l| l.trim()).collect();
+    let have: std::collections::HashSet<&str> = existing.lines().map(|l| l.trim()).collect();
     let missing: Vec<&&str> = MINE_IGNORE_LINES
         .iter()
         .filter(|l| !have.contains(**l))
@@ -256,7 +261,10 @@ impl MemoryPalace {
             .unwrap_or_default();
         let candidates: Vec<PathBuf> = if cfg!(windows) {
             vec![
-                PathBuf::from(&home_dir).join(".local").join("bin").join("mempalace.exe"),
+                PathBuf::from(&home_dir)
+                    .join(".local")
+                    .join("bin")
+                    .join("mempalace.exe"),
                 PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default())
                     .join("Programs")
                     .join("Python")
@@ -265,7 +273,10 @@ impl MemoryPalace {
             ]
         } else {
             vec![
-                PathBuf::from(&home_dir).join(".local").join("bin").join("mempalace"),
+                PathBuf::from(&home_dir)
+                    .join(".local")
+                    .join("bin")
+                    .join("mempalace"),
                 PathBuf::from("/opt/homebrew/bin/mempalace"),
                 PathBuf::from("/usr/local/bin/mempalace"),
             ]
@@ -768,12 +779,7 @@ mod tests {
             let t = chrono::Local::now() - chrono::Duration::minutes(mins_ago);
             format!("seg-{tag}.corrupt-{}", t.format("%Y%m%d-%H%M%S"))
         };
-        let names = vec![
-            recent.clone(),
-            mk(30, "a"),
-            mk(40, "b"),
-            mk(50, "c"),
-        ];
+        let names = vec![recent.clone(), mk(30, "a"), mk(40, "b"), mk(50, "c")];
         let doomed = quarantine_dirs_to_reap(&names, now);
         // newest 2 kept → only the oldest two are candidates (a is #3, kept
         // since keep=2? — sorted newest-first: recent, a, b, c → b,c doomed)
@@ -783,10 +789,28 @@ mod tests {
 
     #[test]
     fn mine_delay_doubles_then_snaps_back() {
-        assert_eq!(next_mine_delay_ms(MINE_INTERVAL_MS, MINE_INTERVAL_MS, MINE_BACKOFF_MAX_MS, false), MINE_INTERVAL_MS);
-        let doubled = next_mine_delay_ms(MINE_INTERVAL_MS, MINE_INTERVAL_MS, MINE_BACKOFF_MAX_MS, true);
+        assert_eq!(
+            next_mine_delay_ms(
+                MINE_INTERVAL_MS,
+                MINE_INTERVAL_MS,
+                MINE_BACKOFF_MAX_MS,
+                false
+            ),
+            MINE_INTERVAL_MS
+        );
+        let doubled = next_mine_delay_ms(
+            MINE_INTERVAL_MS,
+            MINE_INTERVAL_MS,
+            MINE_BACKOFF_MAX_MS,
+            true,
+        );
         assert_eq!(doubled, 2 * MINE_INTERVAL_MS);
-        let capped = next_mine_delay_ms(MINE_BACKOFF_MAX_MS, MINE_INTERVAL_MS, MINE_BACKOFF_MAX_MS, true);
+        let capped = next_mine_delay_ms(
+            MINE_BACKOFF_MAX_MS,
+            MINE_INTERVAL_MS,
+            MINE_BACKOFF_MAX_MS,
+            true,
+        );
         assert_eq!(capped, MINE_BACKOFF_MAX_MS);
     }
 
@@ -797,7 +821,11 @@ mod tests {
         let s = settings(&dir);
         assert!(s.enabled);
         assert_eq!(s.model, "minilm");
-        fs::write(dir.join("config.json"), r#"{"semanticMemory":false,"embeddingModel":"embeddinggemma"}"#).unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{"semanticMemory":false,"embeddingModel":"embeddinggemma"}"#,
+        )
+        .unwrap();
         let s = settings(&dir);
         assert!(!s.enabled);
         assert_eq!(s.model, "embeddinggemma");

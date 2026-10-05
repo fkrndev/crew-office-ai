@@ -94,8 +94,12 @@ pub fn event_allowlist(event: &str) -> Option<&'static [&'static str]> {
 }
 
 /// The only values `feature_used.feature` may take.
-pub const FEATURES: &[&str] =
-    &["slack_trigger", "webhook_trigger", "hire_install", "voice_dictation"];
+pub const FEATURES: &[&str] = &[
+    "slack_trigger",
+    "webhook_trigger",
+    "hire_install",
+    "voice_dictation",
+];
 
 /// The only values `message_sent.surface` may take — the four places a HUMAN
 /// can send a message to an agent.
@@ -288,7 +292,10 @@ impl Analytics {
     pub fn track_from_renderer(&self, app: &AppHandle, event: &str, props: &Map<String, Value>) {
         match event {
             "message_sent" => {
-                let surface = props.get("surface").and_then(|v| v.as_str()).unwrap_or_default();
+                let surface = props
+                    .get("surface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if RENDERER_MESSAGE_SURFACES.contains(&surface) {
                     self.message_sent(app, surface);
                 }
@@ -415,8 +422,14 @@ impl Analytics {
 /// here because the regex crate isn't a dependency).
 pub fn valid_version(v: &str) -> bool {
     let (core, prerelease_ok) = match v.split_once('-') {
-        Some((c, tag)) => (c, !tag.is_empty() && tag.len() <= 32
-            && tag.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.')),
+        Some((c, tag)) => (
+            c,
+            !tag.is_empty()
+                && tag.len() <= 32
+                && tag
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '.'),
+        ),
         None => (v, true),
     };
     if !prerelease_ok {
@@ -473,14 +486,18 @@ const LOG_TAIL_BYTES: usize = 128 * 1024;
 /// `auto` our updater installed it, `manual` something else moved the version,
 /// `unknown` there is no log to read.
 pub fn update_via(log_text: Option<&str>, to_version: &str) -> &'static str {
-    let Some(text) = log_text else { return "unknown" };
+    let Some(text) = log_text else {
+        return "unknown";
+    };
     let lines: Vec<&str> = text.split('\n').collect();
 
     // "update downloaded: <ver>" with a lookahead that excludes every character
     // a version can CONTINUE with — `0.4.5` must not match `0.4.55` or
     // `0.4.5-beta.1`.
     let downloaded = |line: &str| -> bool {
-        let Some(pos) = line.find(LOG_DOWNLOADED) else { return false };
+        let Some(pos) = line.find(LOG_DOWNLOADED) else {
+            return false;
+        };
         let rest = &line[pos + LOG_DOWNLOADED.len()..];
         if !rest.starts_with(to_version) {
             return false;
@@ -504,7 +521,10 @@ pub fn update_via(log_text: Option<&str>, to_version: &str) -> &'static str {
     };
     // updater.ts logs the failure immediately after the request — an attempt
     // that threw is the very next line; the app never quit.
-    if lines.get(j + 1).is_some_and(|l| l.contains(LOG_QUIT_FAILED)) {
+    if lines
+        .get(j + 1)
+        .is_some_and(|l| l.contains(LOG_QUIT_FAILED))
+    {
         return "manual";
     }
     // A clean return still proves nothing: disproof only. A later launch naming
@@ -566,7 +586,9 @@ mod tests {
     #[test]
     fn allowlist_is_exact() {
         assert!(event_allowlist("first_run").unwrap().is_empty());
-        assert!(event_allowlist("message_sent").unwrap().contains(&"surface"));
+        assert!(event_allowlist("message_sent")
+            .unwrap()
+            .contains(&"surface"));
         assert!(event_allowlist("rm_rf").is_none());
         assert!(!RENDERER_MESSAGE_SURFACES.contains(&"hive"));
     }
@@ -582,7 +604,9 @@ mod tests {
         assert!(update_transition(Some("0.4.6"), "0.4.6", false).is_none());
         assert!(update_transition(None, "0.4.6", true).is_none());
         assert_eq!(
-            update_transition(None, "0.4.6", false).unwrap().from_version,
+            update_transition(None, "0.4.6", false)
+                .unwrap()
+                .from_version,
             "unknown"
         );
     }

@@ -153,11 +153,19 @@ impl TelemetryCollector {
     /// `if (moved) hive.appendCostLedger(sample)` needs a sessionId + that
     /// session's cumulative usd, not the agent-rolled aggregate.
     pub fn session_samples(&self, agent_id: &str) -> Vec<(String, serde_json::Value)> {
-        let sids = self.agent_sessions.lock().unwrap().get(agent_id).cloned().unwrap_or_default();
+        let sids = self
+            .agent_sessions
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_default();
         let sessions = self.sessions.lock().unwrap();
         let mut out = Vec::new();
         for sid in sids {
-            let Some(a) = sessions.get(&sid) else { continue };
+            let Some(a) = sessions.get(&sid) else {
+                continue;
+            };
             out.push((
                 sid.clone(),
                 serde_json::json!({
@@ -246,7 +254,13 @@ impl TelemetryCollector {
     /// per agent with live telemetry + the full span rings, so a renderer that
     /// missed the live pushes can hydrate in one call.
     pub fn snapshot(&self) -> serde_json::Value {
-        let agent_ids: Vec<String> = self.agent_sessions.lock().unwrap().keys().cloned().collect();
+        let agent_ids: Vec<String> = self
+            .agent_sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
         let mut usage = Vec::new();
         for id in &agent_ids {
             if let Some(s) = self.sample(id) {
@@ -264,7 +278,12 @@ impl TelemetryCollector {
             .lock()
             .unwrap()
             .iter()
-            .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!([]))))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!([])),
+                )
+            })
             .collect();
         serde_json::json!({ "usage": usage, "spans": spans })
     }
@@ -299,10 +318,25 @@ impl TelemetryCollector {
     fn ingest_metrics(&self, body: &Value, app: Option<&tauri::AppHandle>) {
         let now = now_ms();
         let mut touched: HashSet<String> = HashSet::new();
-        for rm in body.get("resourceMetrics").and_then(|v| v.as_array()).into_iter().flatten() {
+        for rm in body
+            .get("resourceMetrics")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
             let res_attrs = flatten_attrs(rm.pointer("/resource/attributes"));
-            for sm in rm.get("scopeMetrics").and_then(|v| v.as_array()).into_iter().flatten() {
-                for metric in sm.get("metrics").and_then(|v| v.as_array()).into_iter().flatten() {
+            for sm in rm
+                .get("scopeMetrics")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                for metric in sm
+                    .get("metrics")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     let name = metric.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let points = metric
                         .pointer("/sum/dataPoints")
@@ -310,7 +344,8 @@ impl TelemetryCollector {
                         .and_then(|v| v.as_array());
                     for dp in points.into_iter().flatten() {
                         let attrs = flatten_attrs(dp.get("attributes"));
-                        let agent_id = s(attrs.get("agent.id").or_else(|| res_attrs.get("agent.id")));
+                        let agent_id =
+                            s(attrs.get("agent.id").or_else(|| res_attrs.get("agent.id")));
                         let session_id = s(attrs.get("session.id"));
                         if agent_id.is_empty() || session_id.is_empty() {
                             continue;
@@ -368,13 +403,28 @@ impl TelemetryCollector {
 
     fn ingest_logs(&self, body: &Value, app: Option<&tauri::AppHandle>) {
         let now = now_ms();
-        for rl in body.get("resourceLogs").and_then(|v| v.as_array()).into_iter().flatten() {
+        for rl in body
+            .get("resourceLogs")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
             let res_attrs = flatten_attrs(rl.pointer("/resource/attributes"));
-            for sl in rl.get("scopeLogs").and_then(|v| v.as_array()).into_iter().flatten() {
-                for lr in sl.get("logRecords").and_then(|v| v.as_array()).into_iter().flatten() {
+            for sl in rl
+                .get("scopeLogs")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                for lr in sl
+                    .get("logRecords")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     let attrs = flatten_attrs(lr.get("attributes"));
-                    let name = s(attrs.get("event.name"))
-                        .if_empty(|| s(lr.pointer("/body/stringValue")));
+                    let name =
+                        s(attrs.get("event.name")).if_empty(|| s(lr.pointer("/body/stringValue")));
                     let agent_id = s(attrs.get("agent.id").or_else(|| res_attrs.get("agent.id")));
                     if agent_id.is_empty() {
                         continue;

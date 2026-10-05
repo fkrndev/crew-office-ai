@@ -42,7 +42,10 @@ fn is_newer(tag: &str, current: &str) -> bool {
     }
     let (a, b) = (triple(tag), triple(current));
     for i in 0..a.len().max(b.len()) {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
         if x != y {
             return x > y;
         }
@@ -72,11 +75,13 @@ fn pick_download_asset(assets: &Value) -> Option<String> {
 }
 
 fn fetch_latest() -> Result<Value, String> {
-    let resp = ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
-        .header("User-Agent", UA)
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| e.to_string())?;
+    let resp = ureq::get(&format!(
+        "https://api.github.com/repos/{REPO}/releases/latest"
+    ))
+    .header("User-Agent", UA)
+    .header("Accept", "application/vnd.github+json")
+    .call()
+    .map_err(|e| e.to_string())?;
     resp.into_body()
         .read_json::<Value>()
         .map_err(|e| e.to_string())
@@ -152,7 +157,11 @@ pub fn update_restart_and_install(app: AppHandle) -> Result<Value, String> {
 
 /// update:simulate — DEV ONLY (upstream's debug surface).
 #[tauri::command(async)]
-pub fn update_simulate(app: AppHandle, version: Option<String>, notes: Option<String>) -> Result<bool, String> {
+pub fn update_simulate(
+    app: AppHandle,
+    version: Option<String>,
+    notes: Option<String>,
+) -> Result<bool, String> {
     let v = version.unwrap_or_else(|| "9.9.9".into());
     emit(
         &app,

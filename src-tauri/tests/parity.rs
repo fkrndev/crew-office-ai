@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use agent_office_lib::hive::{Hive, Message, RegistryEntry};
 use agent_office_lib::pricing;
 use agent_office_lib::skills;
-use agent_office_lib::trigger_history::{classify_inbound_kind, TriggerHistory, TriggerHistoryEntry};
+use agent_office_lib::trigger_history::{
+    classify_inbound_kind, TriggerHistory, TriggerHistoryEntry,
+};
 use serde_json::{json, Value};
 
 fn tmp(tag: &str) -> PathBuf {
@@ -62,7 +64,13 @@ fn chrono_now() -> String {
 fn hive_init_seeds_protocol_files() {
     let d = tmp("init");
     let _ = hive_at(&d);
-    for f in ["PROTOCOL.md", "board.md", "tasks.json", "registry.json", "log.jsonl"] {
+    for f in [
+        "PROTOCOL.md",
+        "board.md",
+        "tasks.json",
+        "registry.json",
+        "log.jsonl",
+    ] {
         assert!(d.join("hive").join(f).exists(), "missing {f}");
     }
     // init commits — the hive repo exists (single-committer rule).
@@ -96,17 +104,22 @@ fn routing_contract_god_human_broadcast_bounce() {
     reg(&h, "w2", false, &d);
 
     // 'human' routes through god (spend/destructive/scope escalation path).
-    h.send(&Message::new("w1", "human", "request", "s", "b")).unwrap();
+    h.send(&Message::new("w1", "human", "request", "s", "b"))
+        .unwrap();
     // broadcast → everyone but the sender.
-    h.send(&Message::new("god", "broadcast", "inform", "s", "b")).unwrap();
+    h.send(&Message::new("god", "broadcast", "inform", "s", "b"))
+        .unwrap();
     // unknown id → bounces to god (alive god ⇒ not back to sender) — upstream
     // subject is "[undeliverable — no agent ...]" (hive.ts:1771).
-    h.send(&Message::new("w2", "nonexistent", "request", "s", "b")).unwrap();
+    h.send(&Message::new("w2", "nonexistent", "request", "s", "b"))
+        .unwrap();
 
     let ds = h.router_tick().unwrap();
     let god_in = h.inbox("god").unwrap();
     assert!(god_in.iter().any(|m| m.from == "w1")); // human → god
-    assert!(god_in.iter().any(|m| m.subject.starts_with("[undeliverable"))); // unknown → bounced to god
+    assert!(god_in
+        .iter()
+        .any(|m| m.subject.starts_with("[undeliverable"))); // unknown → bounced to god
     assert_eq!(h.inbox("w1").unwrap().len(), 1); // broadcast skip sender=god
     assert_eq!(h.inbox("w2").unwrap().len(), 1);
     assert!(ds.len() >= 3);
@@ -129,7 +142,8 @@ fn malformed_outbox_message_quarantines_not_wedges() {
     assert!(d.join("hive/agents/w1/outbox/.sent/bad-bad.json").exists());
     // And a valid message afterwards still routes. (Not a self-send —
     // upstream's never-deliver-to-self guard drops w1→w1.)
-    h.send(&Message::new("w1", "god", "inform", "s", "b")).unwrap();
+    h.send(&Message::new("w1", "god", "inform", "s", "b"))
+        .unwrap();
     assert_eq!(h.router_tick().unwrap().len(), 1);
     std::fs::remove_dir_all(&d).ok();
 }
@@ -143,10 +157,13 @@ fn status_and_cost_sample_persist() {
     assert_eq!(h.registry()[0].status, "working");
     // append_cost_sample → the proxy/hook cost ledger line lands.
     // The #56 dedup gate: only sessioned samples hit the ledger.
-    h.append_cost_sample("w1", &json!({
-        "session_id": "s1", "model": "claude-sonnet-4",
-        "input": 100, "output": 50
-    }))
+    h.append_cost_sample(
+        "w1",
+        &json!({
+            "session_id": "s1", "model": "claude-sonnet-4",
+            "input": 100, "output": 50
+        }),
+    )
     .unwrap();
     let sample = h.usage_sample("w1");
     assert!(sample.is_some());
@@ -183,7 +200,7 @@ fn task_patch_preserves_unknown_fields_and_clears_with_null() {
     let c1 = h.update_task("t1", &p).unwrap();
     assert_eq!(c1["status"], "done");
     assert_eq!(c1["scope"], "api"); // unknown fields survive
-    // Answering t2's ask keeps t1's card byte-identical in spirit.
+                                    // Answering t2's ask keeps t1's card byte-identical in spirit.
     let c2 = h.task_answer("t2", "yes").unwrap();
     assert_eq!(c2["humanQA"][0]["a"], "yes");
     // Answer patches only humanQA — status stays "blocked" until god unblocks.
@@ -218,7 +235,13 @@ fn trigger_ledger_full_cycle_pending_to_verdict() {
     assert!(!e.id.is_empty() && e.at > 0, "id+at stamped");
     assert_eq!(e.kind, "directive");
     let out = th
-        .update(&e.id, Some("approved".into()), Some("t-9".into()), None, None)
+        .update(
+            &e.id,
+            Some("approved".into()),
+            Some("t-9".into()),
+            None,
+            None,
+        )
         .unwrap();
     assert_eq!(out.decision.as_deref(), Some("approved"));
     assert_eq!(th.list().len(), 1);
@@ -231,7 +254,7 @@ fn ledger_survives_corrupt_file() {
     let th = TriggerHistory::new(d.clone());
     std::fs::write(d.join("trigger-history.json"), "[[[not json").unwrap();
     assert!(th.list().is_empty()); // degrades to empty, never throws
-    // Partially-corrupt rows drop individually.
+                                   // Partially-corrupt rows drop individually.
     std::fs::write(
         d.join("trigger-history.json"),
         r#"[{"id":"ok","source":"webhook","direction":"inbound","body":"x","kind":"directive","at":1},
@@ -251,7 +274,9 @@ fn pricing_golden_costs_and_fallback() {
     let sonnet = pricing::price_for("claude-sonnet-4-5");
     assert!((sonnet.input_per_m - 3.0).abs() < 1e-9 && (sonnet.output_per_m - 15.0).abs() < 1e-9);
     let opus = pricing::price_for("claude-opus-4-1");
-    assert!((opus.input_per_m - 15.0).abs() < 1e-9 && (opus.cache_write_per_m - 18.75).abs() < 1e-9);
+    assert!(
+        (opus.input_per_m - 15.0).abs() < 1e-9 && (opus.cache_write_per_m - 18.75).abs() < 1e-9
+    );
     let haiku = pricing::price_for("claude-haiku-4-5");
     assert!((haiku.input_per_m - 0.8).abs() < 1e-9);
     // Unknown models default to Sonnet; bracket suffixes normalize away.
@@ -293,13 +318,16 @@ fn tokenize_command_respects_quotes() {
     let toks = agent_office_lib::misc::tokenize_command(
         "claude --model \"Gemini 3.1 Pro (High)\" --permission-mode bypassPermissions",
     );
-    assert_eq!(toks, vec![
-        "claude".to_string(),
-        "--model".to_string(),
-        "Gemini 3.1 Pro (High)".to_string(),
-        "--permission-mode".to_string(),
-        "bypassPermissions".to_string(),
-    ]);
+    assert_eq!(
+        toks,
+        vec![
+            "claude".to_string(),
+            "--model".to_string(),
+            "Gemini 3.1 Pro (High)".to_string(),
+            "--permission-mode".to_string(),
+            "bypassPermissions".to_string(),
+        ]
+    );
 }
 
 #[test]

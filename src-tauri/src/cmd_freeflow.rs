@@ -55,7 +55,10 @@ pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String
     let p = &patch;
 
     if let Some(enabled) = p.get("enabled").and_then(|v| v.as_bool()) {
-        st.persist.lock().unwrap().set_kv(KV_ENABLED, &json!(enabled));
+        st.persist
+            .lock()
+            .unwrap()
+            .set_kv(KV_ENABLED, &json!(enabled));
     }
     let api_key = p
         .get("apiKey")
@@ -67,14 +70,20 @@ pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String
         if k.is_empty() {
             let _ = entry.delete_credential();
         } else {
-            entry.set_password(&k).map_err(|e| format!("keychain: {e}"))?;
+            entry
+                .set_password(&k)
+                .map_err(|e| format!("keychain: {e}"))?;
         }
     }
     if let Some(model) = p.get("model").and_then(|v| v.as_str()) {
         let model = model.trim();
         st.persist.lock().unwrap().set_kv(
             KV_MODEL,
-            &json!(if model.is_empty() { DEFAULT_GROQ_MODEL } else { model }),
+            &json!(if model.is_empty() {
+                DEFAULT_GROQ_MODEL
+            } else {
+                model
+            }),
         );
     }
     Ok(json!({ "ok": true }))

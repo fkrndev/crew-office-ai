@@ -171,7 +171,10 @@ impl Config {
         };
         ensure(crate::missions::ops_standup(), &mut self.ops_standup_seeded);
         ensure(crate::missions::heartbeat(), &mut self.heartbeat_seeded);
-        ensure(crate::missions::compact_maintenance(), &mut self.compact_seeded);
+        ensure(
+            crate::missions::compact_maintenance(),
+            &mut self.compact_seeded,
+        );
         changed
     }
 }

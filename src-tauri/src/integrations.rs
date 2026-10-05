@@ -114,10 +114,7 @@ fn valid_slug(id: &str) -> bool {
 
 /// HEADER_NAME_RE = /^[A-Za-z0-9-]{1,64}$/
 fn valid_header_name(h: &str) -> bool {
-    !h.is_empty()
-        && h.len() <= 64
-        && h.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    !h.is_empty() && h.len() <= 64 && h.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
 
 const ALL_AUTH_TYPES: &[&str] = &["none", "bearer", "header", "github"];
@@ -152,13 +149,13 @@ pub fn parse_url(s: &str) -> Option<ParsedUrl> {
     let (scheme, rest) = s.split_once("://")?;
     let scheme_lc = scheme.to_lowercase();
     if scheme_lc.is_empty()
-        || !scheme_lc
-            .bytes()
-            .enumerate()
-            .all(|(i, c)| {
-                (i == 0 && c.is_ascii_lowercase())
-                    || (i > 0 && (c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'+' | b'.' | b'-')))
-            })
+        || !scheme_lc.bytes().enumerate().all(|(i, c)| {
+            (i == 0 && c.is_ascii_lowercase())
+                || (i > 0
+                    && (c.is_ascii_lowercase()
+                        || c.is_ascii_digit()
+                        || matches!(c, b'+' | b'.' | b'-')))
+        })
     {
         return None;
     }
@@ -196,10 +193,7 @@ pub fn parse_url(s: &str) -> Option<ParsedUrl> {
     }
     let tail = &rest[auth_end..];
     let path = {
-        let p = tail
-            .split(|c| c == '?' || c == '#')
-            .next()
-            .unwrap_or("");
+        let p = tail.split(|c| c == '?' || c == '#').next().unwrap_or("");
         if p.is_empty() {
             "/".to_string()
         } else {
@@ -221,8 +215,7 @@ pub fn validate_base_url(base_url: &str) -> Result<ParsedUrl, String> {
     if base_url.trim().is_empty() {
         return Err("baseUrl is required".into());
     }
-    let u = parse_url(base_url.trim())
-        .ok_or_else(|| "baseUrl must be a valid URL".to_string())?;
+    let u = parse_url(base_url.trim()).ok_or_else(|| "baseUrl must be a valid URL".to_string())?;
     if u.has_userinfo {
         return Err("baseUrl must not contain userinfo".into());
     }
@@ -272,7 +265,10 @@ pub fn validate_record(rec: &Value) -> Result<IntegrationRecord, String> {
     }
     let auth_type = str_of("authType");
     if !ALL_AUTH_TYPES.contains(&auth_type.as_str()) {
-        return Err(format!("authType must be one of {}", ALL_AUTH_TYPES.join(", ")));
+        return Err(format!(
+            "authType must be one of {}",
+            ALL_AUTH_TYPES.join(", ")
+        ));
     }
     validate_base_url(&str_of("baseUrl"))?;
     let auth_header = if auth_type == "header" {
@@ -493,8 +489,7 @@ pub fn enabled_ids(harness_home: &Path) -> Vec<String> {
         .into_iter()
         .filter(|r| {
             r.enabled
-                && (!auth_type_needs_secret(&r.auth_type)
-                    || has_secret(r.secret_ref.as_deref()))
+                && (!auth_type_needs_secret(&r.auth_type) || has_secret(r.secret_ref.as_deref()))
         })
         .map(|r| r.id)
         .collect()
@@ -922,8 +917,7 @@ impl IntegrationBroker {
         (
             status,
             vec![("content-type".into(), "application/json".into())],
-            serde_json::to_vec(&json!({ "error": message, "code": code }))
-                .unwrap_or_default(),
+            serde_json::to_vec(&json!({ "error": message, "code": code })).unwrap_or_default(),
         )
     }
 
@@ -997,7 +991,11 @@ impl IntegrationBroker {
 
         // 4) Authorize against this worker's capability.
         if !cap.allowed_ids.contains(&integration_id) {
-            return Self::send_error(403, "forbidden", "integration not in this worker capability");
+            return Self::send_error(
+                403,
+                "forbidden",
+                "integration not in this worker capability",
+            );
         }
         // 5) Resolve the record (still enabled?).
         let Some(rec) = get_record(home, &integration_id) else {
@@ -1016,7 +1014,11 @@ impl IntegrationBroker {
         if auth_type_needs_secret(&rec.auth_type) {
             secret = get_secret(rec.secret_ref.as_deref());
             if secret.is_none() {
-                return Self::send_error(503, "no_secret", "no secret configured for this integration");
+                return Self::send_error(
+                    503,
+                    "no_secret",
+                    "no secret configured for this integration",
+                );
             }
         }
 
@@ -1143,7 +1145,11 @@ pub fn test_integration(harness_home: &Path, id: &str, path: &str) -> Value {
         return json!({ "ok": false, "error": "path escapes the integration baseUrl", "code": "bad_request" });
     };
     let secret = get_secret(rec.secret_ref.as_deref());
-    let headers = build_auth_headers(&rec.auth_type, rec.auth_header.as_deref(), secret.as_deref());
+    let headers = build_auth_headers(
+        &rec.auth_type,
+        rec.auth_header.as_deref(),
+        secret.as_deref(),
+    );
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_millis(TEST_TIMEOUT_MS)))
@@ -1155,9 +1161,11 @@ pub fn test_integration(harness_home: &Path, id: &str, path: &str) -> Value {
     for (k, v) in &headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
-    match rb.body(()).map_err(|e| e.to_string()).and_then(|r| {
-        agent.run(r).map_err(|e| e.to_string())
-    }) {
+    match rb
+        .body(())
+        .map_err(|e| e.to_string())
+        .and_then(|r| agent.run(r).map_err(|e| e.to_string()))
+    {
         Ok(resp) => {
             let status = resp.status().as_u16();
             json!({ "ok": resp.status().is_success(), "status": status })
@@ -1237,7 +1245,9 @@ mod tests {
             vec![("x-key".to_string(), "s3cr3t".to_string())]
         );
         let gh = build_auth_headers("github", None, Some("t"));
-        assert!(gh.iter().any(|(k, v)| k == "authorization" && v == "Bearer t"));
+        assert!(gh
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == "Bearer t"));
         assert!(gh.iter().any(|(k, _)| k == "x-github-api-version"));
         assert!(build_auth_headers("none", None, Some("x")).is_empty());
     }

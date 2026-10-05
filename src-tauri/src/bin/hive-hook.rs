@@ -202,7 +202,11 @@ fn normalize_grok(p: &mut serde_json::Value) {
         .iter()
         .find(|(g, _)| *g == raw)
         .map(|(_, c)| c.to_string())
-        .unwrap_or(if raw.is_empty() { "Unknown".into() } else { raw });
+        .unwrap_or(if raw.is_empty() {
+            "Unknown".into()
+        } else {
+            raw
+        });
     if let Some(obj) = p.as_object_mut() {
         let mv = |o: &mut serde_json::Map<String, serde_json::Value>, from: &str, to: &str| {
             if let Some(v) = o.remove(from) {

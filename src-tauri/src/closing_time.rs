@@ -15,12 +15,18 @@ use std::sync::Mutex;
 /// write these by hand.
 fn is_ack(subject: &str) -> bool {
     let s = subject.to_uppercase();
-    let normalized: String = s.chars().filter(|c| !matches!(c, '-' | '_' | ' ')).collect();
+    let normalized: String = s
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .collect();
     normalized.starts_with("CLOSINGTIMEACK")
 }
 fn is_complete(subject: &str) -> bool {
     let s = subject.to_uppercase();
-    let normalized: String = s.chars().filter(|c| !matches!(c, '-' | '_' | ' ')).collect();
+    let normalized: String = s
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .collect();
     normalized.starts_with("CLOSINGTIMECOMPLETE")
 }
 
@@ -94,7 +100,9 @@ impl ClosingTime {
         // would wait on ghosts that can never ACK.
         let workers: HashSet<String> = live_ids
             .iter()
-            .filter(|id| id.as_str() != god_id && reg.iter().any(|a| a.id == id.as_str() && !a.is_god))
+            .filter(|id| {
+                id.as_str() != god_id && reg.iter().any(|a| a.id == id.as_str() && !a.is_god)
+            })
             .cloned()
             .collect();
         let names = workers
@@ -102,13 +110,20 @@ impl ClosingTime {
             .map(|id| {
                 format!(
                     "{} ({})",
-                    reg.iter().find(|a| &a.id == id).map(|a| a.name.as_str()).unwrap_or(id),
+                    reg.iter()
+                        .find(|a| &a.id == id)
+                        .map(|a| a.name.as_str())
+                        .unwrap_or(id),
                     id
                 )
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let names = if names.is_empty() { "(none — the floor is just you)".into() } else { names };
+        let names = if names.is_empty() {
+            "(none — the floor is just you)".into()
+        } else {
+            names
+        };
 
         let _ = hive.send_virtual(
             "human",
@@ -155,12 +170,20 @@ impl ClosingTime {
             timeout_emitted: false,
             concluded: false,
         });
-        Ok(self.inner.lock().unwrap().as_ref().map(|a| a.workers.len()).unwrap_or(0))
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|a| a.workers.len())
+            .unwrap_or(0))
     }
 
     /// Stand the floor back up — clear pending steers and tell god.
     pub fn cancel(&self, hive: &crate::hive::Hive, control: &mut crate::control::ControlRegistry) {
-        let Some(a) = self.inner.lock().unwrap().take() else { return };
+        let Some(a) = self.inner.lock().unwrap().take() else {
+            return;
+        };
         control.clear_steers(&a.god_id);
         for id in &a.workers {
             control.clear_steers(id);
@@ -240,6 +263,10 @@ impl ClosingTime {
 
     /// The concluded flag — lib.rs schedules teardown after the grace.
     pub fn concluded(&self) -> bool {
-        self.inner.lock().unwrap().as_ref().is_some_and(|a| a.concluded)
+        self.inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|a| a.concluded)
     }
 }

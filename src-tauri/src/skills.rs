@@ -53,7 +53,9 @@ pub fn parse_skill_frontmatter(md: &str) -> (Option<String>, Option<String>) {
                 .or_else(|| rest.find("\r\n---"))
                 .map(|i| &rest[..i])
         });
-    let Some(body) = body else { return (None, None) };
+    let Some(body) = body else {
+        return (None, None);
+    };
     let mut name = None;
     let mut description = None;
     let mut lines = body.lines().peekable();
@@ -119,10 +121,17 @@ fn scan_plugin_dir(dir: &Path, provider: &str, scope: &str, out: &mut Vec<LocalS
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let dir_name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let dir_name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         out.push(LocalSkill {
             id: format!("{scope}:{provider}:{entry}"),
-            name: entry.trim_end_matches(".js").trim_end_matches(".mjs").trim_end_matches(".cjs").into(),
+            name: entry
+                .trim_end_matches(".js")
+                .trim_end_matches(".mjs")
+                .trim_end_matches(".cjs")
+                .into(),
             description: format!("Plugin in {parent}/{dir_name}"),
             provider: provider.into(),
             scope: scope.into(),
@@ -139,13 +148,38 @@ pub fn list_local_skills(cwds: &[String], bundled_dir: Option<&Path>) -> Vec<Loc
     if let Some(b) = bundled_dir {
         scan_skill_dir(b, "claude", "bundled", &mut found);
     }
-    scan_skill_dir(&home.join(".claude").join("skills"), "claude", "user", &mut found);
-    scan_plugin_dir(&home.join(".config").join("opencode").join("plugin"), "opencode", "user", &mut found);
-    scan_plugin_dir(&home.join(".codex").join("plugins"), "codex", "user", &mut found);
+    scan_skill_dir(
+        &home.join(".claude").join("skills"),
+        "claude",
+        "user",
+        &mut found,
+    );
+    scan_plugin_dir(
+        &home.join(".config").join("opencode").join("plugin"),
+        "opencode",
+        "user",
+        &mut found,
+    );
+    scan_plugin_dir(
+        &home.join(".codex").join("plugins"),
+        "codex",
+        "user",
+        &mut found,
+    );
     for cwd in cwds.iter().filter(|c| !c.is_empty()) {
         let c = Path::new(cwd);
-        scan_skill_dir(&c.join(".claude").join("skills"), "claude", "project", &mut found);
-        scan_plugin_dir(&c.join(".opencode").join("plugin"), "opencode", "project", &mut found);
+        scan_skill_dir(
+            &c.join(".claude").join("skills"),
+            "claude",
+            "project",
+            &mut found,
+        );
+        scan_plugin_dir(
+            &c.join(".opencode").join("plugin"),
+            "opencode",
+            "project",
+            &mut found,
+        );
     }
     let rank = |s: &str| match s {
         "project" => 3,
@@ -177,7 +211,10 @@ pub fn parse_catalog_markdown(md: &str) -> Vec<CatalogSkill> {
     let mut seen = std::collections::HashSet::new();
     for raw in md.lines() {
         let line = raw.trim();
-        if let Some(h) = line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
+        if let Some(h) = line
+            .strip_prefix("## ")
+            .or_else(|| line.strip_prefix("### "))
+        {
             let clean = h
                 .split(']')
                 .map(|seg| seg.split('[').next_back().unwrap_or(seg))
@@ -186,7 +223,9 @@ pub fn parse_catalog_markdown(md: &str) -> Vec<CatalogSkill> {
                 .chars()
                 .filter(|c| !matches!(c, '*' | '_' | '`'))
                 .collect();
-            let clean = clean.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+            let clean = clean
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .trim();
             if !clean.is_empty() {
                 category = clean.to_string();
             }
@@ -196,7 +235,10 @@ pub fn parse_catalog_markdown(md: &str) -> Vec<CatalogSkill> {
             continue;
         }
         let cells: Vec<&str> = line.split('|').skip(1).collect();
-        let cells: Vec<&str> = cells[..cells.len().saturating_sub(1)].iter().map(|c| c.trim()).collect();
+        let cells: Vec<&str> = cells[..cells.len().saturating_sub(1)]
+            .iter()
+            .map(|c| c.trim())
+            .collect();
         if cells.len() < 3 {
             continue;
         }
@@ -259,7 +301,12 @@ pub fn load_catalog(cache_path: &Path, force: bool) -> CatalogResult {
         });
     if let Some((skills, at)) = &cached {
         if now.saturating_sub(*at) < CATALOG_TTL_MS && !force {
-            return CatalogResult { skills: skills.clone(), fetched_at: *at, stale: false, error: None };
+            return CatalogResult {
+                skills: skills.clone(),
+                fetched_at: *at,
+                stale: false,
+                error: None,
+            };
         }
     }
     match ureq::get(CATALOG_URL).call() {
@@ -269,11 +316,18 @@ pub fn load_catalog(cache_path: &Path, force: bool) -> CatalogResult {
             if skills.is_empty() {
                 if let Some((skills, at)) = cached {
                     return CatalogResult {
-                        skills, fetched_at: at, stale: true,
+                        skills,
+                        fetched_at: at,
+                        stale: true,
                         error: Some("catalog format changed".into()),
                     };
                 }
-                return CatalogResult { skills: vec![], fetched_at: 0, stale: true, error: Some("empty catalog".into()) };
+                return CatalogResult {
+                    skills: vec![],
+                    fetched_at: 0,
+                    stale: true,
+                    error: Some("empty catalog".into()),
+                };
             }
             let payload = serde_json::json!({ "skills": skills, "fetchedAt": now });
             if let Some(p) = cache_path.parent() {
@@ -282,14 +336,29 @@ pub fn load_catalog(cache_path: &Path, force: bool) -> CatalogResult {
             if let Ok(s) = serde_json::to_string(&payload) {
                 let _ = fs::write(cache_path, s);
             }
-            CatalogResult { skills, fetched_at: now, stale: false, error: None }
+            CatalogResult {
+                skills,
+                fetched_at: now,
+                stale: false,
+                error: None,
+            }
         }
         Err(e) => {
             let err = e.to_string();
             if let Some((skills, at)) = cached {
-                CatalogResult { skills, fetched_at: at, stale: true, error: Some(err) }
+                CatalogResult {
+                    skills,
+                    fetched_at: at,
+                    stale: true,
+                    error: Some(err),
+                }
             } else {
-                CatalogResult { skills: vec![], fetched_at: 0, stale: true, error: Some(err) }
+                CatalogResult {
+                    skills: vec![],
+                    fetched_at: 0,
+                    stale: true,
+                    error: Some(err),
+                }
             }
         }
     }
@@ -317,7 +386,11 @@ struct GhEntry {
 /// (ref empty = default branch — no guessing main vs master).
 pub fn parse_github_source_url(url: &str) -> Option<(String, String, String, String)> {
     let clean = url.trim();
-    let clean = clean.split(['#', '?']).next().unwrap_or("").trim_end_matches('/');
+    let clean = clean
+        .split(['#', '?'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
     let gh = clean.strip_prefix("https://github.com/")?;
     let parts: Vec<&str> = gh.split('/').collect();
     if parts.len() >= 4 && parts[2] == "tree" {
@@ -379,24 +452,24 @@ fn resolve_repo_root_skill_dir(
     repo: &str,
     entry_name: &str,
 ) -> std::result::Result<String, String> {
-    let api = |p: &str| {
-        format!(
-            "https://api.github.com/repos/{owner}/{repo}/contents/{}",
-            p
-        )
-    };
+    let api = |p: &str| format!("https://api.github.com/repos/{owner}/{repo}/contents/{}", p);
     let list = |p: &str| -> Vec<GhEntry> {
         gh_get_json(&api(p))
             .and_then(|v| {
                 if v.is_array() {
                     serde_json::from_value(v).map_err(Into::into)
                 } else {
-                    serde_json::from_value(v).map(|e| vec![e]).map_err(Into::into)
+                    serde_json::from_value(v)
+                        .map(|e| vec![e])
+                        .map_err(Into::into)
                 }
             })
             .unwrap_or_default()
     };
-    let has_skill = |l: &[GhEntry]| l.iter().any(|it| it.kind == "file" && it.name == "SKILL.md");
+    let has_skill = |l: &[GhEntry]| {
+        l.iter()
+            .any(|it| it.kind == "file" && it.name == "SKILL.md")
+    };
     let root = list("");
     if has_skill(&root) {
         return Ok(String::new());
@@ -429,21 +502,24 @@ fn resolve_source_url(url: &str) -> Option<String> {
         return Some(url.to_string());
     }
     if !url.to_lowercase().starts_with("https://officialskills.sh/")
-        && !url.to_lowercase().starts_with("https://www.officialskills.sh/")
+        && !url
+            .to_lowercase()
+            .starts_with("https://www.officialskills.sh/")
     {
         return None;
     }
     let mut resp = ureq::get(url).call().ok()?;
     let html = resp.body_mut().read_to_string().ok()?;
-    html.find("https://github.com/").map(|i| {
-        html[i..]
-            .split(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ')' | ' '))
-            .next()
-            .unwrap_or("")
-            .trim_end_matches(['.', ',', ')'])
-            .to_string()
-    })
-    .filter(|s| s.contains("/tree/") || parse_github_source_url(s).is_some())
+    html.find("https://github.com/")
+        .map(|i| {
+            html[i..]
+                .split(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ')' | ' '))
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(['.', ',', ')'])
+                .to_string()
+        })
+        .filter(|s| s.contains("/tree/") || parse_github_source_url(s).is_some())
 }
 
 /// Download one skill folder into the user's Claude skills directory.
@@ -457,10 +533,7 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
         return Err("Source is not a GitHub folder.".into());
     };
     let api = |p: &str| {
-        let mut u = format!(
-            "https://api.github.com/repos/{owner}/{repo}/contents/{}",
-            p
-        );
+        let mut u = format!("https://api.github.com/repos/{owner}/{repo}/contents/{}", p);
         if !ref_.is_empty() {
             u.push_str(&format!("?ref={ref_}"));
         }
@@ -469,9 +542,16 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
     if skill_path.is_empty() {
         skill_path = resolve_repo_root_skill_dir(&owner, &repo, entry_name)?;
     }
-    let dir_name = safe_skill_dir_name(if skill_path.is_empty() { entry_name } else { &skill_path })
-        .ok_or_else(|| "That skill has a name this app will not create a folder for.".to_string())?;
-    let root = dirs::home_dir().unwrap_or_default().join(".claude").join("skills");
+    let dir_name = safe_skill_dir_name(if skill_path.is_empty() {
+        entry_name
+    } else {
+        &skill_path
+    })
+    .ok_or_else(|| "That skill has a name this app will not create a folder for.".to_string())?;
+    let root = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("skills");
     let dest = root.join(&dir_name);
     if dest.exists() {
         return Err(format!("Already installed at {}", dest.display()));
@@ -511,7 +591,9 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
             if it.kind != "file" {
                 continue;
             }
-            let Some(durl) = it.download_url.clone() else { continue };
+            let Some(durl) = it.download_url.clone() else {
+                continue;
+            };
             *total += it.size.unwrap_or(0);
             if *total > MAX_TOTAL_BYTES {
                 return Err("that skill is larger than this installer will fetch".into());
@@ -564,7 +646,9 @@ pub fn uninstall_skill(skill_path: &str, cwds: &[String]) -> std::result::Result
     if skill_path.trim().is_empty() {
         return Err("no path given".into());
     }
-    let target = target.canonicalize().map_err(|_| "unreadable path".to_string())?;
+    let target = target
+        .canonicalize()
+        .map_err(|_| "unreadable path".to_string())?;
     let home = dirs::home_dir().unwrap_or_default();
     let mut roots = vec![
         home.join(".claude").join("skills"),
@@ -619,7 +703,10 @@ mod tests {
     #[test]
     fn safe_dir_name_rejects_traversal_and_dots() {
         assert_eq!(safe_skill_dir_name("pdf"), Some("pdf".into()));
-        assert_eq!(safe_skill_dir_name("skills/pdf-tools"), Some("pdf-tools".into()));
+        assert_eq!(
+            safe_skill_dir_name("skills/pdf-tools"),
+            Some("pdf-tools".into())
+        );
         assert!(safe_skill_dir_name("..").is_none());
         assert!(safe_skill_dir_name(".hidden").is_none());
         assert!(safe_skill_dir_name("").is_none());
@@ -631,13 +718,18 @@ mod tests {
 
     #[test]
     fn github_source_url_parses_both_shapes() {
-        let (o, r, rf, p) = parse_github_source_url(
-            "https://github.com/anthropics/skills/tree/main/skills/docx",
-        )
-        .unwrap();
-        assert_eq!((o.as_str(), r.as_str(), rf.as_str(), p.as_str()), ("anthropics", "skills", "main", "skills/docx"));
+        let (o, r, rf, p) =
+            parse_github_source_url("https://github.com/anthropics/skills/tree/main/skills/docx")
+                .unwrap();
+        assert_eq!(
+            (o.as_str(), r.as_str(), rf.as_str(), p.as_str()),
+            ("anthropics", "skills", "main", "skills/docx")
+        );
         let (o, r, rf, p) = parse_github_source_url("https://github.com/foo/bar").unwrap();
-        assert_eq!((o.as_str(), r.as_str(), rf.as_str(), p.as_str()), ("foo", "bar", "", ""));
+        assert_eq!(
+            (o.as_str(), r.as_str(), rf.as_str(), p.as_str()),
+            ("foo", "bar", "", "")
+        );
         assert!(parse_github_source_url("https://github.com/orgs/x").is_none());
         assert!(parse_github_source_url("https://example.com/a/b").is_none());
         // Query/fragment + trailing slash stripped like upstream.

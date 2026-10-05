@@ -20,10 +20,7 @@ pub fn branch(cwd: &Path) -> Option<Value> {
     let repo = git2::Repository::discover(cwd).ok()?;
     let head = repo.head().ok();
     let (name, detached) = match &head {
-        Some(h) if h.is_branch() => (
-            h.shorthand().unwrap_or("HEAD").to_string(),
-            false,
-        ),
+        Some(h) if h.is_branch() => (h.shorthand().unwrap_or("HEAD").to_string(), false),
         Some(_) => (
             head.as_ref()
                 .and_then(|h| h.target())
@@ -81,7 +78,10 @@ pub fn ahead_behind(cwd: &Path) -> Option<Value> {
     let upstream = repo
         .branch_upstream_name(head.shorthand().unwrap_or(""))
         .ok()
-        .and_then(|n| repo.find_branch(n.as_str().unwrap_or(""), git2::BranchType::Remote).ok())
+        .and_then(|n| {
+            repo.find_branch(n.as_str().unwrap_or(""), git2::BranchType::Remote)
+                .ok()
+        })
         .and_then(|b| b.get().target());
     let Some(up) = upstream else {
         return Some(json!({ "ahead": 0, "behind": 0, "hasUpstream": false }));
@@ -136,16 +136,15 @@ pub fn is_safe_rev(rev: &str) -> bool {
     if rev.is_empty() || rev.len() > 256 || rev.starts_with('-') {
         return false;
     }
-    if rev.contains("..")
-        || rev.starts_with('/')
-        || rev.ends_with('/')
-        || rev.contains(' ')
-    {
+    if rev.contains("..") || rev.starts_with('/') || rev.ends_with('/') || rev.contains(' ') {
         return false;
     }
     rev.bytes().all(|b| {
         b.is_ascii_alphanumeric()
-            || matches!(b, b'.' | b'_' | b'/' | b'-' | b'^' | b'~' | b'@' | b'{' | b'}')
+            || matches!(
+                b,
+                b'.' | b'_' | b'/' | b'-' | b'^' | b'~' | b'@' | b'{' | b'}'
+            )
     })
 }
 
@@ -283,10 +282,7 @@ pub fn diff_file_worktree(cwd: &Path, rel_path: &str) -> Result<String, String> 
     opts.pathspec(&rel)
         .include_untracked(true)
         .recurse_untracked_dirs(true);
-    let head_tree = repo
-        .head()
-        .and_then(|h| h.peel_to_tree())
-        .ok();
+    let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
     let mut d = repo
         .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
         .map_err(|e| map_err(&e))?;
@@ -315,13 +311,7 @@ pub fn diff_file_worktree(cwd: &Path, rel_path: &str) -> Result<String, String> 
 /// Linked worktree names — git2 0.21 yields Result<Option<&[u8]>>.
 fn worktree_names(repo: &git2::Repository) -> Vec<String> {
     repo.worktrees()
-        .map(|arr| {
-            arr.iter()
-                .flatten()
-                .flatten()
-                .map(str::to_string)
-                .collect()
-        })
+        .map(|arr| arr.iter().flatten().flatten().map(str::to_string).collect())
         .unwrap_or_default()
 }
 
@@ -363,7 +353,9 @@ pub fn checkout(cwd: &Path, rev: &str, detach: bool) -> Result<Value, String> {
         .flatten();
     if branch_ref.is_some() {
         if let Some(holder) = branch_checked_out_elsewhere(&repo, rev) {
-            return Err(format!("'{rev}' is checked out in another worktree: {holder}"));
+            return Err(format!(
+                "'{rev}' is checked out in another worktree: {holder}"
+            ));
         }
     }
     repo.checkout_tree(&obj, Some(git2::build::CheckoutBuilder::new().safe()))
@@ -375,7 +367,8 @@ pub fn checkout(cwd: &Path, rev: &str, detach: bool) -> Result<Value, String> {
             false
         }
         None => {
-            repo.set_head_detached(commit.id()).map_err(|e| map_err(&e))?;
+            repo.set_head_detached(commit.id())
+                .map_err(|e| map_err(&e))?;
             true
         }
     };
@@ -407,7 +400,9 @@ pub fn worktrees(cwd: &Path) -> Option<Vec<Value>> {
         "path": main_path, "head": head, "branch": branch, "isMain": true,
     }));
     for name in worktree_names(&repo) {
-        let Ok(wt) = repo.find_worktree(&name) else { continue };
+        let Ok(wt) = repo.find_worktree(&name) else {
+            continue;
+        };
         let wrepo = git2::Repository::open_from_worktree(&wt)
             .or_else(|_| git2::Repository::open(wt.path()));
         let (head, branch) = wrepo.as_ref().map(|r| head_of(r)).unwrap_or((None, None));
@@ -538,9 +533,7 @@ pub fn add_worktree(
 pub fn remove_worktree(wt_path: &Path) -> Result<Value, String> {
     match worktree_has_unintegrated_work(wt_path) {
         Some(false) => {}
-        Some(true) => {
-            return Err("worktree holds unintegrated work — refusing removal".into())
-        }
+        Some(true) => return Err("worktree holds unintegrated work — refusing removal".into()),
         None => return Err("not a git worktree".into()),
     }
     let wt_repo = git2::Repository::discover(wt_path).map_err(|e| map_err(&e))?;
@@ -552,7 +545,11 @@ pub fn remove_worktree(wt_path: &Path) -> Result<Value, String> {
         .map(|n| n == "worktrees")
         .unwrap_or(false);
     if is_linked {
-        if let Some(name) = wt_repo.path().file_name().map(|n| n.to_string_lossy().into_owned()) {
+        if let Some(name) = wt_repo
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        {
             if let Ok(main) = git2::Repository::open(wt_repo.commondir()) {
                 if let Ok(wt) = main.find_worktree(&name) {
                     let mut po = git2::WorktreePruneOptions::new();
@@ -598,7 +595,13 @@ pub fn agent_branch_for(wt_path: &Path) -> String {
     let slug: String = base
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let slug = slug.trim_matches('-');
     format!("agent/{}", if slug.is_empty() { "agent" } else { slug })
@@ -616,14 +619,24 @@ pub fn worktree_unintegrated_details(
     let branch = repo
         .head()
         .ok()
-        .and_then(|h| if h.is_branch() { h.shorthand().ok().map(str::to_string) } else { None })
+        .and_then(|h| {
+            if h.is_branch() {
+                h.shorthand().ok().map(str::to_string)
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "(detached)".into());
     let s = status(wt_path);
     let dirty = s
         .and_then(|v| v["clean"].as_bool().map(|c| !c))
         .unwrap_or(true); // unknown → assume dirty
     let ahead: Option<u64> = (|| {
-        let base = repo.revparse_single(base_branch).ok()?.peel_to_commit().ok()?;
+        let base = repo
+            .revparse_single(base_branch)
+            .ok()?
+            .peel_to_commit()
+            .ok()?;
         let head = repo.head().ok()?.peel_to_commit().ok()?;
         let (ahead, _behind) = repo.graph_ahead_behind(head.id(), base.id()).ok()?;
         Some(ahead as u64)
@@ -631,7 +644,9 @@ pub fn worktree_unintegrated_details(
     let keep = dirty || ahead.map(|a| a > 0).unwrap_or(true);
     let detail = format!(
         "dirty={dirty}, commitsAheadOf({base_branch})={}",
-        ahead.map(|a| a.to_string()).unwrap_or_else(|| "unknown".into())
+        ahead
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "unknown".into())
     );
     Some((keep, detail, branch))
 }
@@ -645,7 +660,11 @@ pub fn worktree_integrated_against(wt_path: &Path, base_branch: &str) -> Option<
         return Some(false);
     }
     let repo = git2::Repository::discover(wt_path).ok()?;
-    let base = repo.revparse_single(base_branch).ok()?.peel_to_commit().ok()?;
+    let base = repo
+        .revparse_single(base_branch)
+        .ok()?
+        .peel_to_commit()
+        .ok()?;
     let head = repo.head().ok()?.peel_to_commit().ok()?;
     if let Ok((ahead, _)) = repo.graph_ahead_behind(head.id(), base.id()) {
         if ahead == 0 {
@@ -739,7 +758,9 @@ pub fn log_graph(cwd: &Path, n: usize, skip: usize) -> Option<Vec<Value>> {
 fn delta_files(d: &git2::Diff, with_stats: bool) -> Vec<Value> {
     let mut files = Vec::new();
     for i in 0..d.deltas().len() {
-        let Some(delta) = d.get_delta(i) else { continue };
+        let Some(delta) = d.get_delta(i) else {
+            continue;
+        };
         let status = match delta.status() {
             git2::Delta::Added => "A",
             git2::Delta::Deleted => "D",
@@ -793,10 +814,7 @@ pub fn commit_files(cwd: &Path, sha: &str) -> Result<Vec<Value>, String> {
         .and_then(|o| o.peel_to_commit())
         .map_err(|e| map_err(&e))?;
     let tree = commit.tree().map_err(|e| map_err(&e))?;
-    let parent_tree = commit
-        .parent(0)
-        .ok()
-        .and_then(|p| p.tree().ok());
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
     let mut d = repo
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
         .map_err(|e| map_err(&e))?;
@@ -819,10 +837,14 @@ pub fn compare_refs(cwd: &Path, base: &str, head: &str) -> Result<Value, String>
             .map_err(|e| map_err(&e))
     };
     let (b_oid, h_oid) = (oid_of(base)?, oid_of(head)?);
-    let (ahead, behind) = repo.graph_ahead_behind(h_oid, b_oid).map_err(|e| map_err(&e))?;
+    let (ahead, behind) = repo
+        .graph_ahead_behind(h_oid, b_oid)
+        .map_err(|e| map_err(&e))?;
     let mb = repo.merge_base(b_oid, h_oid).ok();
     let tree_of = |oid: git2::Oid| repo.find_commit(oid).and_then(|c| c.tree());
-    let from = mb.and_then(|o| tree_of(o).ok()).or_else(|| tree_of(b_oid).ok());
+    let from = mb
+        .and_then(|o| tree_of(o).ok())
+        .or_else(|| tree_of(b_oid).ok());
     let to = tree_of(h_oid).ok();
     let mut d = repo
         .diff_tree_to_tree(from.as_ref(), to.as_ref(), None)
@@ -888,7 +910,13 @@ mod tests {
         repo
     }
 
-    fn commit_file(repo: &git2::Repository, dir: &Path, name: &str, content: &str, msg: &str) -> git2::Oid {
+    fn commit_file(
+        repo: &git2::Repository,
+        dir: &Path,
+        name: &str,
+        content: &str,
+        msg: &str,
+    ) -> git2::Oid {
         std::fs::write(dir.join(name), content).unwrap();
         let mut idx = repo.index().unwrap();
         idx.add_path(Path::new(name)).unwrap();
@@ -897,17 +925,37 @@ mod tests {
         let sig = repo.signature().unwrap();
         let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents).unwrap()
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
+            .unwrap()
     }
 
     #[test]
     fn safe_rev_charset() {
-        for ok in ["main", "feature/x.y_1-2", "HEAD", "HEAD~2", "HEAD^", "v1.0", "a@{1}", &"a".repeat(40)] {
+        for ok in [
+            "main",
+            "feature/x.y_1-2",
+            "HEAD",
+            "HEAD~2",
+            "HEAD^",
+            "v1.0",
+            "a@{1}",
+            &"a".repeat(40),
+        ] {
             assert!(is_safe_rev(ok), "{ok}");
         }
         for bad in [
-            "", "-x", "--force", "a..b", "a b", "/a", "a/", "a;b", "a:b",
-            "a\\b", "a!b", &"x".repeat(257),
+            "",
+            "-x",
+            "--force",
+            "a..b",
+            "a b",
+            "/a",
+            "a/",
+            "a;b",
+            "a:b",
+            "a\\b",
+            "a!b",
+            &"x".repeat(257),
         ] {
             assert!(!is_safe_rev(bad), "{bad}");
         }
@@ -941,7 +989,10 @@ mod tests {
             agent_branch_for(std::path::Path::new("/x/wt/../evil name")),
             "agent/evil-name"
         );
-        assert_eq!(agent_branch_for(std::path::Path::new("/x/---")), "agent/agent");
+        assert_eq!(
+            agent_branch_for(std::path::Path::new("/x/---")),
+            "agent/agent"
+        );
     }
 
     #[test]
@@ -997,7 +1048,10 @@ mod tests {
         assert_eq!(page.len(), 2);
         // topological: child before parent
         assert_eq!(page[0]["sha"].as_str(), Some(c2.to_string().as_str()));
-        assert_eq!(page[0]["parents"][0].as_str(), Some(c1.to_string().as_str()));
+        assert_eq!(
+            page[0]["parents"][0].as_str(),
+            Some(c1.to_string().as_str())
+        );
         assert_eq!(page[1]["sha"].as_str(), Some(c1.to_string().as_str()));
         assert!(page[1]["parents"].as_array().unwrap().is_empty());
         // paging
@@ -1024,7 +1078,10 @@ mod tests {
         let f = show_file(&d, &c1.to_string(), "a.txt").unwrap();
         assert_eq!(f["exists"].as_bool(), Some(true));
         assert_eq!(f["content"].as_str(), Some("one\n"));
-        assert_eq!(show_file(&d, &c1.to_string(), "missing.rs").unwrap()["exists"].as_bool(), Some(false));
+        assert_eq!(
+            show_file(&d, &c1.to_string(), "missing.rs").unwrap()["exists"].as_bool(),
+            Some(false)
+        );
         assert!(show_file(&d, &c1.to_string(), "../escape").is_err());
         drop(repo);
         std::fs::remove_dir_all(&d).ok();

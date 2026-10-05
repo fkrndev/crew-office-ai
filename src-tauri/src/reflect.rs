@@ -13,7 +13,6 @@
 use std::fs;
 use std::path::Path;
 
-
 use serde_json::{json, Value};
 
 /// Total memory.md budget — mirrors the janitor's CONTEXT_BUDGET_BYTES.
@@ -110,7 +109,10 @@ pub fn count_sections(text: &str) -> usize {
 /// Split a memory.md into header + the three regions.
 pub fn parse_memory(text: &str) -> Parsed {
     let lines: Vec<&str> = text.split('\n').collect();
-    let first = lines.iter().position(|l| l.starts_with("## ")).unwrap_or(lines.len());
+    let first = lines
+        .iter()
+        .position(|l| l.starts_with("## "))
+        .unwrap_or(lines.len());
     let header = lines[..first].join("\n").trim_end().to_string();
     let mut sections: Vec<Section> = Vec::new();
     let mut cur: Option<Section> = None;
@@ -119,7 +121,10 @@ pub fn parse_memory(text: &str) -> Parsed {
             if let Some(s) = cur.take() {
                 sections.push(s);
             }
-            cur = Some(Section { heading: line.to_string(), body: String::new() });
+            cur = Some(Section {
+                heading: line.to_string(),
+                body: String::new(),
+            });
         } else if let Some(s) = &mut cur {
             if !s.body.is_empty() {
                 s.body.push('\n');
@@ -154,7 +159,12 @@ pub fn parse_memory(text: &str) -> Parsed {
 /// Non-empty trimmed lines of the pinned block — the set we must never lose.
 pub fn pinned_lines(pinned: Option<&str>) -> Vec<String> {
     pinned
-        .map(|p| p.split('\n').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .map(|p| {
+            p.split('\n')
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -178,7 +188,11 @@ pub fn rebuild(header: &str, pinned: &[String], condensed: &str, keep: &[Section
         parts.push(header.trim().to_string());
     }
     parts.push(PINNED_HEADING.to_string());
-    parts.push(if pinned.is_empty() { "_(none yet)_".into() } else { pinned.join("\n") });
+    parts.push(if pinned.is_empty() {
+        "_(none yet)_".into()
+    } else {
+        pinned.join("\n")
+    });
     parts.push(CONDENSED_HEADING.to_string());
     parts.push(condensed.trim().to_string());
     parts.push(RECENT_HEADING.to_string());
@@ -190,7 +204,14 @@ pub fn rebuild(header: &str, pinned: &[String], condensed: &str, keep: &[Section
 
 /// The verify-don't-trust gate — every check must hold or the rewrite is
 /// rejected (the backup makes a rejection a pure no-op).
-pub fn verify(rebuilt: &str, old_bytes: usize, old_pinned: &[String], merged: &[String], condensed: &str, keep: &[Section]) -> Result<(), String> {
+pub fn verify(
+    rebuilt: &str,
+    old_bytes: usize,
+    old_pinned: &[String],
+    merged: &[String],
+    condensed: &str,
+    keep: &[Section],
+) -> Result<(), String> {
     let re = parse_memory(rebuilt);
     if re.pinned.is_none() || re.condensed.is_none() {
         return Err("structure-missing-region".into());
@@ -222,7 +243,9 @@ pub fn verify(rebuilt: &str, old_bytes: usize, old_pinned: &[String], merged: &[
     }
     for (i, s) in keep.iter().enumerate() {
         let a = format!("{}\n{}", s.heading, s.body).trim_end().to_string();
-        let b = format!("{}\n{}", re.recent[i].heading, re.recent[i].body).trim_end().to_string();
+        let b = format!("{}\n{}", re.recent[i].heading, re.recent[i].body)
+            .trim_end()
+            .to_string();
         if a != b {
             return Err("recent-section-altered".into());
         }
@@ -306,7 +329,11 @@ fn parse_legacy_json(text: &str) -> Option<(String, Vec<String>)> {
     let hoist = v
         .get("hoist")
         .and_then(|h| h.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     Some((condensed.to_string(), hoist))
 }
@@ -318,7 +345,9 @@ pub fn parse_summary(stdout: &str) -> Option<(String, Vec<String>)> {
     if raw.is_empty() {
         return None;
     }
-    let unwrapped = unwrap_cli_envelope(raw).replace("\r\n", "\n").replace('\r', "\n");
+    let unwrapped = unwrap_cli_envelope(raw)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let unwrapped = unwrapped.trim();
     if unwrapped.is_empty() {
         return None;
@@ -356,7 +385,12 @@ fn run_hidden_claude(command: &str, prompt: &str, cwd: &Path) -> Result<String, 
         model: CONDENSE_MODEL.into(),
         cwd: cwd.display().to_string(),
         command: Some(command.into()),
-        disallowed_tools: vec!["Edit".into(), "Write".into(), "NotebookEdit".into(), "Bash".into()],
+        disallowed_tools: vec![
+            "Edit".into(),
+            "Write".into(),
+            "NotebookEdit".into(),
+            "Bash".into(),
+        ],
         ..Default::default()
     };
     let result = crate::hidden_claude::run_hidden_claude(prompt, &opts);
@@ -384,7 +418,13 @@ fn should_condense(bytes: u64, mem: &Path, s: &ReflectSettings) -> bool {
 
 /// Condense ONE agent's memory.md — the full pipeline. Returns a result map
 /// mirroring upstream's ReflectResult.
-pub fn condense_one(hive_root: &Path, id: &str, command: &str, s: &ReflectSettings, manual: bool) -> Value {
+pub fn condense_one(
+    hive_root: &Path,
+    id: &str,
+    command: &str,
+    s: &ReflectSettings,
+    manual: bool,
+) -> Value {
     let mem = hive_root.join("agents").join(id).join("memory.md");
     let Ok(text) = fs::read_to_string(&mem) else {
         return json!({"id": id, "condensed": false, "reason": "no-memory"});
@@ -401,9 +441,16 @@ pub fn condense_one(hive_root: &Path, id: &str, command: &str, s: &ReflectSettin
         return json!({"id": id, "condensed": false, "reason": "nothing-to-evict", "oldBytes": old_bytes});
     }
     // 1) BACK UP first.
-    let backup = hive_root.join("backups").join(utc_stamp()).join(id).join("memory.md");
+    let backup = hive_root
+        .join("backups")
+        .join(utc_stamp())
+        .join(id)
+        .join("memory.md");
     if let Some(dir) = backup.parent() {
-        if fs::create_dir_all(dir).and_then(|_| fs::copy(&mem, &backup)).is_err() {
+        if fs::create_dir_all(dir)
+            .and_then(|_| fs::copy(&mem, &backup))
+            .is_err()
+        {
             return json!({"id": id, "condensed": false, "reason": "backup-failed", "oldBytes": old_bytes});
         }
     }
@@ -451,7 +498,9 @@ pub fn condense_one(hive_root: &Path, id: &str, command: &str, s: &ReflectSettin
 /// Scan every agent's memory.md once (serialized by the caller's interval).
 pub fn reflect_scan(hive_root: &Path, claude_cmd: &str, s: &ReflectSettings) -> Vec<Value> {
     let agents_dir = hive_root.join("agents");
-    let Ok(rd) = fs::read_dir(&agents_dir) else { return vec![] };
+    let Ok(rd) = fs::read_dir(&agents_dir) else {
+        return vec![];
+    };
     let mut out = Vec::new();
     for e in rd.flatten() {
         if !e.path().join("memory.md").exists() {
@@ -476,7 +525,12 @@ mod tests {
         assert!(p.pinned.is_none() && p.condensed.is_none());
         assert_eq!(p.header, "# Memory — w1");
         // Structured file: pinned + condensed + recent divider.
-        let structured = rebuild(&p.header, &["- fact A".to_string()], "the summary", &p.recent[..1]);
+        let structured = rebuild(
+            &p.header,
+            &["- fact A".to_string()],
+            "the summary",
+            &p.recent[..1],
+        );
         let q = parse_memory(&structured);
         assert!(q.pinned.is_some() && q.condensed.is_some());
         assert_eq!(q.recent.len(), 1);
@@ -498,10 +552,31 @@ mod tests {
         let v = verify(&bad, 9000, &old_pinned, &merged_empty, &long, keep);
         assert_eq!(v.unwrap_err(), "pinned-line-dropped");
         // And a legit smaller rewrite passes.
-        let good = rebuild(header, &old_pinned, &"smaller summary of everything. ".repeat(8), keep);
+        let good = rebuild(
+            header,
+            &old_pinned,
+            &"smaller summary of everything. ".repeat(8),
+            keep,
+        );
         assert!(
-            verify(&good, 4000, &old_pinned, &old_pinned, "smaller summary", keep).is_ok(),
-            "{:?}", verify(&good, 4000, &old_pinned, &old_pinned, "smaller summary", keep)
+            verify(
+                &good,
+                4000,
+                &old_pinned,
+                &old_pinned,
+                "smaller summary",
+                keep
+            )
+            .is_ok(),
+            "{:?}",
+            verify(
+                &good,
+                4000,
+                &old_pinned,
+                &old_pinned,
+                "smaller summary",
+                keep
+            )
         );
     }
 
@@ -520,6 +595,8 @@ mod tests {
         assert!(parse_summary("<<<CONDENSED>>>\nonly").is_none());
         assert!(parse_summary("random prose").is_none());
         // Non-marker hoist line rejects.
-        assert!(parse_summary("<<<CONDENSED>>>\ns\n<<<HOIST>>>\nnot a bullet\n<<<END>>>").is_none());
+        assert!(
+            parse_summary("<<<CONDENSED>>>\ns\n<<<HOIST>>>\nnot a bullet\n<<<END>>>").is_none()
+        );
     }
 }

@@ -117,7 +117,13 @@ pub fn clear_command(provider: &str, message: &str) -> Option<String> {
 
 /// The install commands are trusted + hardcoded upstream — same table here.
 /// `(native_posix, native_win32, npm_command)`.
-pub fn provider_install(provider: &str) -> (Option<&'static str>, Option<&'static str>, Option<&'static str>) {
+pub fn provider_install(
+    provider: &str,
+) -> (
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+) {
     match provider {
         "claude" => (
             Some("curl -fsSL https://claude.ai/install.sh | bash"),
@@ -163,8 +169,14 @@ pub struct NodeInstaller {
 
 fn resolve_node_installer() -> Option<NodeInstaller> {
     let index: serde_json::Value = ureq::get(&format!("{NODE_DIST}/index.json"))
-        .call().ok()?.body_mut().read_json().ok()?;
-    let lts = index.as_array()?.iter()
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    let lts = index
+        .as_array()?
+        .iter()
         .find(|e| e["lts"].is_string() || e["lts"] == serde_json::json!(true))?;
     let version = lts["version"].as_str()?.to_string();
     let file = if cfg!(windows) {
@@ -172,18 +184,30 @@ fn resolve_node_installer() -> Option<NodeInstaller> {
     } else if cfg!(target_os = "macos") {
         format!("node-{version}.pkg")
     } else {
-        let a = match std::env::consts::ARCH { "aarch64" => "arm64", _ => "x64" };
+        let a = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            _ => "x64",
+        };
         format!("node-{version}-linux-{a}.tar.xz")
     };
     let sha_body: String = ureq::get(&format!("{NODE_DIST}/{version}/SHASUMS256.txt"))
-        .call().ok()?.body_mut().read_to_string().ok()?;
+        .call()
+        .ok()?
+        .body_mut()
+        .read_to_string()
+        .ok()?;
     // "<sha>  <file>" lines — pull our artifact's digest.
     let sha256 = sha_body.lines().find_map(|l| {
         let mut it = l.split_whitespace();
         let sha = it.next()?;
         (it.next()? == file).then(|| sha.to_string())
     })?;
-    Some(NodeInstaller { url: format!("{NODE_DIST}/{version}/{file}"), version, file, sha256 })
+    Some(NodeInstaller {
+        url: format!("{NODE_DIST}/{version}/{file}"),
+        version,
+        file,
+        sha256,
+    })
 }
 
 /// buildNodeInstallScript (nodeInstall.ts) — download → digest-verify →
@@ -194,20 +218,31 @@ fn node_install_script(n: &NodeInstaller) -> String {
     if cfg!(windows) {
         let f = format!("%TEMP%\\{}", n.file);
         return [
-            format!("echo   Downloading Node.js {} ^(official installer^)...", n.version),
+            format!(
+                "echo   Downloading Node.js {} ^(official installer^)...",
+                n.version
+            ),
             format!("curl -fSL {} -o {f}", n.url),
             "if errorlevel 1 exit /b 1".to_string(),
             "echo   Verifying checksum...".to_string(),
-            format!("certutil -hashfile {f} SHA256 | findstr /i /c:{} >nul", n.sha256),
-            "if errorlevel 1 (echo   [x] CHECKSUM MISMATCH - refusing to install ^& exit /b 1)".to_string(),
+            format!(
+                "certutil -hashfile {f} SHA256 | findstr /i /c:{} >nul",
+                n.sha256
+            ),
+            "if errorlevel 1 (echo   [x] CHECKSUM MISMATCH - refusing to install ^& exit /b 1)"
+                .to_string(),
             "echo   Installing - approve the Windows prompt if it appears...".to_string(),
             format!("msiexec /i {f} /passive /norestart"),
             "if errorlevel 1 exit /b 1".to_string(),
             "set \"PATH=%ProgramFiles%\\nodejs;%PATH%\"".to_string(),
-        ].join("\r\n");
+        ]
+        .join("\r\n");
     }
     let verify = if cfg!(target_os = "macos") {
-        format!("echo \"{}  $__f\" | shasum -a 256 -c - >/dev/null", n.sha256)
+        format!(
+            "echo \"{}  $__f\" | shasum -a 256 -c - >/dev/null",
+            n.sha256
+        )
     } else {
         format!("echo \"{}  $__f\" | sha256sum -c - >/dev/null", n.sha256)
     };
@@ -236,13 +271,13 @@ fn node_install_script(n: &NodeInstaller) -> String {
 /// installer program being reachable on PATH. Returns `(script, relaunch)` —
 /// the manual rung returns `false` (a respawn would die on the same missing
 /// binary, so upstream arms no relaunch there).
-pub fn install_script(
-    provider: &str,
-    bin: &str,
-    npm_available: bool,
-) -> Option<(String, bool)> {
+pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<(String, bool)> {
     let (native_posix, native_win32, npm) = provider_install(provider);
-    let native = if cfg!(windows) { native_win32 } else { native_posix };
+    let native = if cfg!(windows) {
+        native_win32
+    } else {
+        native_posix
+    };
     let header = format!("[agent-office] \"{bin}\" is not installed — ");
 
     // Rung 1: npm present — run the package install directly.
@@ -258,7 +293,11 @@ pub fn install_script(
     // npm step resolve node inside the same shell.
     if let Some(cmd) = npm {
         if let Some(n) = resolve_node_installer() {
-            let path_fix = if cfg!(windows) { "" } else { "export PATH=/usr/local/bin:$PATH" };
+            let path_fix = if cfg!(windows) {
+                ""
+            } else {
+                "export PATH=/usr/local/bin:$PATH"
+            };
             return Some((
                 format!(
                     "echo {header}installing Node.js first, then the package.\r\n{}\r\n{path_fix}{cmd}",
@@ -272,7 +311,9 @@ pub fn install_script(
     // Rung 3: the vendor's self-contained installer (no Node needed).
     if let Some(cmd) = native {
         return Some((
-            format!("echo {header}running the official {provider} installer (no Node needed).\r\n{cmd}"),
+            format!(
+                "echo {header}running the official {provider} installer (no Node needed).\r\n{cmd}"
+            ),
             true,
         ));
     }
@@ -337,7 +378,11 @@ pub fn expand_tilde(p: &str) -> String {
     if t.is_empty() {
         return p.to_string();
     }
-    let home = || dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_default();
+    let home = || {
+        dirs::home_dir()
+            .map(|h| h.display().to_string())
+            .unwrap_or_default()
+    };
     let out = if t == "~" {
         home()
     } else if let Some(rest) = t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\")) {
@@ -489,9 +534,10 @@ pub fn parse_hero_payload(raw: &Value) -> Value {
     });
     // Both or neither — a button with no destination is worse than no button.
     if let Some(up) = plan_in.get("upgrade").filter(|v| v.is_object()) {
-        if let (Some(label), Some(url)) =
-            (str_cap(up.get("label"), MAX_LABEL), https_url(up.get("url")))
-        {
+        if let (Some(label), Some(url)) = (
+            str_cap(up.get("label"), MAX_LABEL),
+            https_url(up.get("url")),
+        ) {
             plan["upgrade"] = json!({ "label": label, "url": url });
         }
     }
@@ -613,7 +659,9 @@ pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> 
             Ok(line) => {
                 for tok in line.split_whitespace() {
                     if tok.starts_with("https://") {
-                        url = tok.trim_end_matches(|c: char| c == '.' || c == ',').to_string();
+                        url = tok
+                            .trim_end_matches(|c: char| c == '.' || c == ',')
+                            .to_string();
                         break;
                     }
                 }
@@ -642,11 +690,16 @@ pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> 
 pub fn write_slack_reply_script(home: &Path) -> Result<PathBuf, String> {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let cfg_path = home.join("slack-reply.json").display().to_string().replace('\\', "\\\\");
+    let cfg_path = home
+        .join("slack-reply.json")
+        .display()
+        .to_string()
+        .replace('\\', "\\\\");
     #[cfg(windows)]
     {
         let path = dir.join("slack-reply.ps1");
-        let body = format!(r#"param(
+        let body = format!(
+            r#"param(
   [Parameter(Mandatory = $true)][string]$Channel,
   [Parameter(Mandatory = $true)][string]$Thread,
   [Parameter(Mandatory = $true)][string]$Text
@@ -660,14 +713,16 @@ $body = @{{ channel = $Channel; thread_ts = $Thread; text = $Text }} | ConvertTo
 Invoke-RestMethod -Method Post -Uri ("http://127.0.0.1:" + $c.port + "/reply") `
   -Headers @{{ 'x-md-reply-token' = $c.token }} `
   -ContentType 'application/json; charset=utf-8' -Body $body | ConvertTo-Json -Compress
-"#);
+"#
+        );
         std::fs::write(&path, body).map_err(|e| e.to_string())?;
         Ok(path)
     }
     #[cfg(not(windows))]
     {
         let path = dir.join("slack-reply.sh");
-        let body = format!(r#"#!/bin/sh
+        let body = format!(
+            r#"#!/bin/sh
 # slack-reply.sh --channel <id> --thread <ts> --text <msg>
 # Post a reply into a Slack thread via the Agent Office loopback reply rail
 # (the app applies the bot token — it never lives in this process's env).
@@ -689,7 +744,8 @@ curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
   -H "x-md-reply-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   --data "{{\"channel\":\"$CHANNEL\",\"thread_ts\":\"$THREAD\",\"text\":\"$TEXT\"}}"
-"#);
+"#
+        );
         std::fs::write(&path, body).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {

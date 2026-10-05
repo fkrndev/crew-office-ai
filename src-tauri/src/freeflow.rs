@@ -62,7 +62,11 @@ pub struct TranscribeResult {
 
 impl TranscribeResult {
     fn err(error: impl Into<String>) -> Self {
-        Self { ok: false, text: None, error: Some(error.into()) }
+        Self {
+            ok: false,
+            text: None,
+            error: Some(error.into()),
+        }
     }
 }
 
@@ -115,19 +119,31 @@ pub fn transcribe_with_groq(opts: &TranscribeOptions) -> TranscribeResult {
                 let detail = extract_error(&raw);
                 return TranscribeResult::err(format!(
                     "Groq {status}: {}",
-                    if detail.is_empty() { "request failed" } else { &detail }
+                    if detail.is_empty() {
+                        "request failed"
+                    } else {
+                        &detail
+                    }
                 ));
             }
             let text = serde_json::from_str::<serde_json::Value>(&raw)
                 .ok()
-                .and_then(|j| j.get("text").and_then(|t| t.as_str()).map(|s| s.trim().to_string()))
+                .and_then(|j| {
+                    j.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.trim().to_string())
+                })
                 // response_format fallback: a bare-text body.
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| raw.trim().to_string());
             if text.is_empty() {
                 return TranscribeResult::err("no speech detected");
             }
-            TranscribeResult { ok: true, text: Some(text), error: None }
+            TranscribeResult {
+                ok: true,
+                text: Some(text),
+                error: None,
+            }
         }
     }
 }
@@ -144,14 +160,19 @@ fn multipart_body(
     let boundary = format!("----agent-office-{}", uuid::Uuid::new_v4().simple());
     let mut out = Vec::with_capacity(bytes.len() + 512);
     for (name, value) in fields {
-        let safe_name: String = name.chars().filter(|c| !matches!(c, '"' | '\r' | '\n')).collect();
+        let safe_name: String = name
+            .chars()
+            .filter(|c| !matches!(c, '"' | '\r' | '\n'))
+            .collect();
         out.extend_from_slice(
             format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{safe_name}\"\r\n\r\n{value}\r\n")
                 .as_bytes(),
         );
     }
-    let safe_filename: String =
-        filename.chars().filter(|c| !matches!(c, '"' | '\r' | '\n')).collect();
+    let safe_filename: String = filename
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\r' | '\n'))
+        .collect();
     out.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{safe_filename}\"\r\nContent-Type: {mime}\r\n\r\n"
@@ -198,7 +219,11 @@ mod tests {
     #[test]
     fn multipart_has_all_parts() {
         let (body, b) = multipart_body(
-            &[("model", "m"), ("response_format", "json"), ("language", "en")],
+            &[
+                ("model", "m"),
+                ("response_format", "json"),
+                ("language", "en"),
+            ],
             "file",
             "clip.webm",
             "audio/webm",

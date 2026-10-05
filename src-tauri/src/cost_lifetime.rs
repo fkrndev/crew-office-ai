@@ -237,7 +237,9 @@ mod tests {
 
     #[test]
     fn corrupt_lines_drop_not_throw() {
-        let t = lifetime_usd_from_ledger("not json\n{\"agent_id\":\"w\",\"session_id\":\"s\",\"usd\":1.5}\n");
+        let t = lifetime_usd_from_ledger(
+            "not json\n{\"agent_id\":\"w\",\"session_id\":\"s\",\"usd\":1.5}\n",
+        );
         assert!((t["w"] - 1.5).abs() < 1e-9);
         assert!(lifetime_usd_from_ledger("").is_empty());
     }

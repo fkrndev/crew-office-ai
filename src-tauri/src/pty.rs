@@ -126,7 +126,10 @@ fn classify(p: PathBuf) -> Resolved {
 /// no shell parser at all.
 pub enum ShimTarget {
     /// `node/bun/deno <script> %*` — spawn interpreter with `[script, ...args]`.
-    Interpreted { interpreter: String, script: PathBuf },
+    Interpreted {
+        interpreter: String,
+        script: PathBuf,
+    },
     /// Direct-executable shim (`"<exe>" %*` — opencode-ai's bin shape): the
     /// target IS the program, no interpreter needed.
     DirectExe { exe: PathBuf },
@@ -278,7 +281,10 @@ pub fn parse_npm_cmd_shim(shim_path: &str, content: &str) -> Option<ShimTarget> 
     if !(sc.ends_with(".js") || sc.ends_with(".cjs") || sc.ends_with(".mjs")) {
         return None;
     }
-    Some(ShimTarget::Interpreted { interpreter, script })
+    Some(ShimTarget::Interpreted {
+        interpreter,
+        script,
+    })
 }
 
 /// resolveWindowsShimSpawn (pty.ts): decode the resolved shim to a spawnable
@@ -287,7 +293,10 @@ pub fn parse_npm_cmd_shim(shim_path: &str, content: &str) -> Option<ShimTarget> 
 /// fallbacks) and must return an EXE — a `.cmd` node would hit the exact
 /// CreateProcess limit we are routing around. Every miss returns `None` =
 /// "use the cmd.exe path", never worse than before.
-pub fn resolve_windows_shim_spawn<F>(resolved: &PathBuf, resolve: F) -> Option<(PathBuf, Option<PathBuf>)>
+pub fn resolve_windows_shim_spawn<F>(
+    resolved: &PathBuf,
+    resolve: F,
+) -> Option<(PathBuf, Option<PathBuf>)>
 where
     F: Fn(&str) -> Option<Resolved>,
 {
@@ -309,10 +318,11 @@ where
     }
     let content = std::fs::read_to_string(&shim_path).ok()?;
     match parse_npm_cmd_shim(&shim_path.display().to_string(), &content)? {
-        ShimTarget::DirectExe { exe } => {
-            exe.is_file().then_some((exe, None))
-        }
-        ShimTarget::Interpreted { interpreter, script } => {
+        ShimTarget::DirectExe { exe } => exe.is_file().then_some((exe, None)),
+        ShimTarget::Interpreted {
+            interpreter,
+            script,
+        } => {
             if !script.is_file() {
                 return None;
             }
@@ -459,7 +469,9 @@ pub fn spawn_cmd(
         let line = tokens
             .iter()
             .map(|t| {
-                if t.chars().any(|c| c == ' ' || c == '\t' || c == '"' || c == '\'') {
+                if t.chars()
+                    .any(|c| c == ' ' || c == '\t' || c == '"' || c == '\'')
+                {
                     format!("'{}'", t.replace('\'', "'\\''"))
                 } else {
                     t.clone()
@@ -486,7 +498,10 @@ pub fn spawn_cmd(
 /// Make a value safe inside a double-quoted cmd arg: single line, no double
 /// quotes (an --append-system-prompt payload travels this way on script spawns).
 pub fn cmd_sanitize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'")
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'")
 }
 
 /// How much trailing PTY output to retain per session for crash diagnostics
@@ -650,10 +665,8 @@ fn finish(
                     );
                     // Upstream's per-id channel (`pty:data:<id>`) — the
                     // preload payload there is the raw string.
-                    let _ = app_reader.emit(
-                        &format!("pty:data:{event_id}"),
-                        serde_json::json!(data),
-                    );
+                    let _ =
+                        app_reader.emit(&format!("pty:data:{event_id}"), serde_json::json!(data));
                 }
                 Err(_) => break,
             }
@@ -714,7 +727,10 @@ fn finish(
                 let _ = crate::commands::spawn_inner(app3, retry, Some(id3), None);
             }
         } else {
-            crate::commands::PENDING_INSTALLS.lock().unwrap().remove(&event_id2);
+            crate::commands::PENDING_INSTALLS
+                .lock()
+                .unwrap()
+                .remove(&event_id2);
         }
     });
     Ok(PtyHandle {
@@ -782,11 +798,16 @@ mod shim_tests {
     fn modern_shim_decodes_to_node_plus_cli() {
         let t = parse_npm_cmd_shim(r"C:\Users\u\AppData\Roaming\npm\claude.cmd", MODERN).unwrap();
         match t {
-            ShimTarget::Interpreted { interpreter, script } => {
+            ShimTarget::Interpreted {
+                interpreter,
+                script,
+            } => {
                 assert_eq!(interpreter, "node");
-                assert!(script.display().to_string().replace('/', "\\").ends_with(
-                    r"npm\node_modules\@anthropic-ai\claude-code\cli.js"
-                ));
+                assert!(script
+                    .display()
+                    .to_string()
+                    .replace('/', "\\")
+                    .ends_with(r"npm\node_modules\@anthropic-ai\claude-code\cli.js"));
             }
             _ => panic!("expected interpreted"),
         }
@@ -796,7 +817,10 @@ mod shim_tests {
     fn classic_if_else_decodes() {
         let t = parse_npm_cmd_shim(r"C:\npm\codex.cmd", CLASSIC).unwrap();
         match t {
-            ShimTarget::Interpreted { interpreter, script } => {
+            ShimTarget::Interpreted {
+                interpreter,
+                script,
+            } => {
                 assert_eq!(interpreter, "node");
                 assert!(script.display().to_string().ends_with(r"bin\cli.js"));
             }

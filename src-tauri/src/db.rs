@@ -58,10 +58,14 @@ impl PersistStore {
             let _ = std::fs::create_dir_all(dir);
         }
         let conn = Connection::open(&self.path).map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "busy_timeout", 5000i64).map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "foreign_keys", true).map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "busy_timeout", 5000i64)
+            .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(|e| e.to_string())?;
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
@@ -71,7 +75,8 @@ impl PersistStore {
             // mid-migration never leaves a half-applied schema.
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             tx.execute_batch(MIGRATIONS[i]).map_err(|e| e.to_string())?;
-            tx.pragma_update(None, "user_version", i as i64 + 1).map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", i as i64 + 1)
+                .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
         self.conn = Some(conn);
@@ -118,14 +123,18 @@ impl PersistStore {
 
     /// Most-recent-first, optionally scoped to one agent.
     pub fn list_history(&self, agent_id: Option<&str>, limit: i64) -> Vec<Value> {
-        let Some(c) = self.conn.as_ref() else { return vec![] };
+        let Some(c) = self.conn.as_ref() else {
+            return vec![];
+        };
         let lim = clamp_limit(limit, 100);
         let sql = if agent_id.is_some() {
             "SELECT id, agent_id, cwd, text, ts FROM command_history WHERE agent_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2"
         } else {
             "SELECT id, agent_id, cwd, text, ts FROM command_history ORDER BY ts DESC, id DESC LIMIT ?2"
         };
-        let Ok(mut stmt) = c.prepare(sql) else { return vec![] };
+        let Ok(mut stmt) = c.prepare(sql) else {
+            return vec![];
+        };
         let rows = if let Some(a) = agent_id {
             stmt.query_map(rusqlite::params![a, lim], row_map)
         } else {
@@ -136,7 +145,9 @@ impl PersistStore {
 
     /// Substring search over prompt text — LIKE wildcards escaped.
     pub fn search_history(&self, query: &str, limit: i64) -> Vec<Value> {
-        let Some(c) = self.conn.as_ref() else { return vec![] };
+        let Some(c) = self.conn.as_ref() else {
+            return vec![];
+        };
         let q = query.trim();
         if q.is_empty() {
             return vec![];

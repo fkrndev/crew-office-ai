@@ -75,7 +75,8 @@ fn tokens_of(s: Option<&UsageSample>) -> u64 {
 /// Work tokens (excludes cache_read — re-billed context is a session-length
 /// timer, not work; upstream #189).
 fn work_tokens_of(s: Option<&UsageSample>) -> u64 {
-    s.map(|x| x.input + x.output + x.cache_creation).unwrap_or(0)
+    s.map(|x| x.input + x.output + x.cache_creation)
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -132,7 +133,13 @@ impl CircuitBreaker {
 
     // ── event-driven inputs (fed by HookServer) ────────────────────────────
 
-    pub fn record_tool_use(&mut self, agent_id: &str, tool_name: Option<&str>, tool_input: &serde_json::Value, now: u64) {
+    pub fn record_tool_use(
+        &mut self,
+        agent_id: &str,
+        tool_name: Option<&str>,
+        tool_input: &serde_json::Value,
+        now: u64,
+    ) {
         let key = tool_key(tool_name, tool_input);
         let s = self.agents.entry(agent_id.into()).or_default();
         if s.repeat_key == Some(key) {
@@ -152,11 +159,17 @@ impl CircuitBreaker {
     }
 
     pub fn record_user_prompt(&mut self, agent_id: &str, now: u64) {
-        self.agents.entry(agent_id.into()).or_default().last_user_prompt_at = now;
+        self.agents
+            .entry(agent_id.into())
+            .or_default()
+            .last_user_prompt_at = now;
     }
 
     pub fn record_compact_start(&mut self, agent_id: &str, now: u64) {
-        self.agents.entry(agent_id.into()).or_default().compacting_until = now + COMPACT_GRACE_MS;
+        self.agents
+            .entry(agent_id.into())
+            .or_default()
+            .compacting_until = now + COMPACT_GRACE_MS;
     }
 
     pub fn record_compact_end(&mut self, agent_id: &str, now: u64) {
@@ -335,10 +348,7 @@ fn evaluate(
     cost_cap_tokens: Option<u64>,
 ) -> Option<String> {
     if s.repeat_count >= repeated_tool_limit {
-        return Some(format!(
-            "looping: {}× identical tool call",
-            s.repeat_count
-        ));
+        return Some(format!("looping: {}× identical tool call", s.repeat_count));
     }
     if s.error_count >= error_storm_limit {
         return Some(format!(
@@ -382,11 +392,13 @@ fn evaluate(
                         "token velocity {velocity}/min > {token_velocity}/min"
                     ));
                 }
-                let tool_active = now_ms.saturating_sub(s.last_distinct_tool_at) < PROGRESS_TOOL_WINDOW_MS;
+                let tool_active =
+                    now_ms.saturating_sub(s.last_distinct_tool_at) < PROGRESS_TOOL_WINDOW_MS;
                 let work_active = input
                     .last_work_at
                     .is_some_and(|t| t > 0 && now_ms.saturating_sub(t) < PROGRESS_TOOL_WINDOW_MS);
-                let human_active = now_ms.saturating_sub(s.last_user_prompt_at) < PROGRESS_TOOL_WINDOW_MS;
+                let human_active =
+                    now_ms.saturating_sub(s.last_user_prompt_at) < PROGRESS_TOOL_WINDOW_MS;
                 if !input.progressing && !tool_active && !work_active && !human_active {
                     s.no_progress_beats += 1;
                     if s.no_progress_beats >= NO_PROGRESS_BEATS {

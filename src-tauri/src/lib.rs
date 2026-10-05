@@ -1,55 +1,55 @@
+mod analytics;
 pub mod breaker;
 mod bridges;
 mod closing_time;
+mod cmd_analytics;
+mod cmd_freeflow;
 mod cmd_git;
+mod cmd_github;
 mod cmd_hive;
 mod cmd_integrations;
 mod cmd_kg;
 mod cmd_memory;
-mod analytics;
-mod cmd_analytics;
-mod freeflow;
-mod cmd_freeflow;
-mod github;
-mod cmd_github;
-mod realtime;
-mod realtime_actions;
-mod cmd_realtime;
 mod cmd_misc;
+mod cmd_realtime;
 mod cmd_update;
-pub mod misc;
-pub mod hidden_claude;
 pub mod commands;
 pub mod config;
-pub mod cost_lifetime;
 mod control;
+pub mod cost_lifetime;
 mod db;
+mod freeflow;
 pub mod fs_ops;
 mod git_ops;
-mod hive_admin;
-pub mod hive;
-pub mod kg;
-pub mod integrations;
-pub mod memory_palace;
+mod github;
+pub mod hidden_claude;
 mod hire;
+pub mod hive;
+mod hive_admin;
 mod hooks;
+pub mod integrations;
+pub mod kg;
+pub mod memory_palace;
+pub mod misc;
 pub mod missions;
-pub mod pricing;
 mod power_monitor;
-mod sync_api;
-mod pty;
+pub mod pricing;
 pub mod proxy;
+mod pty;
 mod ptyenv;
+mod realtime;
+mod realtime_actions;
 pub mod reflect;
 pub mod roster;
 pub mod skills;
 mod slack;
+mod sync_api;
 mod telemetry;
 pub mod trigger_history;
 mod usage;
 mod webhook;
-mod workerwake;
 mod workers;
+mod workerwake;
 
 use std::time::Duration;
 
@@ -83,10 +83,16 @@ fn emit_context_trigger(app: &tauri::AppHandle, action: &str) {
 
 fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMission) {
     if m.kind.as_deref() != Some("compact") && !m.to.is_empty() {
-        let _ = st.hive.send_virtual("scheduler", &m.to, "request", &m.label, &m.body);
+        let _ = st
+            .hive
+            .send_virtual("scheduler", &m.to, "request", &m.label, &m.body);
         // God is the heartbeat's whole point: if the target sits idle, type
         // the wake nudge now rather than waiting for a Stop that isn't coming.
-        let target_id = if m.to == "god" { st.hive.god_id() } else { Some(m.to.clone()) };
+        let target_id = if m.to == "god" {
+            st.hive.god_id()
+        } else {
+            Some(m.to.clone())
+        };
         if let Some(tid) = target_id {
             let idle = st
                 .hive

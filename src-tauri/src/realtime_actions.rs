@@ -20,8 +20,8 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter};
 
-use crate::commands::{self, SpawnArgs};
 use crate::commands::state;
+use crate::commands::{self, SpawnArgs};
 use crate::hive::{PartialMessage, RegistryEntry};
 use crate::missions::ScheduledMission;
 
@@ -45,13 +45,25 @@ pub struct ActionResult {
 }
 
 fn ok(spoken: impl Into<String>) -> ActionResult {
-    ActionResult { ok: true, spoken: spoken.into(), needs_confirm: None }
+    ActionResult {
+        ok: true,
+        spoken: spoken.into(),
+        needs_confirm: None,
+    }
 }
 fn err(spoken: impl Into<String>) -> ActionResult {
-    ActionResult { ok: false, spoken: spoken.into(), needs_confirm: None }
+    ActionResult {
+        ok: false,
+        spoken: spoken.into(),
+        needs_confirm: None,
+    }
 }
 fn pending_result(spoken: impl Into<String>) -> ActionResult {
-    ActionResult { ok: true, spoken: spoken.into(), needs_confirm: Some(true) }
+    ActionResult {
+        ok: true,
+        spoken: spoken.into(),
+        needs_confirm: Some(true),
+    }
 }
 
 struct VerbSpec {
@@ -85,7 +97,11 @@ fn verb_spec(verb: &str) -> Option<VerbSpec> {
         "update_setting" => (true, "setting", false),
         _ => return None,
     };
-    Some(VerbSpec { destructive: d, confirm_word: w, agent_targeted: t })
+    Some(VerbSpec {
+        destructive: d,
+        confirm_word: w,
+        agent_targeted: t,
+    })
 }
 
 struct SettingPolicy {
@@ -99,38 +115,78 @@ struct SettingPolicy {
 fn setting_policy(key: &str) -> Option<SettingPolicy> {
     // Upstream SETTING_POLICY — the ONLY settings voice may touch.
     type P = SettingPolicy;
-    let soft = |ty: &'static str| P { confirm: false, ty, min: None, max: None, values: None };
-    let conf = |ty: &'static str| P { confirm: true, ty, min: None, max: None, values: None };
+    let soft = |ty: &'static str| P {
+        confirm: false,
+        ty,
+        min: None,
+        max: None,
+        values: None,
+    };
+    let conf = |ty: &'static str| P {
+        confirm: true,
+        ty,
+        min: None,
+        max: None,
+        values: None,
+    };
     Some(match key {
         "notifications" => soft("boolean"),
         "tvShowOffices" => soft("boolean"),
         "officeTheme" => P {
-            confirm: false, ty: "string", min: None, max: None,
-            values: Some(&["office", "friends", "brooklyn99", "siliconvalley", "got", "hogwarts"]),
+            confirm: false,
+            ty: "string",
+            min: None,
+            max: None,
+            values: Some(&[
+                "office",
+                "friends",
+                "brooklyn99",
+                "siliconvalley",
+                "got",
+                "hogwarts",
+            ]),
         },
         "terminalTheme" => P {
-            confirm: false, ty: "string", min: None, max: None,
+            confirm: false,
+            ty: "string",
+            min: None,
+            max: None,
             values: Some(&["light", "dark"]),
         },
         "freeflowEnabled" => soft("boolean"),
         "strongKeepalive" => soft("boolean"),
         "autoUpdate" => soft("boolean"),
         "realtimeIdleDisconnectMs" => P {
-            confirm: false, ty: "number",
-            min: Some(30_000.0), max: Some(3_600_000.0), values: None,
+            confirm: false,
+            ty: "number",
+            min: Some(30_000.0),
+            max: Some(3_600_000.0),
+            values: None,
         },
         "autoMode" => conf("boolean"),
         "defaultModel" => conf("string"),
         "godProvider" => conf("string"),
         "godModel" => conf("string"),
         "maxConcurrentWorkers" => P {
-            confirm: true, ty: "number", min: Some(1.0), max: Some(16.0), values: None,
+            confirm: true,
+            ty: "number",
+            min: Some(1.0),
+            max: Some(16.0),
+            values: None,
         },
         "costCapTokens" => P {
-            confirm: true, ty: "number", min: Some(0.0), max: Some(1_000_000_000.0), values: None,
+            confirm: true,
+            ty: "number",
+            min: Some(0.0),
+            max: Some(1_000_000_000.0),
+            values: None,
         },
         "maxTurns" => P {
-            confirm: true, ty: "number", min: Some(1.0), max: Some(1000.0), values: None,
+            confirm: true,
+            ty: "number",
+            min: Some(1.0),
+            max: Some(1000.0),
+            values: None,
         },
         "slackEnabled" => conf("boolean"),
         "webhookEnabled" => conf("boolean"),
@@ -141,8 +197,26 @@ fn setting_policy(key: &str) -> Option<SettingPolicy> {
 }
 
 const BARE_AFFIRMATIONS: &[&str] = &[
-    "yes", "yeah", "yep", "yup", "ya", "ok", "okay", "k", "sure", "go", "go ahead",
-    "do it", "please", "fine", "affirmative", "uh huh", "mhm", "mm hmm", "right", "correct",
+    "yes",
+    "yeah",
+    "yep",
+    "yup",
+    "ya",
+    "ok",
+    "okay",
+    "k",
+    "sure",
+    "go",
+    "go ahead",
+    "do it",
+    "please",
+    "fine",
+    "affirmative",
+    "uh huh",
+    "mhm",
+    "mm hmm",
+    "right",
+    "correct",
 ];
 
 fn provider_command(provider: &str) -> &'static str {
@@ -171,8 +245,19 @@ fn clear_command(provider: &str) -> Option<String> {
 
 fn normalize_provider(v: Option<&str>) -> Option<String> {
     const KNOWN: &[&str] = &[
-        "claude", "codex", "grok", "kimi", "gemini", "antigravity", "qwen",
-        "opencode", "crush", "pi", "copilot", "cursor", "custom",
+        "claude",
+        "codex",
+        "grok",
+        "kimi",
+        "gemini",
+        "antigravity",
+        "qwen",
+        "opencode",
+        "crush",
+        "pi",
+        "copilot",
+        "cursor",
+        "custom",
     ];
     v.and_then(|p| {
         let p = p.trim().to_lowercase();
@@ -189,17 +274,29 @@ fn infer_provider(explicit: Option<&str>) -> String {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn strv(a: &Map<String, Value>, key: &str) -> String {
-    a.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    a.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 fn first_str(a: &Map<String, Value>, keys: &[&str]) -> String {
-    keys.iter().map(|k| strv(a, k)).find(|s| !s.is_empty()).unwrap_or_default()
+    keys.iter()
+        .map(|k| strv(a, k))
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
 }
 
 fn norm(s: &str) -> String {
     let lower: String = s
         .to_lowercase()
         .chars()
-        .map(|c| if matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '\'' | '"') { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '\'' | '"') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     lower.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -214,7 +311,11 @@ fn norm_match(s: &str) -> String {
 }
 
 fn toks_match(s: &str) -> Vec<String> {
-    norm_match(s).split(' ').filter(|w| !w.is_empty()).map(|w| w.to_string()).collect()
+    norm_match(s)
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect()
 }
 
 fn short_id() -> String {
@@ -241,8 +342,16 @@ fn is_mass_target(target: &str) -> bool {
     let t = norm(target);
     matches!(
         t.as_str(),
-        "all" | "everyone" | "everybody" | "all agents" | "every agent" | "the whole office"
-            | "whole office" | "the office" | "all of them" | "every one"
+        "all"
+            | "everyone"
+            | "everybody"
+            | "all agents"
+            | "every agent"
+            | "the whole office"
+            | "whole office"
+            | "the office"
+            | "all of them"
+            | "every one"
     )
 }
 
@@ -252,14 +361,22 @@ struct ResolvedAgent {
     is_god: bool,
 }
 
-fn resolve_agent(target: &str, god_id: &Option<String>, agents: &[RegistryEntry]) -> Result<ResolvedAgent, String> {
+fn resolve_agent(
+    target: &str,
+    god_id: &Option<String>,
+    agents: &[RegistryEntry],
+) -> Result<ResolvedAgent, String> {
     let t = norm(target);
     if t.is_empty() {
         return Err("no agent was named".into());
     }
     let mk = |e: &RegistryEntry, is_god: bool| ResolvedAgent {
         id: e.id.clone(),
-        name: if e.name.is_empty() { e.id.clone() } else { e.name.clone() },
+        name: if e.name.is_empty() {
+            e.id.clone()
+        } else {
+            e.name.clone()
+        },
         is_god: is_god || e.is_god,
     };
     // exact id
@@ -273,29 +390,42 @@ fn resolve_agent(target: &str, god_id: &Option<String>, agents: &[RegistryEntry]
             let e = agents.iter().find(|e| &e.id == gid);
             return Ok(match e {
                 Some(e) => mk(e, true),
-                None => ResolvedAgent { id: gid.clone(), name: gid.clone(), is_god: true },
+                None => ResolvedAgent {
+                    id: gid.clone(),
+                    name: gid.clone(),
+                    is_god: true,
+                },
             });
         }
     }
     // exact name, prefer live
-    let by_name: Vec<&RegistryEntry> =
-        agents.iter().filter(|e| e.name.to_lowercase() == t).collect();
+    let by_name: Vec<&RegistryEntry> = agents
+        .iter()
+        .filter(|e| e.name.to_lowercase() == t)
+        .collect();
     let live_name: Vec<&RegistryEntry> = by_name.iter().copied().filter(|e| !e.archived).collect();
-    let name_pick: &[&RegistryEntry] = if !live_name.is_empty() { &live_name } else { &by_name };
+    let name_pick: &[&RegistryEntry] = if !live_name.is_empty() {
+        &live_name
+    } else {
+        &by_name
+    };
     if name_pick.len() == 1 {
         let e = name_pick[0];
         let g = god_id.as_deref() == Some(e.id.as_str());
         return Ok(mk(e, g));
     }
     if name_pick.len() > 1 {
-        return Err(format!("{} agents are named {} — say the exact agent id", name_pick.len(), target));
+        return Err(format!(
+            "{} agents are named {} — say the exact agent id",
+            name_pick.len(),
+            target
+        ));
     }
     // partial contains, live only
     let partial: Vec<&RegistryEntry> = agents
         .iter()
         .filter(|e| {
-            !e.archived
-                && (e.id.to_lowercase().contains(&t) || e.name.to_lowercase().contains(&t))
+            !e.archived && (e.id.to_lowercase().contains(&t) || e.name.to_lowercase().contains(&t))
         })
         .collect();
     if partial.len() == 1 {
@@ -304,7 +434,10 @@ fn resolve_agent(target: &str, god_id: &Option<String>, agents: &[RegistryEntry]
         return Ok(mk(e, g));
     }
     if partial.len() > 1 {
-        return Err(format!("several agents match \"{}\" — be more specific or say an id", target));
+        return Err(format!(
+            "several agents match \"{}\" — be more specific or say an id",
+            target
+        ));
     }
     Err(format!("I don't see an agent matching \"{}\"", target))
 }
@@ -317,7 +450,8 @@ fn confirm_accepted(phrase: &str, confirm_word: &str) -> bool {
         return false;
     }
     let toks: Vec<&str> = p.split(' ').collect();
-    toks.iter().any(|t| t.starts_with("confirm") || *t == confirm_word)
+    toks.iter()
+        .any(|t| t.starts_with("confirm") || *t == confirm_word)
 }
 
 // ─── pending (single-slot two-phase confirm) ────────────────────────────────
@@ -326,15 +460,42 @@ fn confirm_accepted(phrase: &str, confirm_word: &str) -> bool {
 /// lives in a plain Mutex.
 #[derive(Debug, Clone)]
 enum CommitSpec {
-    Kill { id: String, name: String },
-    Pause { id: String, name: String },
-    Halt { id: String, name: String },
-    ClearContext { id: String, name: String },
-    Archive { id: String, name: String },
-    Spawn { spec: VoiceSpawn, label: String },
-    EditSchedule { mission: ScheduledMission, action: String },
-    CreateSchedule { mission: ScheduledMission, minutes: u64 },
-    UpdateSetting { key: String, value: Value },
+    Kill {
+        id: String,
+        name: String,
+    },
+    Pause {
+        id: String,
+        name: String,
+    },
+    Halt {
+        id: String,
+        name: String,
+    },
+    ClearContext {
+        id: String,
+        name: String,
+    },
+    Archive {
+        id: String,
+        name: String,
+    },
+    Spawn {
+        spec: VoiceSpawn,
+        label: String,
+    },
+    EditSchedule {
+        mission: ScheduledMission,
+        action: String,
+    },
+    CreateSchedule {
+        mission: ScheduledMission,
+        minutes: u64,
+    },
+    UpdateSetting {
+        key: String,
+        value: Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -381,11 +542,23 @@ fn stage(p: Pending) {
 // ─── deps (the upstream dep-table, as small fns over AppState) ─────────────
 
 fn hive_enabled(app: &AppHandle) -> bool {
-    state(app).hive.root.parent().map(|p| p.exists()).unwrap_or(false)
+    state(app)
+        .hive
+        .root
+        .parent()
+        .map(|p| p.exists())
+        .unwrap_or(false)
         || state(app).hive.root.exists()
 }
 
-fn hive_send(app: &AppHandle, to: &str, act: &str, subject: &str, body: &str, requires_reply: bool) -> Result<Value> {
+fn hive_send(
+    app: &AppHandle,
+    to: &str,
+    act: &str,
+    subject: &str,
+    body: &str,
+    requires_reply: bool,
+) -> Result<Value> {
     let partial = PartialMessage {
         to: Some(to.to_string()),
         act: Some(act.to_string()),
@@ -394,7 +567,10 @@ fn hive_send(app: &AppHandle, to: &str, act: &str, subject: &str, body: &str, re
         requires_reply: requires_reply.then_some(true),
         ..Default::default()
     };
-    state(app).hive.send_partial(&partial, VOICE_ACTOR).map(|m| json!(m))
+    state(app)
+        .hive
+        .send_partial(&partial, VOICE_ACTOR)
+        .map(|m| json!(m))
 }
 
 fn registry_doc(app: &AppHandle) -> (Option<String>, Vec<RegistryEntry>) {
@@ -421,7 +597,8 @@ fn god_display_name(app: &AppHandle) -> String {
 /// voice-action attribution: hive log + cross-notify the god PTY, both
 /// best-effort (upstream try/catch twins).
 fn attribute(app: &AppHandle, verb: &str, target: &str, extra: Map<String, Value>) {
-    let mut ev = json!({ "kind": "voice_action", "actor": VOICE_ACTOR, "verb": verb, "target": target });
+    let mut ev =
+        json!({ "kind": "voice_action", "actor": VOICE_ACTOR, "verb": verb, "target": target });
     if let Some(dst) = ev.as_object_mut() {
         for (k, v) in &extra {
             dst.insert(k.clone(), v.clone());
@@ -434,8 +611,18 @@ fn attribute(app: &AppHandle, verb: &str, target: &str, extra: Map<String, Value
         .or_else(|| extra.get("title"))
         .and_then(|v| v.as_str())
         .map(|s| format!(": {}", s))
-        .or_else(|| extra.get("status").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)))
-        .or_else(|| extra.get("action").and_then(|v| v.as_str()).map(|s| format!(" ({})", s)))
+        .or_else(|| {
+            extra
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| format!(" → {}", s))
+        })
+        .or_else(|| {
+            extra
+                .get("action")
+                .and_then(|v| v.as_str())
+                .map(|s| format!(" ({})", s))
+        })
         .unwrap_or_default();
     let god = god_display_name(app);
     let _ = hive_send(
@@ -485,7 +672,10 @@ fn score_card(ref_norm: &str, ref_toks: &[String], title: &str, id: &str) -> f64
     let coverage = if ref_toks.is_empty() {
         0.0
     } else {
-        ref_toks.iter().filter(|w| hay.iter().any(|h| h == *w)).count() as f64
+        ref_toks
+            .iter()
+            .filter(|w| hay.iter().any(|h| h == *w))
+            .count() as f64
             / ref_toks.len() as f64
     };
     let prefix_cov = if ref_toks.is_empty() {
@@ -493,7 +683,10 @@ fn score_card(ref_norm: &str, ref_toks: &[String], title: &str, id: &str) -> f64
     } else {
         ref_toks
             .iter()
-            .filter(|w| hay.iter().any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str())))
+            .filter(|w| {
+                hay.iter()
+                    .any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str()))
+            })
             .count() as f64
             / ref_toks.len() as f64
     };
@@ -533,23 +726,37 @@ fn find_card(app: &AppHandle, refr: &str) -> CardFind {
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     if scored.is_empty() {
-        return CardFind { card: None, ambiguous: vec![] };
+        return CardFind {
+            card: None,
+            ambiguous: vec![],
+        };
     }
     let top = scored[0].0;
-    let close: Vec<&(f64, Value)> = scored.iter().filter(|(s, _)| *s >= top - AMBIGUOUS_MARGIN).collect();
+    let close: Vec<&(f64, Value)> = scored
+        .iter()
+        .filter(|(s, _)| *s >= top - AMBIGUOUS_MARGIN)
+        .collect();
     if close.len() > 1 {
         return CardFind {
             card: None,
             ambiguous: close.iter().take(3).map(|(_, c)| c.clone()).collect(),
         };
     }
-    CardFind { card: Some(scored[0].1.clone()), ambiguous: vec![] }
+    CardFind {
+        card: Some(scored[0].1.clone()),
+        ambiguous: vec![],
+    }
 }
 
 fn ambiguous_spoken(ambiguous: &[Value]) -> String {
     let names: Vec<String> = ambiguous
         .iter()
-        .map(|c| format!("\"{}\"", c.get("title").and_then(|v| v.as_str()).unwrap_or("?")))
+        .map(|c| {
+            format!(
+                "\"{}\"",
+                c.get("title").and_then(|v| v.as_str()).unwrap_or("?")
+            )
+        })
         .collect();
     format!("Which one — {}?", names.join(", or "))
 }
@@ -565,10 +772,21 @@ fn exec_ping(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
     let r = resolve_agent(&target_of(a), &g, &agents).map_err(|e| anyhow::anyhow!(e))?;
     let message = {
         let m = first_str(a, &["message", "text"]);
-        if m.is_empty() { "Checking in.".to_string() } else { m }
+        if m.is_empty() {
+            "Checking in.".to_string()
+        } else {
+            m
+        }
     };
     let god = god_display_name(app);
-    hive_send(app, &r.id, "inform", &format!("Voice ping from {}", god), &message, false)?;
+    hive_send(
+        app,
+        &r.id,
+        "inform",
+        &format!("Voice ping from {}", god),
+        &message,
+        false,
+    )?;
     attribute(app, "ping", &r.id, Map::new());
     Ok(ok(format!("Pinged {}.", r.name)))
 }
@@ -582,38 +800,67 @@ fn exec_dispatch(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult
     }
     let ctx = {
         let v = strv(a, "context");
-        if v.is_empty() { "(none given)".to_string() } else { v }
+        if v.is_empty() {
+            "(none given)".to_string()
+        } else {
+            v
+        }
     };
     let constraints = {
         let v = strv(a, "constraints");
-        if v.is_empty() { "(use your judgement; respect the guardrails)".to_string() } else { v }
+        if v.is_empty() {
+            "(use your judgement; respect the guardrails)".to_string()
+        } else {
+            v
+        }
     };
     let done = {
         let v = first_str(a, &["doneWhen", "done"]);
-        if v.is_empty() { "you report the outcome back to god".to_string() } else { v }
+        if v.is_empty() {
+            "you report the outcome back to god".to_string()
+        } else {
+            v
+        }
     };
     let body = format!(
         "OBJECTIVE: {}\nCONTEXT: {}\nCONSTRAINTS: {}\nDONE WHEN: {}",
         objective, ctx, constraints, done
     );
     let short: String = objective.chars().take(60).collect();
-    let msg = hive_send(app, &r.id, "request", &format!("Voice dispatch: {}", short), &body, true)?;
+    let msg = hive_send(
+        app,
+        &r.id,
+        "request",
+        &format!("Voice dispatch: {}", short),
+        &body,
+        true,
+    )?;
     let mut extra = Map::new();
-    extra.insert("objective".into(), json!(objective.chars().take(120).collect::<String>()));
+    extra.insert(
+        "objective".into(),
+        json!(objective.chars().take(120).collect::<String>()),
+    );
     attribute(app, "dispatch", &r.id, extra);
     // rt-12: register with the completion watcher.
     if let Some(cid) = msg.get("id").and_then(|v| v.as_str()) {
-        crate::realtime::WATCHER.lock().unwrap().track(crate::realtime::PendingDispatch {
-            correlation_id: cid.to_string(),
-            kind: crate::realtime::PendingKind::Dispatch,
-            target_agent_id: r.id.clone(),
-            task_id: None,
-            objective: Some(objective.clone()),
-            dispatched_at: now_ms(),
-            dispatch_message_id: Some(cid.to_string()),
-        });
+        crate::realtime::WATCHER
+            .lock()
+            .unwrap()
+            .track(crate::realtime::PendingDispatch {
+                correlation_id: cid.to_string(),
+                kind: crate::realtime::PendingKind::Dispatch,
+                target_agent_id: r.id.clone(),
+                task_id: None,
+                objective: Some(objective.clone()),
+                dispatched_at: now_ms(),
+                dispatch_message_id: Some(cid.to_string()),
+            });
     }
-    Ok(ok(format!("Dispatched to {}: {}.", r.name, objective.chars().take(80).collect::<String>())))
+    Ok(ok(format!(
+        "Dispatched to {}: {}.",
+        r.name,
+        objective.chars().take(80).collect::<String>()
+    )))
 }
 
 fn exec_steer(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
@@ -629,9 +876,16 @@ fn exec_steer(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
         .unwrap()
         .steer(&r.id, &format!("[{}] {}", VOICE_ACTOR, text));
     let mut extra = Map::new();
-    extra.insert("text".into(), json!(text.chars().take(120).collect::<String>()));
+    extra.insert(
+        "text".into(),
+        json!(text.chars().take(120).collect::<String>()),
+    );
     attribute(app, "steer", &r.id, extra);
-    Ok(ok(format!("Steering {}: {}.", r.name, text.chars().take(80).collect::<String>())))
+    Ok(ok(format!(
+        "Steering {}: {}.",
+        r.name,
+        text.chars().take(80).collect::<String>()
+    )))
 }
 
 fn exec_create_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
@@ -658,19 +912,29 @@ fn exec_create_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
     }
     obj.insert(
         "priority".into(),
-        a.get("priority").and_then(|v| v.as_f64()).map(|n| json!(n as i64)).unwrap_or(json!(5)),
+        a.get("priority")
+            .and_then(|v| v.as_f64())
+            .map(|n| json!(n as i64))
+            .unwrap_or(json!(5)),
     );
     if crate::hive_admin::add_task(&state(app).hive, &card).is_err() {
         return Ok(err("I can't create that task because it already exists."));
     }
     let mut extra = Map::new();
-    extra.insert("title".into(), json!(title.chars().take(120).collect::<String>()));
+    extra.insert(
+        "title".into(),
+        json!(title.chars().take(120).collect::<String>()),
+    );
     extra.insert("assignee".into(), json!(assignee));
     attribute(app, "create_task", &id, extra);
     Ok(ok(format!(
         "Created task \"{}\"{}.",
         title,
-        if assignee.is_empty() { "".into() } else { format!(", assigned to {}", assignee) }
+        if assignee.is_empty() {
+            "".into()
+        } else {
+            format!(", assigned to {}", assignee)
+        }
     )))
 }
 
@@ -685,10 +949,21 @@ fn exec_assign_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
         return Ok(err(ambiguous_spoken(&found.ambiguous)));
     }
     let Some(card) = found.card else {
-        return Ok(err(format!("I couldn't find a task matching \"{}\".", refr)));
+        return Ok(err(format!(
+            "I couldn't find a task matching \"{}\".",
+            refr
+        )));
     };
-    let cid = card.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let title = card.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cid = card
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = card
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let mut patch = Map::new();
     patch.insert("assignee".into(), json!(assignee));
     if state(app).hive.update_task(&cid, &patch).is_err() {
@@ -710,7 +985,10 @@ fn exec_update_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
         return Ok(err(ambiguous_spoken(&found.ambiguous)));
     }
     let Some(card) = found.card else {
-        return Ok(err(format!("I couldn't find a task matching \"{}\".", refr)));
+        return Ok(err(format!(
+            "I couldn't find a task matching \"{}\".",
+            refr
+        )));
     };
     let status = strv(a, "status");
     const VALID: &[&str] = &["todo", "doing", "blocked", "done"];
@@ -729,8 +1007,16 @@ fn exec_update_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
     if !assignee.is_empty() {
         patch.insert("assignee".into(), json!(assignee));
     }
-    let cid = card.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let title = card.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cid = card
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = card
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if state(app).hive.update_task(&cid, &patch).is_err() {
         return Ok(err(format!("I couldn't update \"{}\" right now.", title)));
     }
@@ -740,7 +1026,11 @@ fn exec_update_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
     Ok(ok(format!(
         "Updated \"{}\"{}.",
         title,
-        if status.is_empty() { "".into() } else { format!(" to {}", status) }
+        if status.is_empty() {
+            "".into()
+        } else {
+            format!(" to {}", status)
+        }
     )))
 }
 
@@ -770,13 +1060,26 @@ fn exec_auto_delivery(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionR
     if raw.is_empty() {
         return Ok(err("Should I pause or resume message delivery?"));
     }
-    let paused = raw.contains("pause") || raw.contains("off") || raw.contains("hold") || raw.contains("stop");
-    state(app).control.lock().unwrap().pause_auto_delivery(&r.id, paused);
+    let paused = raw.contains("pause")
+        || raw.contains("off")
+        || raw.contains("hold")
+        || raw.contains("stop");
+    state(app)
+        .control
+        .lock()
+        .unwrap()
+        .pause_auto_delivery(&r.id, paused);
     let mut extra = Map::new();
-    extra.insert("action".into(), json!(if paused { "paused" } else { "resumed" }));
+    extra.insert(
+        "action".into(),
+        json!(if paused { "paused" } else { "resumed" }),
+    );
     attribute(app, "auto_delivery", &r.id, extra);
     Ok(ok(if paused {
-        format!("Paused automatic delivery to {} — queued messages will wait.", r.name)
+        format!(
+            "Paused automatic delivery to {} — queued messages will wait.",
+            r.name
+        )
     } else {
         format!("Resumed automatic delivery to {}.", r.name)
     }))
@@ -790,20 +1093,39 @@ fn exec_gate_tool(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResul
         let mut cs = tool.chars();
         matches!(cs.next(), Some(c) if c.is_ascii_alphabetic())
             && tool.len() <= 64
-            && tool.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && tool
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     };
     if tool.is_empty() || !valid_name {
-        return Ok(err("Which tool should I gate? Give me its exact name, like Bash or WebFetch."));
+        return Ok(err(
+            "Which tool should I gate? Give me its exact name, like Bash or WebFetch.",
+        ));
     }
     let raw = norm(&first_str(a, &["state", "action"]));
-    let off = raw.contains("off") || raw.contains("allow") || raw.contains("ungate")
-        || raw.contains("unblock") || raw.contains("enable");
+    let off = raw.contains("off")
+        || raw.contains("allow")
+        || raw.contains("ungate")
+        || raw.contains("unblock")
+        || raw.contains("enable");
     let on = !off; // default: gate it
-    state(app).control.lock().unwrap().gate_tool(&r.id, &tool, on);
+    state(app)
+        .control
+        .lock()
+        .unwrap()
+        .gate_tool(&r.id, &tool, on);
     let mut extra = Map::new();
-    extra.insert("action".into(), json!(format!("{} {}", if on { "gated" } else { "ungated" }, tool)));
+    extra.insert(
+        "action".into(),
+        json!(format!("{} {}", if on { "gated" } else { "ungated" }, tool)),
+    );
     attribute(app, "gate_tool", &r.id, extra);
-    Ok(ok(format!("{} the {} tool for {}.", if on { "Gated" } else { "Un-gated" }, tool, r.name)))
+    Ok(ok(format!(
+        "{} the {} tool for {}.",
+        if on { "Gated" } else { "Un-gated" },
+        tool,
+        r.name
+    )))
 }
 
 fn exec_delete_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
@@ -816,17 +1138,34 @@ fn exec_delete_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
         return Ok(err(ambiguous_spoken(&found.ambiguous)));
     }
     let Some(card) = found.card else {
-        return Ok(err(format!("I couldn't find a task matching \"{}\".", refr)));
+        return Ok(err(format!(
+            "I couldn't find a task matching \"{}\".",
+            refr
+        )));
     };
-    let cid = card.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let title = card.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cid = card
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = card
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if crate::hive_admin::delete_task(&state(app).hive, &cid).is_err() {
         return Ok(err(format!("I couldn't delete \"{}\" right now.", title)));
     }
     let mut extra = Map::new();
-    extra.insert("title".into(), json!(title.chars().take(120).collect::<String>()));
+    extra.insert(
+        "title".into(),
+        json!(title.chars().take(120).collect::<String>()),
+    );
     attribute(app, "delete_task", &cid, extra);
-    Ok(ok(format!("Deleted the task \"{}\". Recreate it any time if that was wrong.", title)))
+    Ok(ok(format!(
+        "Deleted the task \"{}\". Recreate it any time if that was wrong.",
+        title
+    )))
 }
 
 fn exec_unarchive(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
@@ -845,7 +1184,12 @@ fn exec_unarchive(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResul
 
 // ─── destructive: propose + commit ─────────────────────────────────────────
 
-fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec: &VerbSpec) -> Result<ActionResult> {
+fn propose_destructive(
+    app: &AppHandle,
+    verb: &str,
+    a: &Map<String, Value>,
+    spec: &VerbSpec,
+) -> Result<ActionResult> {
     let (g, agents) = registry_doc(app);
 
     if spec.agent_targeted {
@@ -866,11 +1210,26 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             )));
         }
         let commit = match verb {
-            "kill" => CommitSpec::Kill { id: r.id.clone(), name: r.name.clone() },
-            "pause" => CommitSpec::Pause { id: r.id.clone(), name: r.name.clone() },
-            "halt" => CommitSpec::Halt { id: r.id.clone(), name: r.name.clone() },
-            "clear_context" => CommitSpec::ClearContext { id: r.id.clone(), name: r.name.clone() },
-            _ => CommitSpec::Archive { id: r.id.clone(), name: r.name.clone() },
+            "kill" => CommitSpec::Kill {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            },
+            "pause" => CommitSpec::Pause {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            },
+            "halt" => CommitSpec::Halt {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            },
+            "clear_context" => CommitSpec::ClearContext {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            },
+            _ => CommitSpec::Archive {
+                id: r.id.clone(),
+                name: r.name.clone(),
+            },
         };
         let snap = state(app).control.lock().unwrap().snapshot(&r.id);
         let note = if snap.halted {
@@ -888,7 +1247,10 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             commit,
         });
         let consequence = match verb {
-            "clear_context" => format!("That wipes {}'s working memory of the current conversation.", r.name),
+            "clear_context" => format!(
+                "That wipes {}'s working memory of the current conversation.",
+                r.name
+            ),
             "archive" => format!("That takes {} off the floor (history kept).", r.name),
             _ => "That's destructive.".to_string(),
         };
@@ -901,7 +1263,11 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
     if verb == "spawn" {
         let provider = {
             let p = strv(a, "provider");
-            if p.is_empty() { "claude".to_string() } else { p.to_lowercase() }
+            if p.is_empty() {
+                "claude".to_string()
+            } else {
+                p.to_lowercase()
+            }
         };
         let role = first_str(a, &["role", "job"]);
         let name = {
@@ -913,8 +1279,13 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
                 let mut out = String::new();
                 let mut cap = true;
                 for c in role.chars() {
-                    if cap && c.is_alphabetic() { out.extend(c.to_uppercase()); cap = false; }
-                    else { out.push(c); cap = !c.is_alphanumeric(); }
+                    if cap && c.is_alphabetic() {
+                        out.extend(c.to_uppercase());
+                        cap = false;
+                    } else {
+                        out.push(c);
+                        cap = !c.is_alphanumeric();
+                    }
                 }
                 out
             } else if !provider.is_empty() {
@@ -924,7 +1295,11 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             }
         };
         let god_cwd = g.as_ref().and_then(|gid| {
-            agents.iter().find(|e| &e.id == gid).map(|e| e.cwd.clone()).filter(|c| !c.is_empty())
+            agents
+                .iter()
+                .find(|e| &e.id == gid)
+                .map(|e| e.cwd.clone())
+                .filter(|c| !c.is_empty())
         });
         let cwd = {
             let v = strv(a, "cwd");
@@ -933,15 +1308,25 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             } else if let Some(c) = god_cwd {
                 c
             } else {
-                agents.iter().find(|e| !e.cwd.is_empty()).map(|e| e.cwd.clone()).unwrap_or_default()
+                agents
+                    .iter()
+                    .find(|e| !e.cwd.is_empty())
+                    .map(|e| e.cwd.clone())
+                    .unwrap_or_default()
             }
         };
         if cwd.is_empty() {
-            return Ok(err("I need a working directory to hire into — none is configured."));
+            return Ok(err(
+                "I need a working directory to hire into — none is configured.",
+            ));
         }
         let command = {
             let v = strv(a, "command");
-            if v.is_empty() { provider_command(&provider).to_string() } else { v }
+            if v.is_empty() {
+                provider_command(&provider).to_string()
+            } else {
+                v
+            }
         };
         let id = format!("{}-{}", slug(&name), short_id());
         stage(Pending {
@@ -956,7 +1341,11 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
                     command,
                     provider: provider.clone(),
                     name: name.clone(),
-                    role: if role.is_empty() { None } else { Some(role.clone()) },
+                    role: if role.is_empty() {
+                        None
+                    } else {
+                        Some(role.clone())
+                    },
                 },
                 label: format!("{} on {}", name, provider),
             },
@@ -1023,7 +1412,9 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
         let label = first_str(a, &["label", "name", "title"]);
         let body = first_str(a, &["prompt", "body", "message"]);
         if label.is_empty() || body.is_empty() {
-            return Ok(err("I need a name for the schedule and what it should tell the agent."));
+            return Ok(err(
+                "I need a name for the schedule and what it should tell the agent.",
+            ));
         }
         let minutes = a
             .get("intervalMinutes")
@@ -1033,9 +1424,15 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             .unwrap_or(60);
         let to = {
             let v = first_str(a, &["to", "agentId"]);
-            if v.is_empty() { "god".to_string() } else { v }
+            if v.is_empty() {
+                "god".to_string()
+            } else {
+                v
+            }
         };
-        let target = resolve_agent(&to, &g, &agents).map(|r| r.id).unwrap_or_else(|_| "god".into());
+        let target = resolve_agent(&to, &g, &agents)
+            .map(|r| r.id)
+            .unwrap_or_else(|_| "god".into());
         let mission = ScheduledMission {
             id: format!("voice-{}-{}", slug(&label), short_id()),
             label: label.clone(),
@@ -1116,22 +1513,41 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
                 }
                 if let Some(values) = policy.values {
                     if !values.contains(&s.as_str()) {
-                        return Ok(err(format!("{} must be one of: {}.", key, values.join(", "))));
+                        return Ok(err(format!(
+                            "{} must be one of: {}.",
+                            key,
+                            values.join(", ")
+                        )));
                     }
                 }
                 json!(s)
             }
         };
-        let old_value = state(app).config_store.raw_value().get(&key).cloned().unwrap_or(Value::Null);
+        let old_value = state(app)
+            .config_store
+            .raw_value()
+            .get(&key)
+            .cloned()
+            .unwrap_or(Value::Null);
         let describe = |v: &Value| -> String {
             match v {
-                Value::Bool(b) => if *b { "on".into() } else { "off".into() },
+                Value::Bool(b) => {
+                    if *b {
+                        "on".into()
+                    } else {
+                        "off".into()
+                    }
+                }
                 Value::Null => "unset".into(),
                 _ => v.to_string().trim_matches('"').to_string(),
             }
         };
         if describe(&old_value) == describe(&value) {
-            return Ok(ok(format!("{} is already {} — nothing to change.", key, describe(&value))));
+            return Ok(ok(format!(
+                "{} is already {} — nothing to change.",
+                key,
+                describe(&value)
+            )));
         }
         let apply = |app: &AppHandle| -> Result<String> {
             let mut patch = Map::new();
@@ -1140,9 +1556,17 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             *state(app).config.lock().unwrap() = cfg;
             let _ = app.emit("config:changed", json!({}));
             let mut extra = Map::new();
-            extra.insert("action".into(), json!(format!("{} → {}", describe(&old_value), describe(&value))));
+            extra.insert(
+                "action".into(),
+                json!(format!("{} → {}", describe(&old_value), describe(&value))),
+            );
             attribute(app, "update_setting", &key, extra);
-            Ok(format!("Done — {} is now {} (was {}).", key, describe(&value), describe(&old_value)))
+            Ok(format!(
+                "Done — {} is now {} (was {}).",
+                key,
+                describe(&value),
+                describe(&old_value)
+            ))
         };
         if !policy.confirm {
             return Ok(ok(apply(app)?));
@@ -1152,7 +1576,10 @@ fn propose_destructive(app: &AppHandle, verb: &str, a: &Map<String, Value>, spec
             confirm_word: "setting".to_string(),
             target_label: key.clone(),
             created_at: now_ms(),
-            commit: CommitSpec::UpdateSetting { key: key.clone(), value: value.clone() },
+            commit: CommitSpec::UpdateSetting {
+                key: key.clone(),
+                value: value.clone(),
+            },
         });
         return Ok(pending_result(format!(
             "{} is {}; you want it {}. To change it, say \"confirm\" or \"setting\". Say \"cancel\" to stop.",
@@ -1192,7 +1619,10 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
         CommitSpec::ClearContext { id, name } => {
             let provider = {
                 let (_, agents) = registry_doc(app);
-                agents.iter().find(|e| &e.id == id).map(|e| e.provider.clone())
+                agents
+                    .iter()
+                    .find(|e| &e.id == id)
+                    .map(|e| e.provider.clone())
             };
             let provider = infer_provider(provider.as_deref());
             let Some(cmd) = clear_command(&provider) else {
@@ -1205,7 +1635,10 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             // queue listens on so delivery inherits every safety gate.
             let _ = app.emit("realtime:enqueue", json!({ "agentId": id, "text": cmd }));
             attribute(app, "clear_context", id, Map::new());
-            Ok(format!("Queued a context clear for {} — it lands the moment they're idle.", name))
+            Ok(format!(
+                "Queued a context clear for {} — it lands the moment they're idle.",
+                name
+            ))
         }
         CommitSpec::Archive { id, name } => {
             let res = crate::hive_admin::set_archived(&state(app).hive, id, true);
@@ -1303,7 +1736,10 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             all.push(mission.clone());
             commands::missions_save(app.clone(), all).map_err(|e| anyhow::anyhow!(e))?;
             let mut extra = Map::new();
-            extra.insert("title".into(), json!(mission.label.chars().take(120).collect::<String>()));
+            extra.insert(
+                "title".into(),
+                json!(mission.label.chars().take(120).collect::<String>()),
+            );
             attribute(app, "create_schedule", &mission.id, extra);
             Ok(format!(
                 "Created the \"{}\" schedule — every {} minutes to {}.",
@@ -1311,10 +1747,21 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             ))
         }
         CommitSpec::UpdateSetting { key, value } => {
-            let old = state(app).config_store.raw_value().get(key).cloned().unwrap_or(Value::Null);
+            let old = state(app)
+                .config_store
+                .raw_value()
+                .get(key)
+                .cloned()
+                .unwrap_or(Value::Null);
             let describe = |v: &Value| -> String {
                 match v {
-                    Value::Bool(b) => if *b { "on".into() } else { "off".into() },
+                    Value::Bool(b) => {
+                        if *b {
+                            "on".into()
+                        } else {
+                            "off".into()
+                        }
+                    }
                     Value::Null => "unset".into(),
                     _ => v.to_string().trim_matches('"').to_string(),
                 }
@@ -1325,16 +1772,26 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             *state(app).config.lock().unwrap() = cfg;
             let _ = app.emit("config:changed", json!({}));
             let mut extra = Map::new();
-            extra.insert("action".into(), json!(format!("{} → {}", describe(&old), describe(value))));
+            extra.insert(
+                "action".into(),
+                json!(format!("{} → {}", describe(&old), describe(value))),
+            );
             attribute(app, "update_setting", key, extra);
-            Ok(format!("Done — {} is now {} (was {}).", key, describe(value), describe(&old)))
+            Ok(format!(
+                "Done — {} is now {} (was {}).",
+                key,
+                describe(value),
+                describe(&old)
+            ))
         }
     }
 }
 
 fn run_action(app: &AppHandle, verb: &str, a: &Map<String, Value>) -> Result<ActionResult> {
     if !hive_enabled(app) {
-        return Ok(err("The hive is not configured, so I can't take that action."));
+        return Ok(err(
+            "The hive is not configured, so I can't take that action.",
+        ));
     }
     let Some(spec) = verb_spec(verb) else {
         return Ok(err(format!("I don't have an action called \"{}\".", verb)));
@@ -1363,7 +1820,10 @@ fn run_action(app: &AppHandle, verb: &str, a: &Map<String, Value>) -> Result<Act
 // ─── commands (upstream's ipcMain.handle triple) ───────────────────────────
 
 #[tauri::command(async)]
-pub async fn realtime_action(app: AppHandle, payload: Option<Value>) -> Result<ActionResult, String> {
+pub async fn realtime_action(
+    app: AppHandle,
+    payload: Option<Value>,
+) -> Result<ActionResult, String> {
     let p = payload.unwrap_or_else(|| json!({}));
     let obj = p.as_object().cloned().unwrap_or_default();
     let verb = norm(&strv(&obj, "verb")).replace(' ', "_");
@@ -1409,7 +1869,9 @@ pub async fn realtime_action_confirm(
 pub async fn realtime_action_cancel() -> Result<ActionResult, String> {
     let had = pending_fresh();
     *PENDING.lock().unwrap() = None;
-    Ok(ok(had.map(|p| format!("Cancelled the {}.", p.verb)).unwrap_or_else(|| "Nothing to cancel.".into())))
+    Ok(ok(had
+        .map(|p| format!("Cancelled the {}.", p.verb))
+        .unwrap_or_else(|| "Nothing to cancel.".into())))
 }
 
 #[cfg(test)]
@@ -1419,7 +1881,10 @@ mod tests {
     #[test]
     fn bare_affirmations_never_confirm() {
         for phrase in ["yes", "Yeah!", "ok", "sure", "go ahead", "please", "right"] {
-            assert!(!confirm_accepted(phrase, "kill"), "phrase {phrase:?} must NOT confirm");
+            assert!(
+                !confirm_accepted(phrase, "kill"),
+                "phrase {phrase:?} must NOT confirm"
+            );
         }
     }
 
@@ -1439,7 +1904,13 @@ mod tests {
 
     #[test]
     fn mass_targets_rejected() {
-        for t in ["all", "everyone", "all agents", "the whole office", "every agent"] {
+        for t in [
+            "all",
+            "everyone",
+            "all agents",
+            "the whole office",
+            "every agent",
+        ] {
             assert!(is_mass_target(t), "{t:?} should read as mass");
         }
         assert!(!is_mass_target("oscar"));
@@ -1451,15 +1922,43 @@ mod tests {
         let toks = toks_match("message visibility");
         // exact title/id (score_card takes the ref pre-normalized)
         assert_eq!(
-            score_card(&norm_match("message-visibility"), &toks_match("message-visibility"), "x", "message-visibility"),
+            score_card(
+                &norm_match("message-visibility"),
+                &toks_match("message-visibility"),
+                "x",
+                "message-visibility"
+            ),
             1.0
         );
         // every spoken word present
-        assert_eq!(score_card(&norm_match("message visibility"), &toks, "The message visibility task", "t1"), 0.85);
+        assert_eq!(
+            score_card(
+                &norm_match("message visibility"),
+                &toks,
+                "The message visibility task",
+                "t1"
+            ),
+            0.85
+        );
         // truncation
-        assert_eq!(score_card(&norm_match("message vis"), &toks_match("message vis"), "message visibility overhaul", "t1"), 0.92);
+        assert_eq!(
+            score_card(
+                &norm_match("message vis"),
+                &toks_match("message vis"),
+                "message visibility overhaul",
+                "t1"
+            ),
+            0.92
+        );
         // unrelated
-        assert!(score_card(&norm_match("unrelated words"), &toks_match("unrelated words"), "message visibility", "t1") < 0.45);
+        assert!(
+            score_card(
+                &norm_match("unrelated words"),
+                &toks_match("unrelated words"),
+                "message visibility",
+                "t1"
+            ) < 0.45
+        );
     }
 
     #[test]

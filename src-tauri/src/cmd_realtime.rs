@@ -75,7 +75,10 @@ pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Val
         let j: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
         Ok((status, j, text))
     };
-    let mut res = post(CLIENT_SECRETS_URL, &json!({ "session": { "type": "realtime", "model": model } }));
+    let mut res = post(
+        CLIENT_SECRETS_URL,
+        &json!({ "session": { "type": "realtime", "model": model } }),
+    );
     if let Ok((404, ..)) = res {
         res = post(LEGACY_SESSIONS_URL, &json!({ "model": model }));
     }
@@ -87,7 +90,9 @@ pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Val
                 .map(str::to_string)
                 .or_else(|| Some(text.chars().take(200).collect()))
                 .unwrap_or_else(|| format!("HTTP {status}"));
-            Ok(json!({ "ok": false, "error": format!("token mint failed ({status}): {msg}"), "code": "mint_failed" }))
+            Ok(
+                json!({ "ok": false, "error": format!("token mint failed ({status}): {msg}"), "code": "mint_failed" }),
+            )
         }
         Ok((_status, j, _text)) => {
             let token = j["value"]
@@ -95,7 +100,9 @@ pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Val
                 .or_else(|| j["client_secret"]["value"].as_str())
                 .unwrap_or("");
             if token.is_empty() {
-                return Ok(json!({ "ok": false, "error": "mint returned no ephemeral token", "code": "no_token" }));
+                return Ok(
+                    json!({ "ok": false, "error": "mint returned no ephemeral token", "code": "no_token" }),
+                );
             }
             let expires_at = j["expires_at"]
                 .as_u64()
@@ -121,7 +128,10 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
     WATCHER.lock().unwrap().set_session_live(live);
     // Upstream toggles BOTH watchers on the same flag — the floor delta
     // watcher re-primes off a fresh snapshot either way.
-    crate::realtime::FLOOR_WATCHER.lock().unwrap().set_session_live(live);
+    crate::realtime::FLOOR_WATCHER
+        .lock()
+        .unwrap()
+        .set_session_live(live);
     Ok(json!({ "ok": true }))
 }
 
@@ -131,8 +141,8 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
 /// `dispatch` is upstream's PendingDispatch minus kind (forced "dispatch").
 #[tauri::command(async)]
 pub fn realtime_track_dispatch(_app: AppHandle, dispatch: Value) -> Result<Value, String> {
-    let mut rec: PendingDispatch = serde_json::from_value(dispatch)
-        .map_err(|e| format!("bad dispatch record: {e}"))?;
+    let mut rec: PendingDispatch =
+        serde_json::from_value(dispatch).map_err(|e| format!("bad dispatch record: {e}"))?;
     rec.kind = crate::realtime::PendingKind::Dispatch;
     if rec.correlation_id.is_empty() {
         return Err("correlationId required".into());
@@ -167,7 +177,10 @@ pub async fn realtime_wait_for(
     if subject.is_empty() {
         return Ok(json!({ "timedOut": true, "taskId": "" }));
     }
-    let timeout = timeout_ms.filter(|t| *t > 0).unwrap_or(120_000).min(600_000);
+    let timeout = timeout_ms
+        .filter(|t| *t > 0)
+        .unwrap_or(120_000)
+        .min(600_000);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
     loop {
         let found: Option<RealtimeCompletion> = {

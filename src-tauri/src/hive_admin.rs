@@ -72,10 +72,7 @@ pub fn add_task(hive: &Hive, fields: &Value) -> Result<Value> {
     card.insert("id".into(), Value::String(id.clone()));
     if card.get("createdAt").is_none() {
         // HiveTask.createdAt is an ISO string upstream (hive.ts:127).
-        card.insert(
-            "createdAt".into(),
-            json!(chrono::Utc::now().to_rfc3339()),
-        );
+        card.insert("createdAt".into(), json!(chrono::Utc::now().to_rfc3339()));
     }
 
     let mut doc = hive.read_tasks()?;
@@ -125,8 +122,7 @@ pub fn delete_task(hive: &Hive, id: &str) -> Result<Value> {
 fn patch_registry_entry(hive: &Hive, id: &str, patch: &Map<String, Value>) -> Result<bool> {
     let path = hive.root.join("registry.json");
     let text = fs::read_to_string(&path).unwrap_or_default();
-    let mut doc: Value =
-        serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": {} }));
+    let mut doc: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": {} }));
     let Some(agents) = doc.get_mut("agents") else {
         anyhow::bail!("registry.json is not an object");
     };
@@ -135,10 +131,7 @@ fn patch_registry_entry(hive: &Hive, id: &str, patch: &Map<String, Value>) -> Re
     let obj = match agents {
         Value::Object(map) => map
             .iter_mut()
-            .find(|(k, v)| {
-                k.as_str() == id
-                    || v.get("id").and_then(|v| v.as_str()) == Some(id)
-            })
+            .find(|(k, v)| k.as_str() == id || v.get("id").and_then(|v| v.as_str()) == Some(id))
             .map(|(_, v)| v),
         Value::Array(arr) => arr
             .iter_mut()
@@ -263,7 +256,10 @@ pub fn set_archived(hive: &Hive, id: &str, archived: bool) -> Result<Value> {
     patch.insert("lastSeen".into(), json!(now_ms()));
     patch_registry_entry(hive, id, &patch)?;
     let _ = hive.log(&json!({ "kind": "archive", "agent": id, "archived": archived }));
-    hive.commit(&format!("hive: {} {id}", if archived { "archive" } else { "unarchive" }));
+    hive.commit(&format!(
+        "hive: {} {id}",
+        if archived { "archive" } else { "unarchive" }
+    ));
     Ok(json!({ "ok": true }))
 }
 
@@ -329,10 +325,7 @@ pub fn hive_log(hive: &Hive, limit: usize) -> Vec<Value> {
     let all: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            serde_json::from_str::<Value>(l.trim())
-                .unwrap_or_else(|_| json!({ "raw": l }))
-        })
+        .map(|l| serde_json::from_str::<Value>(l.trim()).unwrap_or_else(|_| json!({ "raw": l })))
         .collect();
     all.into_iter().rev().take(cap).rev().collect()
 }
@@ -387,8 +380,12 @@ pub fn voice_messages(
                 .collect();
             files.sort();
             for f in files {
-                let Ok(t) = fs::read_to_string(&f) else { continue };
-                let Ok(m) = serde_json::from_str::<Value>(&t) else { continue };
+                let Ok(t) = fs::read_to_string(&f) else {
+                    continue;
+                };
+                let Ok(m) = serde_json::from_str::<Value>(&t) else {
+                    continue;
+                };
                 let Some(mid) = m.get("id").and_then(|v| v.as_str()) else {
                     continue;
                 };
@@ -433,9 +430,7 @@ pub fn voice_messages(
         return out;
     }
     // Upstream clamps the default to 12, the caller limit to [1,40].
-    let lim = limit
-        .map(|l| l.clamp(1, 40))
-        .unwrap_or(12);
+    let lim = limit.map(|l| l.clamp(1, 40)).unwrap_or(12);
     out.truncate(lim);
     out
 }
@@ -470,14 +465,18 @@ pub fn text_search(hive: &Hive, query: &str, limit: usize) -> Vec<Value> {
     }
     let mut out = Vec::new();
     for (path, source) in targets {
-        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
         let mut hits = 0;
         for line in text.lines() {
             if hits >= 3 {
                 break;
             }
             let lower = line.to_lowercase();
-            let Some(idx) = lower.find(&needle) else { continue };
+            let Some(idx) = lower.find(&needle) else {
+                continue;
+            };
             let start = idx.saturating_sub(40);
             let end = (idx + needle.len() + 40).min(line.len());
             // Don't slice mid-UTF8 — the line is what it is, but the needle
@@ -517,7 +516,8 @@ mod tests {
     use crate::hive::RegistryEntry;
 
     fn tmp_hive(tag: &str) -> (PathBuf, Hive) {
-        let root = std::env::temp_dir().join(format!("oa-hiveadmin-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("oa-hiveadmin-{tag}-{}", uuid::Uuid::new_v4()));
         let hive = Hive::ensure(&root).unwrap();
         (root, hive)
     }
@@ -544,7 +544,9 @@ mod tests {
         let card = add_task(&hive, &json!({ "title": "ship it" })).unwrap();
         let id = card["id"].as_str().unwrap();
         assert_eq!(id.len(), 8);
-        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
         // createdAt is an ISO string upstream (HiveTask.createdAt: string).
         assert!(card["createdAt"].as_str().unwrap().contains('T'));
 
@@ -590,10 +592,23 @@ mod tests {
         hive.send_routed(&msg).unwrap();
         assert_eq!(fs::read_dir(&inbox_w1).unwrap().count(), before);
         set_archived(&hive, "w-1", false).unwrap();
-        assert!(!hive.registry().into_iter().find(|a| a.id == "w-1").unwrap().archived);
+        assert!(
+            !hive
+                .registry()
+                .into_iter()
+                .find(|a| a.id == "w-1")
+                .unwrap()
+                .archived
+        );
 
         set_hold(&hive, "w-1", true).unwrap();
-        assert!(hive.registry().into_iter().find(|a| a.id == "w-1").unwrap().on_hold);
+        assert!(
+            hive.registry()
+                .into_iter()
+                .find(|a| a.id == "w-1")
+                .unwrap()
+                .on_hold
+        );
         assert!(set_hold(&hive, "ghost", true).is_err());
     }
 
@@ -637,7 +652,11 @@ mod tests {
         let (_r, hive) = tmp_hive("search");
         let dir = hive.agent_dir("w-3");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("memory.md"), "nothing here\nThe QUICK brown fox\nbye\n").unwrap();
+        fs::write(
+            dir.join("memory.md"),
+            "nothing here\nThe QUICK brown fox\nbye\n",
+        )
+        .unwrap();
         let hits = text_search(&hive, "quick", 100);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["source"], json!("w-3/memory.md"));
@@ -652,8 +671,10 @@ mod tests {
         hive.register_agent(&entry("w-4", "Cid")).unwrap();
         let m1 = crate::hive::Message::new("god", "w-4", "inform", "s1", "b1");
         let m2 = crate::hive::Message::new("god", "w-4", "request", "s2", "b2");
-        hive.send_virtual(&m1.from, "w-4", &m1.act, &m1.subject, &m1.body).unwrap();
-        hive.send_virtual(&m2.from, "w-4", &m2.act, &m2.subject, &m2.body).unwrap();
+        hive.send_virtual(&m1.from, "w-4", &m1.act, &m1.subject, &m1.body)
+            .unwrap();
+        hive.send_virtual(&m2.from, "w-4", &m2.act, &m2.subject, &m2.body)
+            .unwrap();
         let inbox_id = hive.inbox("w-4").unwrap()[0].id.clone();
         hive.mark_done("w-4", &inbox_id).unwrap();
         let msgs = voice_messages(&hive, Some("w-4"), None, Some(50), None);
@@ -673,7 +694,11 @@ mod tests {
         // A message whose body carries a credential — renderer-facing reads
         // must never return the secret (upstream redactSecrets gate).
         let mut m = crate::hive::Message::new(
-            "god", "w-6", "inform", "s", "here's the key sk-ant-1234567890abcdef123",
+            "god",
+            "w-6",
+            "inform",
+            "s",
+            "here's the key sk-ant-1234567890abcdef123",
         );
         m.conversation = "cv".into();
         hive.send_routed(&m).unwrap();

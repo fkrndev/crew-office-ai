@@ -71,14 +71,24 @@ pub fn classify_inbound_kind(text: &str) -> &'static str {
     .iter()
     .any(|w| t.starts_with(w) && (t.len() == w.len() || t[w.len()..].starts_with(' ')));
     let imperative = [
-        "fix", "build", "ship", "deploy", "run", "write", "create", "add", "remove", "delete",
-        "refactor", "implement", "update", "merge", "revert",
+        "fix",
+        "build",
+        "ship",
+        "deploy",
+        "run",
+        "write",
+        "create",
+        "add",
+        "remove",
+        "delete",
+        "refactor",
+        "implement",
+        "update",
+        "merge",
+        "revert",
     ]
     .iter()
-    .any(|w| {
-        t.split(|c: char| !c.is_alphanumeric())
-            .any(|tok| tok == *w)
-    });
+    .any(|w| t.split(|c: char| !c.is_alphanumeric()).any(|tok| tok == *w));
     if opener && t.ends_with('?') && !imperative {
         "communication"
     } else {
@@ -126,7 +136,9 @@ pub struct TriggerHistory {
 
 impl TriggerHistory {
     pub fn new(dir: PathBuf) -> Self {
-        Self { path: dir.join("trigger-history.json") }
+        Self {
+            path: dir.join("trigger-history.json"),
+        }
     }
 
     /// Newest first ON DISK as well as in memory — the UI's hot path is a
@@ -222,7 +234,11 @@ impl TriggerHistory {
                 let _ = fs::remove_file(&self.path);
             }
             Some(s) => {
-                let kept: Vec<_> = self.read_all().into_iter().filter(|e| e.source != s).collect();
+                let kept: Vec<_> = self
+                    .read_all()
+                    .into_iter()
+                    .filter(|e| e.source != s)
+                    .collect();
                 self.write_all(&kept);
             }
         }
@@ -277,12 +293,20 @@ mod tests {
         let (h, dir) = ledger();
         let e = h.append(entry("x", Some("pending")));
         let out = h
-            .update(&e.id, Some("approved".into()), Some("task-9".into()), None, None)
+            .update(
+                &e.id,
+                Some("approved".into()),
+                Some("task-9".into()),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(out.decision.as_deref(), Some("approved"));
         assert_eq!(out.task_id.as_deref(), Some("task-9"));
         // Aged-out ids are a normal miss, not an error.
-        assert!(h.update("nope", Some("rejected".into()), None, None, None).is_none());
+        assert!(h
+            .update("nope", Some("rejected".into()), None, None, None)
+            .is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -321,9 +345,18 @@ mod tests {
         // Ported verbatim from classifyInboundKind: question-opener + '?'
         // + no imperative verb = communication; everything else directive.
         assert_eq!(classify_inbound_kind(""), "communication");
-        assert_eq!(classify_inbound_kind("what is the weather?"), "communication");
-        assert_eq!(classify_inbound_kind("can you see the progress?"), "communication");
-        assert_eq!(classify_inbound_kind("what is the build status?"), "directive"); // 'build' is imperative
+        assert_eq!(
+            classify_inbound_kind("what is the weather?"),
+            "communication"
+        );
+        assert_eq!(
+            classify_inbound_kind("can you see the progress?"),
+            "communication"
+        );
+        assert_eq!(
+            classify_inbound_kind("what is the build status?"),
+            "directive"
+        ); // 'build' is imperative
         assert_eq!(classify_inbound_kind("what should we deploy?"), "directive"); // imperative inside
         assert_eq!(classify_inbound_kind("deploy the release now"), "directive");
         assert_eq!(classify_inbound_kind("status"), "directive"); // no '?'

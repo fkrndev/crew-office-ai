@@ -794,8 +794,8 @@ pub fn get_doc(kg_root: &Path, doc_id: &str) -> Option<(KgMeta, String)> {
     if !doc_dir.exists() {
         return None;
     }
-    let meta: KgMeta = serde_json::from_str(&fs::read_to_string(doc_dir.join("meta.json")).ok()?)
-        .ok()?;
+    let meta: KgMeta =
+        serde_json::from_str(&fs::read_to_string(doc_dir.join("meta.json")).ok()?).ok()?;
     let text = fs::read_to_string(doc_dir.join("text.md")).unwrap_or_default();
     Some((meta, text))
 }
@@ -947,7 +947,10 @@ mod tests {
         // coverage: rejoin-ish — every chunk nonempty, first starts at 0.
         assert!(chunks[0].starts_with("paragraph number 0"));
         // small text is one chunk, trimmed
-        assert_eq!(chunk_text("  hello world  ", 1200, 150), vec!["hello world"]);
+        assert_eq!(
+            chunk_text("  hello world  ", 1200, 150),
+            vec!["hello world"]
+        );
         // empty → nothing
         assert!(chunk_text("   ", 1200, 150).is_empty());
         // always terminates on pathological input
@@ -1018,46 +1021,72 @@ mod tests {
         let tmp = TmpDir::new("file");
         let root = tmp.0.join("knowledge");
         let src = tmp.0.join("notes.md");
-        fs::write(&src, "# Meeting notes\nWe decided to port the broker to Rust.\n").unwrap();
+        fs::write(
+            &src,
+            "# Meeting notes\nWe decided to port the broker to Rust.\n",
+        )
+        .unwrap();
 
-        let a = ingest(&root, &IngestInput {
-            src_path: Some(src.display().to_string()),
-            ..Default::default()
-        })
+        let a = ingest(
+            &root,
+            &IngestInput {
+                src_path: Some(src.display().to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
         assert_eq!(a.meta.modality, "text");
         assert_eq!(a.meta.source, "notes.md");
         assert_eq!(a.meta.orig_ext, "md");
-        assert!(root.join("docs").join(&a.doc_id).join("original.md").exists());
+        assert!(root
+            .join("docs")
+            .join(&a.doc_id)
+            .join("original.md")
+            .exists());
 
         // a second doc doesn't clobber the index — both searchable
-        let b = ingest(&root, &IngestInput {
-            text: Some("Totally different content about gardening tulips.".into()),
-            ..Default::default()
-        })
+        let b = ingest(
+            &root,
+            &IngestInput {
+                text: Some("Totally different content about gardening tulips.".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
         assert_eq!(list(&root).len(), 2);
-        assert!(search(&root, "broker rust", None).iter().any(|h| h.doc_id == a.doc_id));
-        assert!(search(&root, "gardening tulips", None).iter().any(|h| h.doc_id == b.doc_id));
+        assert!(search(&root, "broker rust", None)
+            .iter()
+            .any(|h| h.doc_id == a.doc_id));
+        assert!(search(&root, "gardening tulips", None)
+            .iter()
+            .any(|h| h.doc_id == b.doc_id));
         // cross-doc isolation: broker search must not rank the tulip doc
-        assert!(search(&root, "broker rust", None).iter().all(|h| h.doc_id != b.doc_id));
+        assert!(search(&root, "broker rust", None)
+            .iter()
+            .all(|h| h.doc_id != b.doc_id));
     }
 
     #[test]
     fn search_ranks_exact_phrase_and_title() {
         let tmp = TmpDir::new("rank");
         let root = tmp.0.join("knowledge");
-        let phrase_doc = ingest(&root, &IngestInput {
-            text: Some("the quick brown fox jumps over the lazy dog repeatedly".into()),
-            title: Some("unrelated".into()),
-            ..Default::default()
-        })
+        let phrase_doc = ingest(
+            &root,
+            &IngestInput {
+                text: Some("the quick brown fox jumps over the lazy dog repeatedly".into()),
+                title: Some("unrelated".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
-        let weak = ingest(&root, &IngestInput {
-            text: Some("fox fox fox quick quick dog".into()),
-            title: Some("also unrelated".into()),
-            ..Default::default()
-        })
+        let weak = ingest(
+            &root,
+            &IngestInput {
+                text: Some("fox fox fox quick quick dog".into()),
+                title: Some("also unrelated".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
         let hits = search(&root, "quick brown fox", None);
         assert_eq!(hits.len(), 2);

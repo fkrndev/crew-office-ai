@@ -42,8 +42,10 @@ const PROVIDERS: [&str; 4] = ["claude", "antigravity", "codex", "cursor"];
 fn flag_re_ok(t: &str) -> bool {
     !t.is_empty()
         && t.len() <= 100
-        && t.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '=' | ':' | ',' | '@' | '+' | '-'))
+        && t.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '.' | '_' | '/' | '=' | ':' | ',' | '@' | '+' | '-')
+        })
 }
 
 /// Model id shape — flows onto the spawn command line, so shell metachars
@@ -53,7 +55,10 @@ fn model_re_ok(t: &str) -> bool {
         && t.len() <= 80
         && t.chars().all(|c| {
             c.is_ascii_alphanumeric()
-                || matches!(c, ' ' | '.' | '_' | '(' | ')' | '[' | ']' | '/' | ':' | '@' | '+' | '-')
+                || matches!(
+                    c,
+                    ' ' | '.' | '_' | '(' | ')' | '[' | ']' | '/' | ':' | '@' | '+' | '-'
+                )
         })
 }
 
@@ -65,7 +70,14 @@ const SAFE_FLAG_NAMES: [&str; 4] = ["--model", "--max-turns", "--output-format",
 
 fn is_safe_flag(token: &str) -> bool {
     token.starts_with('-')
-        && SAFE_FLAG_NAMES.contains(&token.split('=').next().unwrap_or("").to_lowercase().as_str())
+        && SAFE_FLAG_NAMES.contains(
+            &token
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str(),
+        )
 }
 
 fn capped<'a>(
@@ -125,12 +137,16 @@ pub fn validate_hire_manifest(raw: &Value) -> (Option<Value>, Vec<String>, Vec<S
     let name = capped(g("name"), 40, "name", &mut errors, true);
     let description = capped(g("description"), 200, "description", &mut errors, false);
     let goal = capped(g("goal"), 4000, "goal", &mut errors, false);
-    let character = capped(g("character"), 24, "character", &mut errors, false).map(|s| s.to_lowercase());
+    let character =
+        capped(g("character"), 24, "character", &mut errors, false).map(|s| s.to_lowercase());
     let accent = capped(g("accent"), 24, "accent", &mut errors, false).map(|s| s.to_lowercase());
     let model = capped(g("model"), 80, "model", &mut errors, false);
     if let Some(m) = &model {
         if !model_re_ok(m) {
-            errors.push("\"model\" contains disallowed characters (it goes onto the spawn command line)".into());
+            errors.push(
+                "\"model\" contains disallowed characters (it goes onto the spawn command line)"
+                    .into(),
+            );
         }
     }
     let author = capped(g("author"), 80, "author", &mut errors, false);
@@ -173,12 +189,16 @@ pub fn validate_hire_manifest(raw: &Value) -> (Option<Value>, Vec<String>, Vec<S
                         continue;
                     };
                     if !flag_re_ok(tok) {
-                        errors.push(format!("commandFlags entry {tok:?} is not a safe flag token"));
+                        errors.push(format!(
+                            "commandFlags entry {tok:?} is not a safe flag token"
+                        ));
                         value_allowed = false;
                         continue;
                     }
                     if i == 0 && !tok.starts_with('-') {
-                        errors.push("\"commandFlags\" must start with a flag (e.g. \"--model\")".into());
+                        errors.push(
+                            "\"commandFlags\" must start with a flag (e.g. \"--model\")".into(),
+                        );
                         value_allowed = false;
                         continue;
                     }
@@ -371,7 +391,13 @@ pub fn is_allowed_manifest_url(u: &str) -> bool {
         return true;
     }
     if let Some(rest) = u.strip_prefix("http://") {
-        let host = rest.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+        let host = rest
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
         return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
     }
     false
@@ -422,7 +448,10 @@ pub fn fetch_manifest(url: &str) -> Result<Value, String> {
     let hostport = rest.split('/').next().unwrap_or("");
     let (host, port) = match hostport.split_once(':') {
         Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(443)),
-        None => (hostport.trim_matches(|c| c == '[' || c == ']').to_string(), 443),
+        None => (
+            hostport.trim_matches(|c| c == '[' || c == ']').to_string(),
+            443,
+        ),
     };
     // Loopback http is allowed (dev) — skip the blocklist for it.
     let is_loopback_http = url.starts_with("http://");
@@ -437,7 +466,9 @@ pub fn fetch_manifest(url: &str) -> Result<Value, String> {
         }
         for sa in &resolved {
             if ip_blocked(&sa.ip()) {
-                return Err("manifest host resolves to a blocked (private/reserved) address".into());
+                return Err(
+                    "manifest host resolves to a blocked (private/reserved) address".into(),
+                );
             }
         }
     }
@@ -453,7 +484,8 @@ pub fn fetch_manifest(url: &str) -> Result<Value, String> {
         .limit(HIRE_MAX_BYTES as u64)
         .read_to_vec()
         .map_err(|e| format!("read failed: {e}"))?;
-    let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("manifest is not JSON: {e}"))?;
+    let v: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("manifest is not JSON: {e}"))?;
     Ok(v)
 }
 
@@ -531,11 +563,30 @@ mod tests {
     #[test]
     fn ssrf_blocklist_covers_private_and_metadata() {
         use std::net::IpAddr;
-        for ip in ["10.0.0.5", "172.16.0.1", "192.168.1.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "fc00::1", "fe80::1", "::ffff:10.0.0.1"] {
-            assert!(ip_blocked(&ip.parse::<IpAddr>().unwrap()), "{ip} should be blocked");
+        for ip in [
+            "10.0.0.5",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(
+                ip_blocked(&ip.parse::<IpAddr>().unwrap()),
+                "{ip} should be blocked"
+            );
         }
         for ip in ["8.8.8.8", "1.1.1.1", "100.63.255.255"] {
-            assert!(!ip_blocked(&ip.parse::<IpAddr>().unwrap()), "{ip} should pass");
+            assert!(
+                !ip_blocked(&ip.parse::<IpAddr>().unwrap()),
+                "{ip} should pass"
+            );
         }
     }
 }
