@@ -344,9 +344,10 @@ retry+backoff on index.lock).
   3-region parse (pinned/condensed/recent), merge+rebuild, the
   verify-don't-trust gate (structure, size, pinned-line, recent
   round-trip, not-smaller checks), framed <<<CONDENSED>>>/<<<HOIST>>>/
-  <<<END>>> summary protocol + legacy JSON path, headless `claude -p`
-  (Haiku, disallowedTools, 180s timeout), backup→summarize→rebuild→
-  verify→atomic-swap pipeline. Command: reflect_now. 66 tests green.
+  <<<END>>> summary protocol + legacy JSON path, interactive PTY
+  hidden claude session (Haiku, disallowedTools, 180s timeout, user
+  plan quota not Agent SDK credit), backup→summarize→rebuild→
+  verify→atomic-swap pipeline. Command: reflect_now. 69 tests green.
 
 ## Remaining upstream surface (deliberately unported — external deps)
 
@@ -363,7 +364,10 @@ retry+backoff on index.lock).
   memory.md append/janitor (reflect) are native.
 - integrationBroker.ts + shared/integrations.ts — per-agent integration
   secret broker (Phase 2 foundation upstream).
-- hiddenClaude.ts — superseded: reflect.rs runs `claude -p` directly.
+- hiddenClaude.ts — ported as hidden_claude.rs: interactive PTY session
+  (boot-quiet detect, bracketed-paste prompt, idle-settle, transcript
+  JSONL extract, process-tree kill). reflect.rs now uses it instead of
+  the headless `claude -p` path, matching upstream's plan-quota billing.
 - git.ts write half — worktree add/remove, diffs, commit file lists;
   the read surface + unintegrated-work guard are ported (git_ops.rs).
 - nodeInstall.ts + cliInstall.ts — N/A: Tauri ships a native binary
