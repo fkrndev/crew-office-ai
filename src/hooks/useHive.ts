@@ -377,7 +377,18 @@ export function useHive(config: HarnessConfig | null): void {
     if (!config?.onboardingComplete || !config.harnessHome) return;
     let cancelled = false;
     useStore.getState().setGodStatus('booting');
+    // Boot watchdog: if spawnPty hangs (pending IPC that neither resolves nor
+    // rejects — a dead bridge does exactly this), 'booting' would pin the
+    // CLOCKING IN loader forever. 30s is generous for a local PTY spawn.
+    const watchdog = setTimeout(() => {
+      if (!cancelled && useStore.getState().godStatus === 'booting') {
+        console.error('[god boot] spawn watchdog fired — bridge never answered');
+        godSpawning.current = false;
+        useStore.getState().setGodStatus('failed');
+      }
+    }, 30_000);
     const t = setTimeout(async () => {
+      try {
       if (cancelled) return;
       const live = await window.cth.listPtys().catch(() => []);
       if (live.some((p) => p.id === GOD_PTY)) { // already running â€” keep restored entry
@@ -470,8 +481,17 @@ export function useHive(config: HarnessConfig | null): void {
         } catch { /* PTY may have died during startup */ }
         finally { bootGraceUntil.current[GOD_ID] = 0; }
       })();
+      } catch (err) {
+        // A thrown spawn (bridge not ready, spawnPty rejected) left godStatus
+        // pinned at 'booting' forever — the CLOCKING IN loader never cleared.
+        // Surface it as 'failed' so the empty-floor UI shows the retry path
+        // instead of an eternal loader.
+        console.error('[god boot]', err);
+        godSpawning.current = false;
+        if (!cancelled) useStore.getState().setGodStatus('failed');
+      }
     }, 1200);
-    return () => { cancelled = true; clearTimeout(t); };
+    return () => { cancelled = true; clearTimeout(t); clearTimeout(watchdog); };
   }, [config?.onboardingComplete, config?.harnessHome]);
 
   // 2) Drive avatars from real hook events emitted by each agent's shim.
