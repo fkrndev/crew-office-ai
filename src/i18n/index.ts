@@ -1,8 +1,9 @@
 /**
  * i18n bootstrap — react-i18next with inline JSON resources.
  *
- * English is the default language (and the fallback for any missing key).
- * The user's choice is persisted in localStorage (`cth.language`). With nothing
+ * Bahasa Indonesia is the default language; English stays the fallback for
+ * any missing key. The user's choice is persisted in localStorage
+ * (`cth.language`). With nothing
  * saved the app starts in English, ALWAYS — it deliberately does not read
  * navigator.language. Auto-detect would change the UI out from under every
  * existing user on a non-English machine, who never asked for a translation and
@@ -91,13 +92,13 @@ export function setGodName(name: string | undefined | null): void {
   i18n.emit('languageChanged', i18n.language);
 }
 
-/** The saved choice, or English. Never the OS locale — see the note above. */
+/** The saved choice, or the app default. Never the OS locale — see the note above. */
 function detectLanguage(): string {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (saved && SUPPORTED.includes(saved as LanguageCode)) return saved;
-  } catch { /* localStorage unavailable — English it is */ }
-  return 'en';
+  } catch { /* localStorage unavailable — default it is */ }
+  return 'id';
 }
 
 /** Switch language now and persist the choice for next launch. */
