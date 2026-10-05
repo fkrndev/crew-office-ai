@@ -20,7 +20,8 @@ pub fn start(app: AppHandle) -> Option<u16> {
     let port = server.server_addr().to_ip().map(|a| a.port())?;
     std::thread::spawn(move || loop {
         let Ok(mut req) = server.recv() else {
-            continue;
+            // Fatal server error (closed/bound dropped) — exit, don't spin.
+            break;
         };
         if req.method().as_str() != "GET" {
             let _ = req.respond(tiny_http::Response::from_string("").with_status_code(405));
@@ -43,6 +44,10 @@ pub fn start(app: AppHandle) -> Option<u16> {
             }
             _ => (404, "null".to_string()),
         };
+        // CORS — the renderer (tauri://localhost or http://localhost:1420)
+        // is cross-origin to 127.0.0.1:PORT; without Access-Control-Allow-Origin
+        // the sync XHR response is unreadable. Preflight is skipped because
+        // these are simple GETs with no custom headers.
         let _ = req.respond(
             tiny_http::Response::from_string(body)
                 .with_status_code(status)
@@ -50,6 +55,13 @@ pub fn start(app: AppHandle) -> Option<u16> {
                     tiny_http::Header::from_bytes(
                         &b"Content-Type"[..],
                         &b"application/json"[..],
+                    )
+                    .unwrap(),
+                )
+                .with_header(
+                    tiny_http::Header::from_bytes(
+                        &b"Access-Control-Allow-Origin"[..],
+                        &b"*"[..],
                     )
                     .unwrap(),
                 ),

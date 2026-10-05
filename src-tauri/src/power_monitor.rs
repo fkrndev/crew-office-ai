@@ -58,7 +58,9 @@ fn windows_loop(tx: std::sync::mpsc::Sender<PowerEvent>) {
             WM_POWERBROADCAST => {
                 match wparam as u32 {
                     PBT_APMSUSPEND => send(PowerEvent::Suspend),
-                    PBT_APMRESUMESUSPEND | PBT_APMRESUMEAUTOMATIC => {
+                    PBT_APMRESUMESUSPEND
+                    | PBT_APMRESUMEAUTOMATIC
+                    | PBT_APMRESUMECRITICAL => {
                         send(PowerEvent::Resume)
                     }
                     _ => {}
