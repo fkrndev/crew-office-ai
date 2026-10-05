@@ -94,7 +94,7 @@ fn preset_command(provider: &str, model: Option<&str>, auto_mode: bool) -> Strin
         "pi" => ("pi", "--approve"),
         "copilot" => ("copilot", "-s --allow-all-tools --no-ask-user"),
         "cursor" => ("cursor-agent", "--force --trust"),
-        "hermes" => ("hermes --cli", ""),
+        "hermes" => ("hermes --cli", "--yolo"),
         "openclaw" => ("openclaw tui --local", ""),
         _ => ("claude", "--permission-mode bypassPermissions"),
     };

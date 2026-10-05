@@ -570,7 +570,42 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     docsUrl: 'https://cursor.com/docs/cli/install'
   },
   {
-    // OpenClaw — the open-source agentic CLI (openclaw.ai / openclaw/openclaw).
+    // Hermes — Nous Research's agent CLI (NousResearch/hermes-agent).
+    // `hermes --cli` forces the classic prompt_toolkit REPL even when the
+    // user's config.yaml defaults to the Ink TUI — deterministic for a PTY.
+    // Non-hiveAware in the Claude-flag sense, BUT Hermes has a real hook
+    // bridge: install_hermes_hooks copies the user's config + env into a
+    // per-agent home and wires shell_hooks.py through the hive-hook shim's
+    // --hermes translator mode, so live status + Stop→inbox-drain work like
+    // agy/codex.
+    // Flags verified against hermes_cli/_parser.py: --yolo bypasses all
+    // dangerous-command approval prompts (auto mode); --model takes
+    // provider/model ids (e.g. anthropic/claude-sonnet-4.6); --resume takes
+    // a session id or 'latest'; -q would seed a first turn, but a long hive
+    // protocol on argv is fragile — type the protocol into the REPL instead.
+    id: 'hermes',
+    label: 'Hermes',
+    defaultCommand: 'hermes --cli',
+    commandGroups: [],
+    autoModeFlag: '--yolo',
+    autoFlag: '--yolo',
+    supportsModel: true,
+    modelFlag: '--model',
+    hiveAware: false,
+    // Via the hermes hook bridge (shell_hooks.py → hive-hook --hermes).
+    canReceiveInbox: true,
+    initialPromptFlag: undefined,
+    seedDelivery: 'type-into-tui',
+    recommendedOrchestratorModel: undefined,
+    resumeFlag: '--resume',
+    // Official one-liner installer (bundles Python 3.14, Node, ripgrep, ffmpeg).
+    nativeInstallCommand: {
+      posix: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash',
+      win32: 'iex (irm https://hermes-agent.nousresearch.com/install.ps1)'
+    },
+    docsUrl: 'https://hermes-agent.nousresearch.com/docs'
+  },
+  {
     // `openclaw tui --local` runs the embedded agent runtime standalone (same
     // as `openclaw chat`) — no Gateway needed, so a per-agent PTY spawn is
     // self-contained. Non-hiveAware: no --append-system-prompt equivalent, so
@@ -687,6 +722,8 @@ export function inferAgentProvider(command: string | undefined, explicit?: unkno
   if (bin === 'crush') return 'crush';
   if (bin === 'pi') return 'pi';
   if (bin === 'copilot') return 'copilot';
+  if (bin === 'hermes') return 'hermes';
+  if (bin === 'openclaw') return 'openclaw';
   // Cursor ships as `cursor-agent`; `agent` is a shorter alias (generic name — check last).
   if (bin === 'cursor-agent') return 'cursor';
   if (bin === 'agent') return 'cursor';
