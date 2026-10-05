@@ -38,10 +38,17 @@ export interface RosterSource {
 /** An empty file must never win over a populated localStorage: that is the
  *  "opened the packaged build once and my floor went blank" failure the mirror
  *  exists to prevent (the two origins do not share a localStorage, the file is
- *  what bridges them). A genuine delete-all clears both, so nothing resurrects. */
+ *  what bridges them). A genuine delete-all clears both, so nothing resurrects.
+ *
+ *  Guards are Array.isArray, not truthiness: a malformed roster.json ({}, a
+ *  stray value, a file half-written by a crash) used to throw at module load
+ *  and blank the WHOLE app before onboarding could even render. */
 function fileHasRoster(file: RosterCounts | null): boolean {
   return !!file
-    && file.agents.length + file.archived.length + file.restorable.length > 0;
+    && (Array.isArray(file.agents) ? file.agents.length : 0)
+      + (Array.isArray(file.archived) ? file.archived.length : 0)
+      + (Array.isArray(file.restorable) ? file.restorable.length : 0)
+      > 0;
 }
 
 export function chooseRosterSource({

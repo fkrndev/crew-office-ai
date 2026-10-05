@@ -1,10 +1,18 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
+import pkg from './package.json' with { type: 'json' };
 
 // https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
   plugins: [react()],
+  // Upstream electron.vite.config.ts injected this for the renderer build;
+  // the Tauri vite config never carried it over, so every __APP_VERSION__
+  // read (UpdateBadge, runningAppVersion) was a runtime ReferenceError that
+  // blanked the app the moment the main shell mounted.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version)
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
