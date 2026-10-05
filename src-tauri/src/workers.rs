@@ -266,13 +266,15 @@ fn finalize_worker_worktree(st: &AppState, wt_path: &Path, orig_cwd: &Path, rec:
     }
 }
 
-/// teardownPty step 2 — the worktree half of kill_agent: workers get the
-/// safety-gated finalize; regular isolated agents keep upstream's immediate
-/// force-remove. Called for EVERY teardown route (kill, done-release, reap,
-/// crash) so a worktree can never orphan silently.
-pub fn finalize_teardown(st: &AppState, id: &str) {
-    let worker = st.live_workers.lock().unwrap().remove(id);
-    if let Some((wt_path, orig_cwd)) = st.worktree_paths.lock().unwrap().remove(id) {
+/// teardownPty step 2 — the worktree half of kill_agent/pty-exit: workers get
+/// the safety-gated finalize; regular isolated agents keep upstream's
+/// immediate force-remove. Called for EVERY teardown route (kill,
+/// done-release, reap, crash) so a worktree can never orphan silently.
+/// `live_workers` is AGENT-id keyed while `worktree_paths` is PTY-id keyed
+/// (upstream liveWorkers[agentId] vs worktreePaths[ptyId]) — hence two ids.
+pub fn finalize_teardown(st: &AppState, pty_id: &str, agent_id: &str) {
+    let worker = st.live_workers.lock().unwrap().remove(agent_id);
+    if let Some((wt_path, orig_cwd)) = st.worktree_paths.lock().unwrap().remove(pty_id) {
         match worker {
             Some(rec) => finalize_worker_worktree(st, &wt_path, &orig_cwd, &rec),
             None => {
@@ -493,12 +495,23 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             seed_prompt: None,
             isolate: raw["isolate"].as_bool().unwrap_or(true), // upstream default
             is_god: false,
+            is_assistant: false,
+            capabilities: Vec::new(),
             no_auto_install: false,
             cols: 120,
             rows: 32,
         },
-        Some(worker_id.clone()),
-        None,
+        crate::commands::SpawnPlan {
+            // Upstream keeps the collapsed namespaces for workers:
+            // `pty id == worker id == agent id` (processSpawnRequest).
+            pty_id: Some(worker_id.clone()),
+            agent_id: Some(worker_id.clone()),
+            resume: None,
+            require_resume: false,
+            // MAIN-initiated — no renderer consumes the seedPrompt, so keep
+            // the server-side type-into-TUI.
+            auto_type_seed: true,
+        },
     );
     if let Err(e) = spawned {
         crate::integrations::BROKER.revoke(&worker_id);
@@ -630,7 +643,9 @@ pub fn tick(app: &AppHandle) {
                     rec_slack.as_ref(),
                 );
             }
-            st.live_workers.lock().unwrap().remove(&worker_id);
+            // kill_agent's teardown owns the live_workers removal now —
+            // removing it here first would hide the worker rec from the
+            // worktree gate (upstream reads liveWorkers inside teardownPty).
             let _ = crate::commands::kill_agent(app.clone(), worker_id);
             continue;
         }
@@ -649,14 +664,16 @@ pub fn tick(app: &AppHandle) {
                 ),
                 rec_slack.as_ref(),
             );
-            st.live_workers.lock().unwrap().remove(&worker_id);
+            // As above: let kill_agent's teardown remove the worker rec.
             let _ = crate::commands::kill_agent(app.clone(), worker_id);
             continue;
         }
         // Idle reap — no PTY output for the configured window and never
-        // signaled done.
-        let idle_ms = st.ptys.lock().unwrap().get(&worker_id).map(|h| {
-            now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
+        // signaled done. `worker_id` is an agent id — resolve its PTY.
+        let idle_ms = st.resolve_pty_id(&worker_id).and_then(|pid| {
+            st.ptys.lock().unwrap().get(&pid).map(|h| {
+                now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
+            })
         });
         match idle_ms {
             None => continue, // PTY already gone — teardown paths clean up
@@ -674,7 +691,6 @@ pub fn tick(app: &AppHandle) {
                     ),
                     rec_slack.as_ref(),
                 );
-                st.live_workers.lock().unwrap().remove(&worker_id);
                 let _ = crate::commands::kill_agent(app.clone(), worker_id);
             }
             _ => {}
@@ -790,15 +806,16 @@ pub fn list(app: &AppHandle) -> Value {
         .values()
         .map(|r| {
             let idle_ms = st
-                .ptys
-                .lock()
-                .unwrap()
-                .get(&format!("worker-{}", r.req_id))
-                .map(|h| {
-                    now.saturating_sub(
-                        h.last_output_at
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                    )
+                .resolve_pty_id(&format!("worker-{}", r.req_id))
+                .and_then(|pid| {
+                    st.ptys
+                        .lock()
+                        .unwrap()
+                        .get(&pid)
+                        .map(|h| h.last_output_at.clone())
+                })
+                .map(|clock| {
+                    now.saturating_sub(clock.load(std::sync::atomic::Ordering::Relaxed))
                 });
             json!({
                 "workerId": format!("worker-{}", r.req_id),

@@ -104,9 +104,13 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
                     "[{}] {} — check your inbox for the mission message.",
                     m.label, m.body
                 );
-                let mut ptys = st.ptys.lock().unwrap();
-                if let Some(h) = ptys.get_mut(&tid) {
-                    let _ = h.write(&format!("{nudge}\r"));
+                // `tid` is an AGENT id (registry/mission target) — the PTY map
+                // is keyed by pty id, so translate first.
+                if let Some(pty_id) = st.pty_for_agent(&tid) {
+                    let mut ptys = st.ptys.lock().unwrap();
+                    if let Some(h) = ptys.get_mut(&pty_id) {
+                        let _ = h.write(&format!("{nudge}\r"));
+                    }
                 }
             }
         }
@@ -283,8 +287,10 @@ pub fn run() {
                             // Closing-time observer: routed subjects carry
                             // the worker ACKs + god's COMPLETE verdict.
                             if st.closing.is_active() {
+                                // Agent-namespace live set (the pty map keys
+                                // are renderer `pty-<agent>` ids).
                                 let live: std::collections::HashSet<String> =
-                                    st.ptys.lock().unwrap().keys().cloned().collect();
+                                    st.live_agent_ids();
                                 for d in &deliveries {
                                     let msg = st
                                         .hive
@@ -388,8 +394,9 @@ pub fn run() {
                         .unwrap_or(0);
                     // Only agents with a live PTY — dead entries steer into a
                     // god-bounce flood (upstream startup-migration note).
-                    let live: std::collections::HashSet<String> =
-                        st.ptys.lock().unwrap().keys().cloned().collect();
+                    // Agent-namespace live set — the breaker steers registry
+                    // agents, not renderer terminal ids.
+                    let live: std::collections::HashSet<String> = st.live_agent_ids();
                     let inputs: Vec<breaker::BreakerInput> = st
                         .hive
                         .registry()
@@ -524,10 +531,18 @@ pub fn run() {
                                 );
                             }
                             breaker::BreakerAction::Stop => {
-                                if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
-                                    let _ = h.kill();
+                                // `id` is an AGENT id — resolve the PTY first
+                                // (upstream: ptyForAgent(agentId) → kill +
+                                // teardownPty). teardown drops the mapping and
+                                // runs the full agent-keyed cleanup.
+                                if let Some(pty_id) = st.pty_for_agent(&id) {
+                                    if let Some(mut h) =
+                                        st.ptys.lock().unwrap().remove(&pty_id)
+                                    {
+                                        let _ = h.kill();
+                                    }
+                                    commands::teardown_pty_core(&handle2, &pty_id, "gone");
                                 }
-                                let _ = st.hive.set_status(&id, "gone");
                                 let _ = handle2.emit(
                                     "breaker-toast",
                                     serde_json::json!({ "text": format!("{name} stopped by circuit breaker"), "reason": d.state.reason }),
@@ -608,8 +623,16 @@ pub fn run() {
                         .unwrap_or(0);
                     let mut facts = Vec::new();
                     for a in st.hive.registry() {
+                        // Registry rows are agent-keyed; the PTY map is not —
+                        // translate through the spawn-time mapping.
+                        let Some(pty_id) = st.pty_for_agent(&a.id) else {
+                            continue;
+                        };
                         let pty = st.ptys.lock().unwrap();
-                        let Some(h) = pty.get(&a.id) else { continue };
+                        let Some(h) = pty.get(&pty_id) else {
+                            drop(pty);
+                            continue;
+                        };
                         let last_output_at =
                             h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);
                         drop(pty);
@@ -640,7 +663,7 @@ pub fn run() {
                         facts.push(workerwake::WorkerWakeFacts {
                             agent_id: a.id.clone(),
                             is_god: a.is_god,
-                            pty_id: Some(a.id.clone()),
+                            pty_id: Some(pty_id.clone()),
                             last_output_at,
                             inbox_ids: ids,
                             auto_delivery_paused: snap.auto_delivery_paused,
@@ -691,12 +714,14 @@ pub fn run() {
                         let nudge = wake.decide(&facts, now);
                         drop(wake);
                         for id in nudge {
-                            // Same type pattern as the renderer: text first,
-                            // Enter as a separate keystroke.
-                            let mut ptys = st.ptys.lock().unwrap();
-                            if let Some(h) = ptys.get_mut(&id) {
-                                let _ = h.write(workerwake::WORKER_WAKE_NUDGE);
-                                let _ = h.write("\r");
+                            // `id` is an AGENT id (facts.agent_id) — the PTY
+                            // map is keyed by pty id, so translate first.
+                            if let Some(pty_id) = st.pty_for_agent(&id) {
+                                let mut ptys = st.ptys.lock().unwrap();
+                                if let Some(h) = ptys.get_mut(&pty_id) {
+                                    let _ = h.write(workerwake::WORKER_WAKE_NUDGE);
+                                    let _ = h.write("\r");
+                                }
                             }
                             let _ = handle4.emit(
                                 "hive-log",

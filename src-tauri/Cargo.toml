@@ -44,6 +44,11 @@ tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-notification = "2.5.1"
 tauri-plugin-opener = "2.7.0"
 log = "0.4.34"
+# `test` enables tauri::test (mock_app + the noop Wry runtime) so unit tests
+# can exercise code paths that carry an AppHandle without a real window.
+[dev-dependencies]
+tauri = { version = "2.12", features = ["test"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop"] }
 junction = "1"

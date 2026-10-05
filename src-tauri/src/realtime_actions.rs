@@ -1593,17 +1593,23 @@ fn propose_destructive(
 fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
     match commit {
         CommitSpec::Kill { id, name } => {
+            // `id` is an AGENT id — kill_agent resolves either namespace.
             let res = commands::kill_agent(app.clone(), id.clone());
             // Voice kill is main-initiated — the renderer never removed the
             // card itself (unlike a UI kill), so tell the floor to archive it
             // (upstream killAgent dep → 'hive:agentArchived').
-            if res.is_ok() {
+            if res.ok {
                 let _ = app.emit("hive:agentArchived", json!({ "id": id }));
             }
             attribute(app, "kill", id, Map::new());
-            Ok(match res {
-                Result::Ok(_) => format!("Killed {}.", name),
-                Result::Err(e) => format!("Couldn't kill {}: {}.", name, e),
+            Ok(if res.ok {
+                format!("Killed {}.", name)
+            } else {
+                format!(
+                    "Couldn't kill {}: {}.",
+                    name,
+                    res.error.unwrap_or_else(|| "unknown".into())
+                )
             })
         }
         CommitSpec::Pause { id, name } => {
@@ -1664,11 +1670,28 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                 seed_prompt: None,
                 isolate: false,
                 is_god: false,
+                is_assistant: false,
+                capabilities: Vec::new(),
                 no_auto_install: false,
                 cols: 120,
                 rows: 30,
             };
-            let res = commands::spawn_inner(app.clone(), args, Some(spec.id.clone()), None);
+            let res = commands::spawn_inner(
+                app.clone(),
+                args,
+                commands::SpawnPlan {
+                    // Voice hires keep the collapsed upstream namespace —
+                    // spec.id is BOTH the pty id and the agent id (the card
+                    // broadcast below keys ptyId on it).
+                    pty_id: Some(spec.id.clone()),
+                    agent_id: Some(spec.id.clone()),
+                    resume: None,
+                    require_resume: false,
+                    // MAIN-initiated: nobody consumes seedPrompt — the backend
+                    // types the hive-protocol seed itself.
+                    auto_type_seed: true,
+                },
+            );
             // Main-initiated spawn — the floor adds the card from this
             // descriptor since it didn't initiate the hire (upstream
             // 'hive:agentSpawned' broadcast).

@@ -337,12 +337,15 @@ pub fn heartbeat_digest(hive: &crate::hive::Hive, quiet_ms: u64, actionable: usi
 pub fn looks_stuck(st: &crate::commands::AppState, window_ms: u64, now: u64) -> bool {
     let reg = st.hive.registry();
     let god = st.hive.god_id();
+    // Registry ids are agent ids; the PTY map is pty-keyed — snapshot the
+    // mapping up front rather than locking it inside the ptys hold.
+    let pty_for = st.agent_to_pty.lock().unwrap().clone();
     let ptys = st.ptys.lock().unwrap();
     for a in &reg {
         if a.archived || Some(&a.id) == god.as_ref() {
             continue;
         }
-        let Some(h) = ptys.get(&a.id) else {
+        let Some(h) = pty_for.get(&a.id).and_then(|pid| ptys.get(pid)) else {
             continue;
         };
         let idle = now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed));

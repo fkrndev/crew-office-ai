@@ -115,9 +115,13 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
                 .message
                 .clone();
             if let Some(cmd) = crate::misc::compact_command(&provider, &focus) {
-                let mut ptys = st.ptys.lock().unwrap();
-                if let Some(h) = ptys.get_mut(id) {
-                    let _ = h.write(&format!("{cmd}\r"));
+                // `id` is an AGENT id (the hook payload's AGENT_ID) — the PTY
+                // map is keyed by pty id, so translate first.
+                if let Some(pty_id) = st.pty_for_agent(id) {
+                    let mut ptys = st.ptys.lock().unwrap();
+                    if let Some(h) = ptys.get_mut(&pty_id) {
+                        let _ = h.write(&format!("{cmd}\r"));
+                    }
                 }
             }
         }

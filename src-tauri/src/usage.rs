@@ -47,6 +47,62 @@ fn project_dir(cwd: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// `~/.claude/projects` — the transcript root (dirs::home_dir, matching the
+/// user-profile lookup project_dir uses).
+fn claude_projects_root() -> Option<PathBuf> {
+    let home =
+        std::env::home_dir().or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
+    Some(home.join(".claude").join("projects"))
+}
+
+/// Upstream `seedSessionTranscript` (transcript.ts): ensure
+/// `<sessionId>.jsonl` exists under `~/.claude/projects/<projectKey(cwd)>` so
+/// `claude --resume` run IN that cwd can find it — a session started in a
+/// different cwd (restored team, worktree path) is copied across. A session
+/// id is a filename segment, so it is validated against `[A-Za-z0-9_-]` like
+/// upstream before it ever touches a path.
+/// Best-effort: false on any miss/error → the caller falls back to a fresh
+/// session (and flags resumeNotFound for a typed id).
+pub fn seed_session_transcript(cwd: &str, session_id: &str) -> bool {
+    match claude_projects_root() {
+        Some(root) => seed_session_transcript_in(&root, cwd, session_id),
+        None => false,
+    }
+}
+
+/// The testable core of seed_session_transcript — `root` is injectable so a
+/// unit test never touches the real ~/.claude tree.
+fn seed_session_transcript_in(projects_root: &std::path::Path, cwd: &str, session_id: &str) -> bool {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return false;
+    }
+    let target = projects_root
+        .join(project_key(cwd))
+        .join(format!("{session_id}.jsonl"));
+    if target.is_file() {
+        return true;
+    }
+    let Ok(rd) = fs::read_dir(projects_root) else {
+        return false;
+    };
+    for entry in rd.flatten() {
+        let candidate = entry.path().join(format!("{session_id}.jsonl"));
+        if candidate.is_file() {
+            if let Some(parent) = target.parent() {
+                if fs::create_dir_all(parent).is_err() {
+                    return false;
+                }
+            }
+            return fs::copy(&candidate, &target).is_ok();
+        }
+    }
+    false
+}
+
 #[derive(Clone, Default)]
 struct Totals {
     input: u64,

@@ -589,8 +589,10 @@ impl FloorWatcher {
                 }
             }
         }
-        // pty activity (upstream strips the `pty-` prefix — our ids don't have
-        // one, but keep the strip for safety)
+        // pty activity — keyed by AGENT id (upstream strips the `pty-` prefix;
+        // we resolve through the spawn-time pty→agent map, falling back to the
+        // strip for unmapped/legacy PTYs).
+        let agent_of = st.pty_to_agent.lock().unwrap().clone();
         let active: HashMap<String, bool> = st
             .ptys
             .lock()
@@ -599,7 +601,10 @@ impl FloorWatcher {
             .map(|(id, h)| {
                 let last = h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);
                 (
-                    id.trim_start_matches("pty-").to_string(),
+                    agent_of
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| id.trim_start_matches("pty-").to_string()),
                     now.saturating_sub(last) < FLOOR_ACTIVE_WINDOW_MS,
                 )
             })

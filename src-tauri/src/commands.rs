@@ -20,7 +20,17 @@ pub struct AppState {
     pub hive: std::sync::Arc<Hive>,
     pub config_store: ConfigStore,
     pub config: Mutex<Config>,
+    /// Alive PTYs keyed by PTY id — the renderer's terminal id (`pty-<agent>`),
+    /// NOT the registry/agent id (upstream opts.id vs hive.id).
     pub ptys: Mutex<HashMap<String, PtyHandle>>,
+    /// pty id -> agent id (upstream `ptyToAgent`): populated at spawn, pruned
+    /// on teardown. The two namespaces are separate — a renderer-spawned agent
+    /// "god" lives in `st.ptys` under "pty-god".
+    pub pty_to_agent: Mutex<HashMap<String, String>>,
+    /// agent id -> pty id (upstream `ptyForAgent`): the inverse lookup every
+    /// agent-namespaced caller (hooks, breaker, worker watchdog, missions)
+    /// needs before touching `st.ptys`.
+    pub agent_to_pty: Mutex<HashMap<String, String>>,
     pub breaker: Mutex<CircuitBreaker>,
     pub control: Mutex<ControlRegistry>,
     /// Transcript-based usage reader (usage.rs) — the breaker's fallback
@@ -132,6 +142,8 @@ impl AppState {
             config_store,
             config: Mutex::new(config),
             ptys: Mutex::new(HashMap::new()),
+            pty_to_agent: Mutex::new(HashMap::new()),
+            agent_to_pty: Mutex::new(HashMap::new()),
             breaker: Mutex::new(CircuitBreaker::default()),
             control: Mutex::new(ControlRegistry::default()),
             usage: crate::usage::UsageReader::default(),
@@ -184,12 +196,67 @@ fn stage_hook_bin(harness_home: &PathBuf) -> Option<PathBuf> {
     std::fs::copy(&src, &dest).ok().map(|_| dest)
 }
 
-pub fn state(app: &AppHandle) -> State<'_, AppState> {
+impl AppState {
+    /// `ptyForAgent` (index.ts:1107) — the PTY id owning an agent id, if live.
+    pub fn pty_for_agent(&self, agent_id: &str) -> Option<String> {
+        self.agent_to_pty.lock().unwrap().get(agent_id).cloned()
+    }
+
+    /// `ptyToAgent.get` (index.ts) — the agent id owning a PTY id, if known.
+    pub fn agent_for_pty(&self, pty_id: &str) -> Option<String> {
+        self.pty_to_agent.lock().unwrap().get(pty_id).cloned()
+    }
+
+    /// Live AGENT ids — the value set of `pty_to_agent`. All "is this agent
+    /// live" checks (roster, closing-time, breaker, worker registry) are in
+    /// the agent namespace; `st.ptys` keys carry the `pty-` renderer prefix.
+    pub fn live_agent_ids(&self) -> std::collections::HashSet<String> {
+        self.pty_to_agent.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Resolve EITHER namespace to a PTY id — renderer IPC carries pty ids
+    /// (`pty:kill`, `pty:write`), internal callers (worker reaps, voice kill)
+    /// carry agent ids.
+    pub fn resolve_pty_id(&self, id: &str) -> Option<String> {
+        if self.ptys.lock().unwrap().contains_key(id) {
+            Some(id.to_string())
+        } else {
+            self.pty_for_agent(id)
+        }
+    }
+
+    /// Record the spawn-time pty<->agent mapping (upstream `ptyToAgent.set`).
+    pub fn map_pty(&self, pty_id: &str, agent_id: &str) {
+        self.pty_to_agent
+            .lock()
+            .unwrap()
+            .insert(pty_id.to_string(), agent_id.to_string());
+        self.agent_to_pty
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_string(), pty_id.to_string());
+    }
+
+    /// Drop the mapping for a dead/removed PTY; returns the agent id it
+    /// owned (None for unmapped PTYs — installer rails and legacy spawns).
+    pub fn unmap_pty(&self, pty_id: &str) -> Option<String> {
+        let agent = self.pty_to_agent.lock().unwrap().remove(pty_id);
+        if let Some(a) = &agent {
+            self.agent_to_pty.lock().unwrap().remove(a);
+        }
+        agent
+    }
+}
+
+pub fn state<R: tauri::Runtime>(app: &AppHandle<R>) -> State<'_, AppState> {
     app.state::<AppState>()
 }
 
 // ─── agent lifecycle ────────────────────────────────────────────────────────
 
+/// The INTERNAL spawn descriptor — what translate_spawn_request produces from
+/// the wire shape. Kept identical to the port's pre-split contract so every
+/// internal caller (workers, realtime voice, respawn) still speaks it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SpawnArgs {
     pub provider: String,
@@ -211,6 +278,14 @@ pub struct SpawnArgs {
     pub isolate: bool,
     #[serde(default)]
     pub is_god: bool,
+    /// hive.isAssistant (upstream AgentMeta) — the send-only prep assistant
+    /// marker, excluded from broadcast fan-out.
+    #[serde(default)]
+    pub is_assistant: bool,
+    /// hive.capabilities (upstream AgentMeta) — hire-declared skills carried
+    /// into the registry entry.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     #[serde(default)]
     pub no_auto_install: bool,
     #[serde(default = "default_cols")]
@@ -226,25 +301,382 @@ fn default_rows() -> u16 {
     30
 }
 
+/// The upstream `pty:spawn` wire payload verbatim (AgentSpawnOptions) — what
+/// the verbatim Electron renderer sends through `window.cth.spawnPty`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySpawnRequest {
+    /// The PTY id — the terminal's map key. Renderer convention: `pty-<agentId>`.
+    pub id: String,
+    /// Requested working directory (tilde-expands in spawn_inner).
+    #[serde(default)]
+    pub cwd: String,
+    /// The executable name — a bare binary (`claude`) or absolute path.
+    #[serde(default)]
+    pub command: String,
+    /// Explicit provider override; beats hive.provider and binary sniffing
+    /// (upstream inferAgentProvider).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The executable's argv — upstream passes argv separately; we reassemble
+    /// a command line for the internal SpawnArgs.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_cols")]
+    pub cols: u16,
+    #[serde(default = "default_rows")]
+    pub rows: u16,
+    #[serde(default)]
+    pub isolate: bool,
+    /// Resume the registry-recorded session for `hive.id` (upstream `resume`).
+    #[serde(default)]
+    pub resume: bool,
+    /// An explicit CLI session id — wins over `resume` (upstream resumeSessionId).
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
+    /// "Restart & Continue": refuse to spawn rather than start fresh when the
+    /// resume can't be satisfied (upstream requireResume).
+    #[serde(default)]
+    pub require_resume: bool,
+    /// The registry/AGENT_ID identity block (upstream AgentMeta). `hive.id` is
+    /// the AGENT id — deliberately separate from the PTY `id` above.
+    #[serde(default)]
+    pub hive: Option<HiveSpawnMeta>,
+    /// Type-into-TUI seed — returned to the renderer, which types it via the
+    /// pty:write chain (upstream's seedPrompt contract).
+    #[serde(default)]
+    pub seed_prompt: Option<String>,
+    #[serde(default)]
+    pub no_auto_install: bool,
+}
+
+/// The upstream AgentMeta block nested under `hive` (index.ts AgentSpawnOptions.hive).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveSpawnMeta {
+    /// The AGENT id — registry entry, AGENT_ID env, hook payloads, hive paths.
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub is_god: bool,
+    #[serde(default)]
+    pub is_assistant: bool,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// The spawn result the upstream renderer reads (`res.ok` / res.error /
+/// res.cwd / res.seedPrompt / res.resumed / res.resumeNotFound /
+/// res.worktreePath) — camelCase, and failures resolve `{ok:false}` rather
+/// than rejecting the invoke (spawn_fail classification is the renderer's).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySpawnResult {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The PTY id the session registered under (echoed upstream `opts.id`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The effective cwd actually spawned into (tilde-expanded / worktree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Type-into-TUI seed — the renderer submits it via the write chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_prompt: Option<String>,
+    pub resumed: bool,
+    /// Explicit session id was requested but no matching transcript exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_not_found: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+}
+
+impl PtySpawnResult {
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+            id: None,
+            cwd: None,
+            seed_prompt: None,
+            resumed: false,
+            resume_not_found: None,
+            worktree_path: None,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct Spawned {
     pub id: String,
 }
 
-/// Upstream `pendingInstallRelaunch` — install PTYs armed to re-run their
-/// agent spawn on a clean exit (the retry carries `no_auto_install` so the
-/// ladder can never loop).
-pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<Mutex<HashMap<String, SpawnArgs>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[tauri::command(async)]
-pub fn spawn_agent(app: AppHandle, args: SpawnArgs) -> Result<Spawned, String> {
-    spawn_inner(app, args, None, None)
+/// How a spawn resolves its resume (upstream index.ts:2871): an explicit
+/// `resumeSessionId` wins; `resume: true` reads the registry's recorded
+/// session for the agent.
+#[derive(Debug, Clone)]
+pub(crate) enum ResumeRequest {
+    /// `resume: true` — pick up the registry's recorded session.
+    LastSession,
+    /// `resumeSessionId` — an explicit id typed in Add Agent.
+    Explicit(String),
 }
 
-/// Respawn a registry agent — same id, same hive folder/memory, optionally
-/// resuming its recorded session (claude --resume <session_id>). This is the
-/// restart/restore-team path: the registry survives, only the PTY died.
+/// Everything spawn_inner needs besides the SpawnArgs — the two id namespaces
+/// (upstream's ptyToAgent split) plus resume/seed policy.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpawnPlan {
+    /// Forced `st.ptys` key — the renderer's terminal `id` ("pty-<agentId>").
+    /// Generated from the agent name when absent (legacy internal calls).
+    pub pty_id: Option<String>,
+    /// Forced registry/AGENT_ID/hook-payload id — upstream `hive.id`.
+    /// Falls back to the pty id for hive-less/internal spawns (the legacy
+    /// collapse — worker and voice spawns deliberately keep pty id ==
+    /// agent id, matching upstream's worker-<req> convention).
+    pub agent_id: Option<String>,
+    pub resume: Option<ResumeRequest>,
+    /// Upstream requireResume ("Restart & Continue"): refuse outright rather
+    /// than starting a fresh session when the resume can't be satisfied.
+    pub require_resume: bool,
+    /// Type the seed into the PTY ourselves after boot — the renderer-less
+    /// paths (PENDING_INSTALLS relaunch, worker/voice/respawn) where nobody
+    /// consumes the result's seedPrompt field.
+    pub auto_type_seed: bool,
+}
+
+/// What spawn_inner produced — translated into the wire shape by
+/// spawn_agent_core (PtySpawnResult) or Spawned by respawn_agent.
+pub(crate) struct SpawnOutcome {
+    /// The `st.ptys` key the session was registered under.
+    pub pty_id: String,
+    /// The effective cwd actually spawned into (tilde-expanded / worktree).
+    pub cwd: String,
+    /// The type-into-TUI seed the CALLER must deliver (renderer types it via
+    /// the write chain). Still populated when auto_type_seed typed it — those
+    /// callers drop the outcome anyway.
+    pub seed_prompt: Option<String>,
+    /// A resume session was actually applied to the spawned CLI.
+    pub resumed: bool,
+    /// A session was explicitly requested but couldn't be located.
+    pub resume_not_found: bool,
+    /// The isolate-worktree path when one was created.
+    pub worktree_path: Option<String>,
+}
+
+impl SpawnOutcome {
+    fn into_result(self) -> PtySpawnResult {
+        PtySpawnResult {
+            ok: true,
+            error: None,
+            id: Some(self.pty_id),
+            cwd: Some(self.cwd),
+            seed_prompt: self.seed_prompt,
+            resumed: self.resumed,
+            resume_not_found: self.resume_not_found.then_some(true),
+            worktree_path: self.worktree_path,
+        }
+    }
+}
+
+/// One armed install-relaunch: the original SpawnArgs (no_auto_install set) +
+/// the plan that produced the install PTY, so the relaunched spawn re-binds
+/// the same agent identity and any requested resume.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingInstall {
+    pub args: SpawnArgs,
+    pub plan: SpawnPlan,
+}
+
+/// Upstream `pendingInstallRelaunch` — install PTYs armed to re-run their
+/// agent spawn on a clean exit (the retry carries `no_auto_install` so the
+/// ladder can never loop). Keyed by PTY id.
+pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<Mutex<HashMap<String, PendingInstall>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Quote one argv token so `tokenize_command` round-trips it: whitespace and
+/// empties need quotes; tokens that already carry quote characters pass
+/// through raw (the tokenizer can't express embedded quotes either way).
+fn quote_spawn_token(t: &str) -> String {
+    if t.is_empty() || t.chars().any(|c| c.is_whitespace()) {
+        format!("\"{t}\"")
+    } else {
+        t.to_string()
+    }
+}
+
+/// Reassemble upstream's (command, args[]) split into the single command
+/// line SpawnArgs carries — index.ts passes exe+argv separately while the
+/// port's spawn_inner retokenizes the line.
+fn join_command(exe: &str, args: &[String]) -> String {
+    let mut parts = vec![quote_spawn_token(exe)];
+    parts.extend(args.iter().map(|a| quote_spawn_token(a)));
+    parts.join(" ")
+}
+
+/// `inferAgentProvider` (shared/agentProvider.ts): an explicit provider wins;
+/// else sniff the executable leaf (cmd-shim suffixes stripped).
+fn infer_agent_provider(command: &str, explicit: Option<&str>) -> String {
+    const KNOWN: &[&str] = &[
+        "claude",
+        "codex",
+        "grok",
+        "kimi",
+        "gemini",
+        "antigravity",
+        "qwen",
+        "opencode",
+        "crush",
+        "pi",
+        "copilot",
+        "cursor",
+        "hermes",
+        "custom",
+    ];
+    if let Some(p) = explicit
+        .map(|s| s.trim().to_lowercase())
+        .filter(|p| KNOWN.contains(&p.as_str()))
+    {
+        return p;
+    }
+    let leaf = command
+        .trim()
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    let bin = [".exe", ".cmd", ".bat", ".ps1"]
+        .iter()
+        .find_map(|ext| leaf.strip_suffix(ext))
+        .unwrap_or(&leaf);
+    match bin {
+        "codex" => "codex",
+        "grok" => "grok",
+        "kimi" => "kimi",
+        "gemini" => "gemini",
+        "agy" | "antigravity" => "antigravity",
+        "qwen" => "qwen",
+        "opencode" => "opencode",
+        "crush" => "crush",
+        "pi" => "pi",
+        "copilot" => "copilot",
+        "cursor-agent" | "agent" => "cursor",
+        "hermes" => "hermes",
+        // An unknown binary is a custom command; empty defaults to claude,
+        // upstream's preset default.
+        "" | "claude" => "claude",
+        _ => "custom",
+    }
+    .to_string()
+}
+
+/// The wire request → (internal SpawnArgs, SpawnPlan) translation. Pure —
+/// the unit tests exercise it without an AppHandle. Namespaces split HERE:
+/// `req.id` is the PTY key, `hive.id` the registry/AGENT id.
+pub(crate) fn translate_spawn_request(
+    req: &PtySpawnRequest,
+) -> std::result::Result<(SpawnArgs, SpawnPlan), String> {
+    // Upstream pty:spawn validates id/cwd/command are strings — our typed
+    // struct does that; the remaining check is the non-empty case.
+    let pty_id = req.id.trim().to_string();
+    if pty_id.is_empty() || req.command.trim().is_empty() {
+        return Err("invalid SpawnOptions".into());
+    }
+    let hive = req.hive.as_ref();
+    let agent_id = hive
+        .map(|h| h.id.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| pty_id.clone());
+    let provider = infer_agent_provider(
+        &req.command,
+        req.provider
+            .as_deref()
+            .or_else(|| hive.and_then(|h| h.provider.as_deref())),
+    );
+    let name = hive
+        .and_then(|h| h.name.clone())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| agent_id.clone());
+    // Upstream precedence: a typed resumeSessionId wins; `resume: true` then
+    // asks the registry for this agent's recorded session.
+    let resume = req
+        .resume_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| ResumeRequest::Explicit(s.to_string()))
+        .or(if req.resume {
+            Some(ResumeRequest::LastSession)
+        } else {
+            None
+        });
+    Ok((
+        SpawnArgs {
+            provider,
+            name,
+            role: hive.and_then(|h| h.role.clone()),
+            cwd: req.cwd.clone(),
+            command: join_command(&req.command, &req.args),
+            seed_prompt: req.seed_prompt.clone(),
+            isolate: req.isolate,
+            is_god: hive.map(|h| h.is_god).unwrap_or(false),
+            is_assistant: hive.map(|h| h.is_assistant).unwrap_or(false),
+            capabilities: hive.map(|h| h.capabilities.clone()).unwrap_or_default(),
+            no_auto_install: req.no_auto_install,
+            cols: req.cols,
+            rows: req.rows,
+        },
+        SpawnPlan {
+            pty_id: Some(pty_id),
+            agent_id: Some(agent_id),
+            resume,
+            require_resume: req.require_resume,
+            // Renderer-facing spawns hand the seed back as seedPrompt — the
+            // verbatim useHive flow types it through the write chain.
+            auto_type_seed: false,
+        },
+    ))
+}
+
+/// `pty:spawn` (index.ts:2611) — the upstream wire contract. The renderer
+/// invokes `spawn_agent` with `{args: <AgentSpawnOptions>}` (see cth.ts); the
+/// nested shape deserializes into PtySpawnRequest. Failures resolve as
+/// `{ok:false, error}` — the renderer's `res.ok` contract — rather than
+/// rejecting the command.
+#[tauri::command(async)]
+pub fn spawn_agent(app: AppHandle, args: PtySpawnRequest) -> PtySpawnResult {
+    spawn_agent_core(&app, args)
+}
+
+/// The command body, separated so tests can drive it through a mock runtime.
+pub(crate) fn spawn_agent_core<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    req: PtySpawnRequest,
+) -> PtySpawnResult {
+    let (args, plan) = match translate_spawn_request(&req) {
+        Ok(t) => t,
+        Err(e) => return PtySpawnResult::err(e),
+    };
+    match spawn_inner(app.clone(), args, plan) {
+        Ok(out) => out.into_result(),
+        Err(e) => PtySpawnResult::err(e),
+    }
+}
+
+/// Respawn a registry agent — same agent id, same hive folder/memory, a fresh
+/// `pty-<id>` terminal, optionally resuming the recorded session
+/// (claude --resume <session_id>). This is the restart/restore-team path:
+/// the registry survives, only the PTY died.
 #[tauri::command(async)]
 pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String> {
     let st = state(&app);
@@ -254,7 +686,7 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         .into_iter()
         .find(|a| a.id == agent_id)
         .ok_or_else(|| format!("no agent {agent_id}"))?;
-    if st.ptys.lock().unwrap().contains_key(&agent_id) {
+    if st.pty_for_agent(&agent_id).is_some() {
         return Err(format!("agent {agent_id} is already running"));
     }
     let args = SpawnArgs {
@@ -266,6 +698,8 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         seed_prompt: None,
         isolate: false,
         is_god: entry.is_god,
+        is_assistant: entry.is_assistant,
+        capabilities: entry.capabilities.clone(),
         no_auto_install: false,
         cols: 120,
         rows: 30,
@@ -275,23 +709,49 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
     let resume = (entry.provider == "claude")
         .then(|| entry.session_id.clone())
         .flatten();
-    spawn_inner(app, args, Some(agent_id), resume)
+    spawn_inner(
+        app,
+        args,
+        SpawnPlan {
+            pty_id: Some(format!("pty-{agent_id}")),
+            agent_id: Some(agent_id),
+            resume: resume.map(ResumeRequest::Explicit),
+            require_resume: false,
+            // No renderer consumed this spawn's result — keep the server-side
+            // seed typing the old single-shot path had.
+            auto_type_seed: true,
+        },
+    )
+    .map(|o| Spawned { id: o.pty_id })
 }
 
-pub(crate) fn spawn_inner(
-    app: AppHandle,
+pub(crate) fn spawn_inner<R: tauri::Runtime>(
+    app: AppHandle<R>,
     args: SpawnArgs,
-    forced_id: Option<String>,
-    resume_session: Option<String>,
-) -> Result<Spawned, String> {
+    plan: SpawnPlan,
+) -> Result<SpawnOutcome, String> {
     let st = state(&app);
-    let id = forced_id.clone().unwrap_or_else(|| {
+    // The PTY namespace key — the renderer's terminal `id` ("pty-<agentId>").
+    // Upstream ptyManager.spawn refuses a duplicate id with "pty already
+    // exists for id" — the restore flow matches on that exact text.
+    let pty_id = plan.pty_id.clone().unwrap_or_else(|| {
         format!(
             "{}-{}",
             args.name.to_lowercase().replace(' ', "-"),
             &uuid::Uuid::new_v4().simple().to_string()[..4]
         )
     });
+    if st.ptys.lock().unwrap().contains_key(&pty_id) {
+        return Err(format!("pty already exists for id {pty_id}"));
+    }
+    // The registry/AGENT_ID namespace (upstream hive.id). A hive-less spawn
+    // collapses to the pty id — the port's pre-split behaviour for internal
+    // worker/voice spawns.
+    let agent_id = plan
+        .agent_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| pty_id.clone());
 
     // Git isolation (index.ts:2730): when requested and the cwd is a real
     // repo, give the agent its own `agent/<id>` worktree under
@@ -299,7 +759,8 @@ pub(crate) fn spawn_inner(
     // working tree. Best-effort: a failure falls back to the shared cwd.
     let mut effective_cwd = args.cwd.clone();
     if args.isolate && crate::git_ops::is_repo(std::path::Path::new(&args.cwd)) {
-        let seg: String = id
+        // Upstream worktree seg is `opts.hive?.id ?? opts.id` — the AGENT id.
+        let seg: String = agent_id
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -330,10 +791,12 @@ pub(crate) fn spawn_inner(
             ) {
                 Ok(_) => {
                     effective_cwd = wt_path.display().to_string();
+                    // worktreePaths is keyed by PTY id upstream (opts.id) —
+                    // teardown runs through the PTY namespace.
                     st.worktree_paths
                         .lock()
                         .unwrap()
-                        .insert(id.clone(), (wt_path.clone(), PathBuf::from(&args.cwd)));
+                        .insert(pty_id.clone(), (wt_path.clone(), PathBuf::from(&args.cwd)));
                     if let Err(e) = crate::git_ops::link_worktree_deps(
                         std::path::Path::new(&args.cwd),
                         &wt_path,
@@ -347,12 +810,14 @@ pub(crate) fn spawn_inner(
     }
 
     let entry = RegistryEntry {
-        id: id.clone(),
+        id: agent_id.clone(),
         name: args.name.clone(),
         provider: args.provider.clone(),
         role: args.role.clone().unwrap_or_default(),
+        capabilities: args.capabilities.clone(),
         cwd: effective_cwd.clone(),
         is_god: args.is_god,
+        is_assistant: args.is_assistant,
         status: "idle".into(),
         session_id: None,
         command: args.command.clone(),
@@ -368,10 +833,10 @@ pub(crate) fn spawn_inner(
     // Per-agent hive identity env (hive.ts:803) layered over the inherited env
     // minus parent-session markers (ptyEnv.ts).
     let auto = st.config.lock().unwrap().auto_mode;
-    let agent_dir = st.hive.agent_dir(&id);
+    let agent_dir = st.hive.agent_dir(&agent_id);
     let is_claude = args.provider == "claude";
     let mut agent_env = HashMap::from([
-        ("AGENT_ID".to_string(), id.clone()),
+        ("AGENT_ID".to_string(), agent_id.clone()),
         ("AGENT_NAME".to_string(), args.name.clone()),
         ("HIVE_ROOT".to_string(), st.hive.root.display().to_string()),
         ("AGENT_DIR".to_string(), agent_dir.display().to_string()),
@@ -390,7 +855,7 @@ pub(crate) fn spawn_inner(
         let ids = crate::integrations::enabled_ids(&home);
         if !ids.is_empty() {
             // grant mints (or rotates) the worker's capability token.
-            let token = crate::integrations::BROKER.grant(&id, ids);
+            let token = crate::integrations::BROKER.grant(&agent_id, ids);
             agent_env.insert("MD_BROKER_URL".into(), crate::integrations::BROKER.url());
             agent_env.insert("MD_BROKER_TOKEN".into(), token);
         }
@@ -436,7 +901,7 @@ pub(crate) fn spawn_inner(
         }
         // Rollout-dir exposure: sessions/archived_sessions surface under the
         // user's ~/.codex scan root (junction back to the worker home).
-        st.hive.expose_codex_data(&agent_dir, &id);
+        st.hive.expose_codex_data(&agent_dir, &agent_id);
     }
     // Hermes lifecycle bridge — per-agent HERMES_HOME + config.yaml `hooks:`
     // block on the same shim (--hermes mode). Runtime dir is isolated too so
@@ -500,7 +965,7 @@ pub(crate) fn spawn_inner(
             let upstream = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into());
             let bridge = std::sync::Arc::new(crate::proxy::ProxyBridge::new(
-                id.clone(),
+                agent_id.clone(),
                 crate::proxy::ProxyApi::OpenAi,
                 upstream,
                 sock.clone(),
@@ -508,7 +973,10 @@ pub(crate) fn spawn_inner(
             ));
             match bridge.clone().start() {
                 Ok(port) => {
-                    st.proxy_bridges.lock().unwrap().insert(id.clone(), bridge);
+                    st.proxy_bridges
+                        .lock()
+                        .unwrap()
+                        .insert(agent_id.clone(), bridge);
                     let loopback = format!("http://127.0.0.1:{port}");
                     if args.provider == "qwen" {
                         agent_env.insert("OPENAI_BASE_URL".into(), loopback);
@@ -527,13 +995,13 @@ pub(crate) fn spawn_inner(
                         "proxy bridge failed to bind — agent spawns without hive events: {e}"
                     );
                     let _ = st.hive.log(&serde_json::json!({
-                        "kind": "proxy-degraded", "agentId": id,
+                        "kind": "proxy-degraded", "agentId": agent_id,
                         "name": args.name, "provider": args.provider,
                     }));
                     let _ = app.emit(
                         "hive:degraded",
                         serde_json::json!({
-                            "agentId": id, "name": args.name,
+                            "agentId": agent_id, "name": args.name,
                             "reason": "proxy-bind", "message": msg,
                         }),
                     );
@@ -666,18 +1134,90 @@ pub(crate) fn spawn_inner(
         if let Some((script, relaunch)) =
             crate::misc::install_script(&args.provider, &first_tok, npm_available)
         {
+            // Install rail: the PTY id stays this slot's key, but the
+            // ptyToAgent mapping stays UNSET for it (upstream does the same —
+            // an install PTY has no agent/worktree teardown of its own).
+            let handle = pty::spawn(
+                &pty_id,
+                &script,
+                &cwd,
+                &env,
+                args.cols,
+                args.rows,
+                app.clone(),
+            )
+            .map_err(err_str)?;
+            // Arm auto restart-and-continue AFTER the PTY actually spawned
+            // (upstream: `res.ok && rung.command`) — a failed spawn must not
+            // leave a stale relaunch arm on a reusable pty id. The relaunch
+            // keeps THIS spawn's identity + resume plan; the seed is typed
+            // server-side on relaunch since no renderer consumed this result
+            // (upstream discards it the same way).
             if relaunch {
                 let mut retry = args.clone();
                 retry.no_auto_install = true;
-                PENDING_INSTALLS.lock().unwrap().insert(id.clone(), retry);
+                let mut retry_plan = plan.clone();
+                retry_plan.auto_type_seed = true;
+                PENDING_INSTALLS.lock().unwrap().insert(
+                    pty_id.clone(),
+                    PendingInstall {
+                        args: retry,
+                        plan: retry_plan,
+                    },
+                );
             }
-            let handle = pty::spawn(&id, &script, &cwd, &env, args.cols, args.rows, app.clone())
-                .map_err(err_str)?;
-            st.ptys.lock().unwrap().insert(id.clone(), handle);
-            st.hive.set_status(&id, "idle").map_err(err_str)?;
-            return Ok(Spawned { id });
+            st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
+            st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
+            return Ok(SpawnOutcome {
+                pty_id,
+                cwd,
+                seed_prompt: None,
+                resumed: false,
+                resume_not_found: false,
+                worktree_path: None,
+            });
         }
     }
+
+    // Resume (upstream index.ts:2871 / Add-Agent #2): an explicit
+    // resumeSessionId wins; `resume: true` reads the registry's recorded
+    // session for THIS agent id. Claude gates --resume on the transcript
+    // actually reaching this cwd's project dir (upstream seedSessionTranscript)
+    // — a typed id that can't be found falls back to a FRESH session flagged
+    // resumeNotFound. Other providers keep the port's existing `--resume`
+    // pass-through (upstream uses the preset's per-provider resume flag —
+    // PORTING.md notes the divergence).
+    let sid = match &plan.resume {
+        Some(ResumeRequest::Explicit(s)) => Some(s.clone()),
+        Some(ResumeRequest::LastSession) => st.hive.last_session(&agent_id),
+        None => None,
+    };
+    let mut resume_not_found = false;
+    let resume_session = match sid {
+        Some(sid) if is_claude => {
+            if crate::usage::seed_session_transcript(&cwd, &sid) {
+                Some(sid)
+            } else {
+                // A session id existed but no transcript could reach this
+                // cwd's project dir — fresh session instead. Upstream flags
+                // resumeNotFound ONLY for an explicitly TYPED id (the Add
+                // Agent field surfaces it); a stale registry session just
+                // falls through quietly.
+                resume_not_found = matches!(plan.resume, Some(ResumeRequest::Explicit(_)));
+                None
+            }
+        }
+        other => other,
+    };
+    // Upstream requireResume (Restart & Continue): refuse outright instead of
+    // quietly starting a fresh session — the caller killed the old PTY first
+    // and would rather keep the card dead than lose the conversation.
+    if plan.require_resume && plan.resume.is_some() && resume_session.is_none() {
+        return Err(
+            "Existing session could not be resumed; no replacement process was started.".into(),
+        );
+    }
+    let resumed = resume_session.is_some();
 
     let handle = match pty::resolve_program(&first_tok, &path) {
         Some(pty::Resolved::Exe(prog)) => {
@@ -694,7 +1234,7 @@ pub(crate) fn spawn_inner(
                 av.push(sid.clone());
             }
             pty::spawn_argv(
-                &id,
+                &pty_id,
                 &prog,
                 &av,
                 &cwd,
@@ -730,7 +1270,7 @@ pub(crate) fn spawn_inner(
                     av.push(sid.clone());
                 }
                 pty::spawn_argv(
-                    &id,
+                    &pty_id,
                     &exe,
                     &av,
                     &cwd,
@@ -761,7 +1301,7 @@ pub(crate) fn spawn_inner(
                     parts.push("--resume".into());
                     parts.push(sid.clone());
                 }
-                pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
+                pty::spawn_cmd(&pty_id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
             }
         }
         None => {
@@ -777,102 +1317,205 @@ pub(crate) fn spawn_inner(
                 parts.push("--resume".into());
                 parts.push(sid.clone());
             }
-            pty::spawn_cmd(&id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
+            pty::spawn_cmd(&pty_id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
         }
     }
     .map_err(err_str)?;
     st.wake.lock().unwrap().note_spawn(
-        &id,
+        &pty_id,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
     );
-    st.ptys.lock().unwrap().insert(id.clone(), handle);
-    st.hive.set_status(&id, "idle").map_err(err_str)?;
+    st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
+    // upstream ptyToAgent.set(opts.id, opts.hive.id) — every agent-keyed
+    // lookup (hooks, breaker, watchdog, missions) resolves through this.
+    st.map_pty(&pty_id, &agent_id);
+    st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
 
-    // 'type-into-tui' seed delivery: the injected hive prompt (or an explicit
-    // seed) typed into the session once the TUI has booted — upstream's
-    // seedPrompt path for crush/cursor, used here for every non-claude agent.
-    if let Some(text) = seed {
-        let app2 = app.clone();
-        let id2 = id.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let Some(st) = app2.try_state::<AppState>() else {
-                return;
-            };
-            let mut ptys = st.ptys.lock().unwrap();
-            if let Some(h) = ptys.get_mut(&id2) {
-                let _ = h.write(&format!(
-                    "{}\r",
-                    text.split_whitespace().collect::<Vec<_>>().join(" ")
-                ));
-            }
-        });
+    // 'type-into-tui' seed delivery: upstream returns the seed to the
+    // renderer, which types it via the write chain (seedPrompt → submitToPty).
+    // Only the renderer-less paths (PENDING_INSTALLS relaunch, worker/voice/
+    // respawn spawns) auto-type here — auto_type_seed marks those.
+    if plan.auto_type_seed {
+        if let Some(text) = &seed {
+            let app2 = app.clone();
+            let pid2 = pty_id.clone();
+            let text = text.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                let Some(st) = app2.try_state::<AppState>() else {
+                    return;
+                };
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut(&pid2) {
+                    let _ = h.write(&format!(
+                        "{}\r",
+                        text.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+            });
+        }
     }
 
+    let worktree_path = st
+        .worktree_paths
+        .lock()
+        .unwrap()
+        .get(&pty_id)
+        .map(|(p, _)| p.display().to_string());
     let _ = app.emit(
         "agent-status",
-        serde_json::json!({ "id": id, "status": "idle" }),
+        serde_json::json!({ "id": agent_id, "status": "idle" }),
     );
-    Ok(Spawned { id })
+    Ok(SpawnOutcome {
+        pty_id,
+        cwd,
+        seed_prompt: seed,
+        resumed,
+        resume_not_found,
+        worktree_path,
+    })
+}
+
+/// The upstream pty-manager `{ok, error?}` envelope — write/resize/kill all
+/// RESOLVE this instead of rejecting (submitToPty reads `wrote.ok` and
+/// Restart & Continue reads `killed.ok` + matches `no pty:`). Note the exact
+/// upstream miss text: `no pty: <id>` (with the colon).
+#[derive(Debug, Clone, Serialize)]
+pub struct PtyOpResult {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PtyOpResult {
+    pub fn ok() -> Self {
+        Self {
+            ok: true,
+            error: None,
+        }
+    }
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+        }
+    }
 }
 
 #[tauri::command(async)]
-pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
-    let st = state(&app);
+pub fn pty_write(app: AppHandle, id: String, data: String) -> PtyOpResult {
+    pty_write_core(&app, &id, &data)
+}
+
+/// `pty:write` (index.ts:3035) — upstream resolves `{ok:false,'no pty: id'}`
+/// on a dead session; it never rejects (submitToPty reads `wrote.ok`).
+pub(crate) fn pty_write_core<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    data: &str,
+) -> PtyOpResult {
+    let st = state(app);
     let mut ptys = st.ptys.lock().unwrap();
-    match ptys.get_mut(&id) {
-        Some(h) => h.write(&data).map_err(err_str),
-        None => Err(format!("no pty {id}")),
+    match ptys.get_mut(id) {
+        Some(h) => match h.write(data) {
+            Ok(()) => PtyOpResult::ok(),
+            Err(e) => PtyOpResult::err(err_str(e)),
+        },
+        None => PtyOpResult::err(format!("no pty: {id}")),
     }
 }
 
 #[tauri::command(async)]
-pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<(), String> {
-    let st = state(&app);
+pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> PtyOpResult {
+    pty_resize_core(&app, &id, cols, rows)
+}
+
+/// `pty:resize` (index.ts:3039) — same `{ok, error?}` envelope.
+pub(crate) fn pty_resize_core<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    cols: u16,
+    rows: u16,
+) -> PtyOpResult {
+    let st = state(app);
     let ptys = st.ptys.lock().unwrap();
-    match ptys.get(&id) {
-        Some(h) => h.resize(cols, rows).map_err(err_str),
-        None => Err(format!("no pty {id}")),
+    match ptys.get(id) {
+        Some(h) => match h.resize(cols, rows) {
+            Ok(()) => PtyOpResult::ok(),
+            Err(e) => PtyOpResult::err(err_str(e)),
+        },
+        None => PtyOpResult::err(format!("no pty: {id}")),
     }
 }
 
 #[tauri::command(async)]
-pub fn kill_agent(app: AppHandle, id: String) -> Result<(), String> {
-    let st = state(&app);
-    if let Some(mut h) = st.ptys.lock().unwrap().remove(&id) {
+pub fn kill_agent(app: AppHandle, id: String) -> PtyOpResult {
+    kill_agent_core(&app, &id)
+}
+
+/// `pty:kill` (index.ts:3047) — kill the process, then run the shared
+/// teardownPty. `id` may carry EITHER namespace: the renderer passes the PTY
+/// id (`pty-<agent>`), internal callers (worker reaps, voice kill) pass agent
+/// ids — resolve_pty_id accepts both.
+pub(crate) fn kill_agent_core<R: tauri::Runtime>(app: &AppHandle<R>, id: &str) -> PtyOpResult {
+    let st = state(app);
+    let Some(pty_id) = st.resolve_pty_id(id) else {
+        // Upstream still runs teardownPty on an unknown id (idempotent no-op)
+        // and reports `no pty: <id>` — Restart & Continue matches that exact
+        // text as "already gone, proceed with the respawn".
+        teardown_pty_core(app, id, "gone");
+        return PtyOpResult::err(format!("no pty: {id}"));
+    };
+    if let Some(mut h) = st.ptys.lock().unwrap().remove(&pty_id) {
         let _ = h.kill();
     }
+    teardown_pty_core(app, &pty_id, "gone");
+    PtyOpResult::ok()
+}
+
+/// teardownPty (index.ts:443) — the shared PTY lifecycle cleanup, run by BOTH
+/// an explicit kill and the natural-exit handler. `pty_id` is the PTY
+/// namespace key; every agent-keyed cleanup resolves the agent id through the
+/// pty→agent map first (an unmapped PTY — install rail or legacy — collapses
+/// to the pty id, where the agent-keyed steps harmlessly no-op). Idempotent:
+/// a double call is a harmless no-op.
+pub(crate) fn teardown_pty_core<R: tauri::Runtime>(app: &AppHandle<R>, pty_id: &str, status: &str) {
+    let st = state(app);
+    // Upstream `ptyToAgent.get(id)` — the agent id this PTY owned. Resolved
+    // FIRST: the map drop below is exactly what makes the mapping unreadable
+    // after teardown (same ordering hazard upstream documents).
+    let agent_id = st.unmap_pty(pty_id).unwrap_or_else(|| pty_id.to_string());
     // Dead agents can't leak a tripped breaker level or a pending steer.
-    st.breaker.lock().unwrap().forget(&id);
-    st.wake.lock().unwrap().forget(&id, Some(&id));
-    st.telemetry.forget(&id);
+    st.breaker.lock().unwrap().forget(&agent_id);
+    st.wake.lock().unwrap().forget(&agent_id, Some(pty_id));
+    st.telemetry.forget(&agent_id);
     // A dead worker's broker capability token dies with it
     // (integrationBroker.ts revoke-on-teardown).
-    crate::integrations::BROKER.revoke(&id);
+    crate::integrations::BROKER.revoke(&agent_id);
     // Kill this agent's proxy-bridge sidecar (qwen/crush) — a dead PTY never
     // leaves an orphan loopback listener (teardownPty stopProxyBridge).
-    if let Some(bridge) = st.proxy_bridges.lock().unwrap().remove(&id) {
+    if let Some(bridge) = st.proxy_bridges.lock().unwrap().remove(&agent_id) {
         bridge.stop();
     }
     // teardownPty step 2: worker/live tracking + the isolated-worktree gate
     // (workers: preserve unintegrated work + defer scratch GC; regular:
-    // upstream's immediate force-remove). Empties live_workers for this id.
-    let was_worker = st.live_workers.lock().unwrap().contains_key(&id);
-    crate::workers::finalize_teardown(&st, &id);
+    // upstream's immediate force-remove). worktree_paths is pty-keyed,
+    // live_workers agent-keyed — hence the two ids.
+    let was_worker = st.live_workers.lock().unwrap().contains_key(&agent_id);
+    crate::workers::finalize_teardown(&st, pty_id, &agent_id);
     if was_worker {
         // Mirrors teardownPty's hive:agentArchived broadcast — the dead
-        // worker's floor card comes down even on a manual stop.
-        let _ = app.emit("hive:agentArchived", serde_json::json!({ "id": id }));
+        // worker's floor card comes down on every teardown route.
+        let _ = app.emit("hive:agentArchived", serde_json::json!({ "id": agent_id }));
     }
-    st.hive.set_status(&id, "gone").map_err(err_str)?;
+    let _ = st.hive.set_status(&agent_id, status);
     let _ = app.emit(
         "agent-status",
-        serde_json::json!({ "id": id, "status": "stopped" }),
+        serde_json::json!({ "id": agent_id, "status": status }),
     );
-    Ok(())
 }
 
 // ─── hive surface ───────────────────────────────────────────────────────────
@@ -1960,7 +2603,9 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
 #[tauri::command(async)]
 pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
     let st = state(&app);
-    let live: std::collections::HashSet<String> = st.ptys.lock().unwrap().keys().cloned().collect();
+    // closing-time steers AGENT ids — translate the live PTY map through the
+    // pty→agent mapping (pty keys carry the renderer's `pty-` prefix).
+    let live: std::collections::HashSet<String> = st.live_agent_ids();
     let mut control = st.control.lock().unwrap();
     let n = st.closing.start(&st.hive, &mut control, &live)?;
     emit_closing(&app, "started");
@@ -2135,4 +2780,282 @@ pub fn breaker_level(app: AppHandle, agent_id: String) -> Result<String, String>
 
 fn err_str(e: anyhow::Error) -> String {
     format!("{e:#}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_home(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("oa-cmd-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// The verbatim AgentSpawnOptions the ported renderer posts via
+    /// `window.cth.spawnPty` → invoke('spawn_agent', {args: <this>}).
+    fn req(v: serde_json::Value) -> PtySpawnRequest {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn pty_spawn_request_deserializes_upstream_payload() {
+        // The god-boot payload verbatim (useHive): pty id + hive agent meta.
+        let r = req(serde_json::json!({
+            "id": "pty-god",
+            "cwd": "D:/repo",
+            "command": "claude",
+            "provider": "claude",
+            "args": ["--dangerously-skip-permissions"],
+            "cols": 100,
+            "rows": 30,
+            "resume": true,
+            "hive": {
+                "id": "god", "name": "Michael", "provider": "claude",
+                "cwd": "D:/repo", "isGod": true, "role": "orchestrator (god)"
+            }
+        }));
+        assert_eq!(r.id, "pty-god");
+        assert_eq!(r.command, "claude");
+        assert_eq!(r.args, vec!["--dangerously-skip-permissions"]);
+        let h = r.hive.as_ref().unwrap();
+        assert_eq!(h.id, "god");
+        assert_eq!(h.name.as_deref(), Some("Michael"));
+        assert!(h.is_god);
+        assert!(r.resume);
+    }
+
+    #[test]
+    fn translate_splits_pty_and_agent_namespaces() {
+        let r = req(serde_json::json!({
+            "id": "pty-a1", "cwd": "C:/w", "command": "claude",
+            "hive": { "id": "a1", "name": "Ada", "role": "dev", "isGod": false,
+                      "capabilities": ["rust", "sql"] }
+        }));
+        let (args, plan) = translate_spawn_request(&r).unwrap();
+        // The plan carries BOTH ids — pty id for the terminal map, agent id
+        // for the registry/AGENT_ID/hooks namespace.
+        assert_eq!(plan.pty_id.as_deref(), Some("pty-a1"));
+        assert_eq!(plan.agent_id.as_deref(), Some("a1"));
+        assert_eq!(args.provider, "claude");
+        assert_eq!(args.name, "Ada"); // hive.name — never a required top-level field
+        assert_eq!(args.capabilities, vec!["rust", "sql"]);
+        // Renderer spawns never auto-type — the seed rides back as seedPrompt.
+        assert!(!plan.auto_type_seed);
+    }
+
+    #[test]
+    fn translate_legacy_spawn_collapses_namespaces() {
+        // A hive-less spawn (internal/debug path) keeps the old single-id
+        // behaviour: agent id falls back to the pty id.
+        let r = req(serde_json::json!({
+            "id": "pty-x", "cwd": "C:/w", "command": "cmd"
+        }));
+        let (args, plan) = translate_spawn_request(&r).unwrap();
+        assert_eq!(plan.agent_id.as_deref(), Some("pty-x"));
+        assert_eq!(args.provider, "custom"); // unknown binary → custom preset
+    }
+
+    #[test]
+    fn translate_rejects_invalid_options() {
+        for v in [
+            serde_json::json!({"id": "", "cwd": "x", "command": "cmd"}),
+            serde_json::json!({"id": "pty-a", "cwd": "x", "command": " "}),
+        ] {
+            let r = req(v);
+            assert!(translate_spawn_request(&r).is_err());
+        }
+    }
+
+    #[test]
+    fn translate_resume_precedence_explicit_wins() {
+        // index.ts:2871 — a typed resumeSessionId beats `resume: true`; bare
+        // `resume` becomes the registry lookup (LastSession).
+        let explicit = req(serde_json::json!({
+            "id": "pty-a", "cwd": "C:/w", "command": "claude",
+            "resume": true, "resumeSessionId": "sess-42"
+        }));
+        assert!(matches!(
+            translate_spawn_request(&explicit).unwrap().1.resume,
+            Some(ResumeRequest::Explicit(ref s)) if s == "sess-42"
+        ));
+        let last = req(serde_json::json!({
+            "id": "pty-a", "cwd": "C:/w", "command": "claude", "resume": true
+        }));
+        assert!(matches!(
+            translate_spawn_request(&last).unwrap().1.resume,
+            Some(ResumeRequest::LastSession)
+        ));
+        let none = req(serde_json::json!({
+            "id": "pty-a", "cwd": "C:/w", "command": "claude"
+        }));
+        assert!(translate_spawn_request(&none).unwrap().1.resume.is_none());
+    }
+
+    #[test]
+    fn infer_provider_matches_upstream_table() {
+        for (bin, want) in [
+            ("claude", "claude"),
+            ("C:/tools/claude.cmd", "claude"),
+            ("codex", "codex"),
+            ("grok", "grok"),
+            ("kimi", "kimi"),
+            ("gemini", "gemini"),
+            ("agy", "antigravity"),
+            ("opencode", "opencode"),
+            ("cursor-agent", "cursor"),
+            ("my-own-tool", "custom"),
+        ] {
+            assert_eq!(infer_agent_provider(bin, None), want, "{bin}");
+        }
+        // An explicit KNOWN provider overrides binary sniffing; an unknown
+        // explicit value falls through to the binary (upstream inferAgentProvider).
+        assert_eq!(infer_agent_provider("cmd", Some("claude")), "claude");
+        assert_eq!(infer_agent_provider("cmd", Some("bogus")), "custom");
+    }
+
+    #[test]
+    fn spawn_result_serializes_upstream_shape() {
+        // The renderer reads res.ok / res.seedPrompt / res.resumed /
+        // res.resumeNotFound — camelCase, optionals absent when unset.
+        let ok = SpawnOutcome {
+            pty_id: "pty-a".into(),
+            cwd: "C:/w".into(),
+            seed_prompt: Some("do it".into()),
+            resumed: false,
+            resume_not_found: true,
+            worktree_path: Some("C:/w/.worktrees/a".into()),
+        }
+        .into_result();
+        let v = serde_json::to_value(&ok).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["id"], "pty-a");
+        assert_eq!(v["cwd"], "C:/w");
+        assert_eq!(v["seedPrompt"], "do it");
+        assert_eq!(v["resumed"], false);
+        assert_eq!(v["resumeNotFound"], true);
+        assert_eq!(v["worktreePath"], "C:/w/.worktrees/a");
+        assert!(v.get("error").is_none());
+
+        let bad = PtySpawnResult::err("nope");
+        let v = serde_json::to_value(&bad).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "nope");
+        // Failure payloads still carry resumed:false (upstream spreads
+        // resumed only on success — but the flag itself is always present).
+        assert_eq!(v["resumed"], false);
+    }
+
+    #[test]
+    fn pty_agent_maps_roundtrip() {
+        let st = AppState::new(tmp_home("map")).unwrap();
+        st.map_pty("pty-god", "god");
+        assert_eq!(st.pty_for_agent("god").as_deref(), Some("pty-god"));
+        assert_eq!(st.agent_for_pty("pty-god").as_deref(), Some("god"));
+        // resolve_pty_id accepts the agent id even with no live-pty key.
+        assert_eq!(st.resolve_pty_id("god").as_deref(), Some("pty-god"));
+        assert_eq!(st.unmap_pty("pty-god").as_deref(), Some("god"));
+        assert!(st.pty_for_agent("god").is_none());
+        assert!(st.agent_for_pty("pty-god").is_none());
+    }
+
+    #[test]
+    fn spawn_registers_both_namespaces_and_kill_accepts_agent_id() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("spawn");
+        let cwd = home.display().to_string();
+        handle.manage(AppState::new(home.clone()).unwrap());
+        // A bare `cmd` stays alive — no natural-exit race.
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-ta", "cwd": cwd, "command": "cmd",
+                "hive": { "id": "ta", "name": "Tab", "role": "dev" }
+            })),
+        );
+        assert!(res.ok, "spawn failed: {:?}", res.error);
+        assert_eq!(res.id.as_deref(), Some("pty-ta"));
+        let st = state(&handle);
+        // PTY namespace: keyed under the renderer's pty id, NOT the agent id.
+        assert!(st.ptys.lock().unwrap().contains_key("pty-ta"));
+        assert!(!st.ptys.lock().unwrap().contains_key("ta"));
+        // Agent namespace: registry row + the pty↔agent mapping.
+        assert!(st.hive.registry().iter().any(|a| a.id == "ta"));
+        assert_eq!(st.pty_for_agent("ta").as_deref(), Some("pty-ta"));
+        assert_eq!(st.agent_for_pty("pty-ta").as_deref(), Some("ta"));
+
+        // Duplicate pty id → upstream's exact refusal.
+        let dup = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-ta", "cwd": cwd, "command": "cmd",
+                "hive": { "id": "ta2", "name": "Tab2" }
+            })),
+        );
+        assert!(!dup.ok);
+        assert!(dup.error.unwrap().contains("pty already exists"));
+
+        // Kill by AGENT id (voice/breaker path) resolves the mapped pty.
+        let k = kill_agent_core(&handle, "ta");
+        assert!(k.ok);
+        assert!(st.ptys.lock().unwrap().is_empty());
+        assert!(st.pty_for_agent("ta").is_none());
+        assert!(st.agent_for_pty("pty-ta").is_none());
+        assert!(st
+            .hive
+            .registry()
+            .iter()
+            .find(|a| a.id == "ta")
+            .is_some_and(|a| a.status == "gone"));
+
+        // Unknown id → upstream's `no pty: <id>` (colon included — Restart &
+        // Continue matches that prefix).
+        let miss = kill_agent_core(&handle, "pty-missing");
+        assert!(!miss.ok);
+        assert_eq!(miss.error.as_deref(), Some("no pty: pty-missing"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn require_resume_refuses_when_session_unresolvable() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("resume");
+        let cwd = home.display().to_string();
+        handle.manage(AppState::new(home.clone()).unwrap());
+        // Restart & Continue on a session that can't be seeded must REFUSE —
+        // never silently start a fresh one (upstream requireResume).
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-rr", "cwd": cwd, "command": "claude",
+                "provider": "claude",
+                "resumeSessionId": "00000000-0000-0000-0000-000000000000",
+                "requireResume": true,
+                "hive": { "id": "rr", "name": "Res" }
+            })),
+        );
+        assert!(!res.ok);
+        assert!(res.error.unwrap().contains("could not be resumed"));
+        // Nothing spawned — the pty map stays empty.
+        assert!(state(&handle).ptys.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn pty_op_results_match_upstream_envelope() {
+        // submitToPty reads `wrote.ok`; a dead pty resolves {ok:false,
+        // error:'no pty: <id>'} rather than rejecting.
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("ptyop");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let w = pty_write_core(&handle, "pty-nada", "x");
+        assert!(!w.ok);
+        assert_eq!(w.error.as_deref(), Some("no pty: pty-nada"));
+        let r = pty_resize_core(&handle, "pty-nada", 80, 24);
+        assert!(!r.ok);
+        assert_eq!(r.error.as_deref(), Some("no pty: pty-nada"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

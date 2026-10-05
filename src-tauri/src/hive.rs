@@ -935,6 +935,15 @@ impl Hive {
         Ok(())
     }
 
+    /// The CLI's recorded session id for an agent — upstream
+    /// `hive.lastSession(agentId)`, the `resume: true` lookup source.
+    pub fn last_session(&self, id: &str) -> Option<String> {
+        self.registry()
+            .into_iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.session_id)
+    }
+
     /// Count undrained inbox messages for an agent (upstream inboxBacklog —
     /// cheap, feeds the fleet snapshot).
     /// hasMemory (hive.ts:1979): a seeded memory.md is ~90 chars — anything

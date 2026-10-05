@@ -421,14 +421,14 @@ fn capture_shell_path() -> String {
 /// buildCmdCommandLine emits verbatim. Passing the whole line as ONE arg (the
 /// old path) made portable-pty wrap + escape it a SECOND time, so cmd saw
 /// literal `\"` sequences and corrupted quoted args.
-pub fn spawn_cmd(
+pub fn spawn_cmd<R: tauri::Runtime>(
     id: &str,
     tokens: &[String],
     cwd: &str,
     env: &HashMap<String, String>,
     cols: u16,
     rows: u16,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -492,7 +492,7 @@ pub fn spawn_cmd(
         .spawn_command(cmd)
         .with_context(|| format!("spawn {}", tokens.join(" ")))?;
     drop(pair.slave); // keep only the master; the slave side belongs to the child
-    finish(id, pair.master, child, app)
+    finish(id, pair.master, child, cwd.to_string(), tokens.join(" "), app)
 }
 
 /// Make a value safe inside a double-quoted cmd arg: single line, no double
@@ -514,9 +514,16 @@ pub struct PtyHandle {
     /// Root process id — ensureKilled's taskkill target on Windows.
     pub pid: Option<u32>,
     master: Box<dyn MasterPty + Send>,
+    /// Spawn cwd + resolved command line — upstream PtySession fields, replayed
+    /// by `pty:list` for the renderer's waitForTerminalReady.
+    pub cwd: String,
+    pub command: String,
     /// Epoch-ms of the last byte read — the heartbeat's quiet-floor signal
     /// (an agent printing/thinking counts as activity, same as upstream).
     pub last_output_at: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// True once the reader has seen ANY byte — upstream PtySession.hasOutput,
+    /// the renderer's "the TUI actually booted" signal in waitForTerminalReady.
+    pub has_output: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Trailing output buffer (TAIL_MAX cap) — pty:redraw replays this into a
     /// freshly-mounted xterm; the exit handler also ships it for diagnostics.
     tail: std::sync::Arc<std::sync::Mutex<String>>,
@@ -538,14 +545,14 @@ pub struct PtyExitPayload {
 /// platform shell (`cmd /d /s /c` on Windows, `sh -c` elsewhere) so bare CLI
 /// names like `claude` / `codex` resolve via PATH + PATHEXT exactly as they do
 /// when the user types them — the Electron version relied on node-pty for this.
-pub fn spawn(
+pub fn spawn<R: tauri::Runtime>(
     id: &str,
     command_line: &str,
     cwd: &str,
     env: &HashMap<String, String>,
     cols: u16,
     rows: u16,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -576,13 +583,20 @@ pub fn spawn(
         .spawn_command(cmd)
         .with_context(|| format!("spawn {command_line}"))?;
     drop(pair.slave); // keep only the master; the slave side belongs to the child
-    finish(id, pair.master, child, app)
+    finish(
+        id,
+        pair.master,
+        child,
+        cwd.to_string(),
+        command_line.to_string(),
+        app,
+    )
 }
 
 /// Direct argv spawn (resolved .exe) — the node-pty equivalent: no shell
 /// between us and the child, so args like `--append-system-prompt <multiline
 /// text>` arrive byte-exact.
-pub fn spawn_argv(
+pub fn spawn_argv<R: tauri::Runtime>(
     id: &str,
     program: &std::path::Path,
     args: &[String],
@@ -590,7 +604,7 @@ pub fn spawn_argv(
     env: &HashMap<String, String>,
     cols: u16,
     rows: u16,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -607,14 +621,20 @@ pub fn spawn_argv(
     }
     let child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
-    finish(id, pair.master, child, app)
+    let command = std::iter::once(program.display().to_string())
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    finish(id, pair.master, child, cwd.to_string(), command, app)
 }
 
-fn finish(
+fn finish<R: tauri::Runtime>(
     id: &str,
     master: Box<dyn MasterPty + Send>,
     mut child: Box<dyn Child + Send + Sync>,
-    app: AppHandle,
+    cwd: String,
+    command: String,
+    app: AppHandle<R>,
 ) -> Result<PtyHandle> {
     let mut reader = master.try_clone_reader().context("clone reader")?;
     let writer = master.take_writer().context("take writer")?;
@@ -625,6 +645,8 @@ fn finish(
             .unwrap_or(0),
     ));
     let clock = last_output_at.clone();
+    let has_output = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_output = has_output.clone();
     let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let tail_reader = tail.clone();
     let event_id = id.to_string();
@@ -635,6 +657,7 @@ fn finish(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    saw_output.store(true, std::sync::atomic::Ordering::Relaxed);
                     clock.store(
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -698,39 +721,42 @@ fn finish(
             &format!("pty:exit:{event_id2}"),
             serde_json::json!({ "exitCode": code, "signal": null }),
         );
-        // Natural-exit teardown (upstream's exitHandler): a child that exits
-        // on its own gets the same lifecycle cleanup as an explicit kill —
-        // session removed, broker caps revoked, status stamped — so respawn
-        // never reports "already running" for a dead PTY.
+        // Natural-exit teardown (upstream's exitHandler, index.ts:595): a
+        // child that exits on its own gets the same lifecycle cleanup as an
+        // explicit kill — session removed, the pty↔agent mapping dropped,
+        // broker caps revoked, status stamped — so respawn never reports
+        // "already running" for a dead PTY.
         if let Some(st) = app.try_state::<crate::AppState>() {
             st.ptys.lock().unwrap().remove(&event_id2);
-            crate::integrations::BROKER.revoke(&event_id2);
-            let _ = st.hive.set_status(&event_id2, "stopped");
-            let _ = app.emit(
-                "agent-status",
-                serde_json::json!({ "id": event_id2, "status": "stopped" }),
-            );
-        }
-        // pendingInstallRelaunch: this was an install PTY — a clean exit
-        // re-arms the renderer's pooled terminal (`pty:relaunch:<id>`) and
-        // re-runs the agent spawn, which now finds the installed binary.
-        // A non-zero exit leaves the installer's output on screen.
-        if code == Some(0) {
-            if let Some(retry) = crate::commands::PENDING_INSTALLS
-                .lock()
-                .unwrap()
-                .remove(&event_id2)
-            {
-                let _ = app.emit(&format!("pty:relaunch:{event_id2}"), serde_json::json!({}));
-                let app3 = app.clone();
-                let id3 = event_id2.clone();
-                let _ = crate::commands::spawn_inner(app3, retry, Some(id3), None);
+            // pendingInstallRelaunch: this was an install PTY — a clean exit
+            // re-arms the renderer's pooled terminal (`pty:relaunch:<id>`) and
+            // re-runs the SAME spawn (same agent id, same resume plan), which
+            // now finds the installed binary. An install PTY carries no
+            // pty→agent mapping, so teardown is skipped — same early return as
+            // upstream.
+            if code == Some(0) {
+                if let Some(pending) = crate::commands::PENDING_INSTALLS
+                    .lock()
+                    .unwrap()
+                    .remove(&event_id2)
+                {
+                    let _ =
+                        app.emit(&format!("pty:relaunch:{event_id2}"), serde_json::json!({}));
+                    let app3 = app.clone();
+                    let mut plan = pending.plan;
+                    plan.pty_id = Some(event_id2.clone());
+                    let _ = crate::commands::spawn_inner(app3, pending.args, plan);
+                    return;
+                }
+            } else {
+                crate::commands::PENDING_INSTALLS
+                    .lock()
+                    .unwrap()
+                    .remove(&event_id2);
             }
-        } else {
-            crate::commands::PENDING_INSTALLS
-                .lock()
-                .unwrap()
-                .remove(&event_id2);
+            // teardownPty(id): agent-keyed cleanup resolves the owning agent
+            // through the map — `event_id2` is a PTY id.
+            crate::commands::teardown_pty_core(&app, &event_id2, "stopped");
         }
     });
     Ok(PtyHandle {
@@ -738,7 +764,10 @@ fn finish(
         killer,
         pid,
         master,
+        cwd,
+        command,
         last_output_at,
+        has_output,
         tail,
     })
 }

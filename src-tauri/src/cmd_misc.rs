@@ -126,6 +126,10 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
         }
         n
     };
+    // The wholesale drain bypasses teardownPty — reset the pty↔agent maps
+    // directly so a stale mapping can't outlive the reset.
+    st.pty_to_agent.lock().unwrap().clear();
+    st.agent_to_pty.lock().unwrap().clear();
 
     // 3. The roster retires into roster-backups/ — never deleted outright.
     st.roster.archive();

@@ -192,7 +192,9 @@ pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, Strin
 #[tauri::command(async)]
 pub fn hive_agent_context(app: AppHandle, agent_id: String) -> Result<Value, String> {
     let st = state(&app);
-    let live = st.ptys.lock().unwrap().contains_key(&agent_id);
+    // `agent_id` is the registry namespace — live-ness resolves through the
+    // pty→agent map (pty keys carry the renderer's `pty-` prefix).
+    let live = st.pty_for_agent(&agent_id).is_some();
     let mut v = crate::hive_admin::agent_context(&st.hive, &agent_id, live);
     let slot = st.context_usage.lock().unwrap().get(&agent_id).copied();
     match slot {
@@ -270,12 +272,29 @@ pub fn session_resolve_cwd(app: AppHandle, agent_id: String) -> Result<Value, St
 
 // ─── pty / workers ──────────────────────────────────────────────────────────
 
-/// pty:list — live PTY ids.
+/// pty:list — upstream `ptyManager.list()`: `{id, cwd, command, pid,
+/// lastOutputAt, hasOutput}` per live PTY. The renderer's
+/// waitForTerminalReady keys on `id`/`pid`/`hasOutput`; ids are PTY ids.
 #[tauri::command(async)]
-pub fn pty_list(app: AppHandle) -> Result<Vec<String>, String> {
+pub fn pty_list(app: AppHandle) -> Result<Vec<Value>, String> {
     let st = state(&app);
-    let ids: Vec<String> = st.ptys.lock().unwrap().keys().cloned().collect();
-    Ok(ids)
+    let list: Vec<Value> = st
+        .ptys
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, h)| {
+            json!({
+                "id": id,
+                "cwd": h.cwd,
+                "command": h.command,
+                "pid": h.pid,
+                "lastOutputAt": h.last_output_at.load(std::sync::atomic::Ordering::Relaxed),
+                "hasOutput": h.has_output.load(std::sync::atomic::Ordering::Relaxed),
+            })
+        })
+        .collect();
+    Ok(list)
 }
 
 /// pty:redraw — the buffered scrollback for one id.
@@ -308,7 +327,9 @@ pub fn workers_list(app: AppHandle) -> Result<Value, String> {
 #[tauri::command(async)]
 pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
     let st = state(&app);
-    let live: std::collections::HashSet<String> = st.ptys.lock().unwrap().keys().cloned().collect();
+    // Registry rows are agent-keyed; live-ness is agent-namespace too
+    // (st.ptys keys are pty ids — translate through the spawn-time mapping).
+    let live: std::collections::HashSet<String> = st.live_agent_ids();
     let extras = crate::hive_admin::all_extras(&st.hive);
     let mut out = Vec::new();
     for a in st.hive.registry() {
@@ -330,7 +351,9 @@ pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
 
 /// workers:stop — the same teardown as pty:kill/kill_agent (kill the PTY,
 /// forget breaker/wake/telemetry, mark stopped, emit agent-status).
+/// `id` is a worker/agent id — kill_agent resolves either namespace and
+/// returns the upstream `{ok, error?}` envelope.
 #[tauri::command(async)]
-pub fn workers_stop(app: AppHandle, id: String) -> Result<(), String> {
+pub fn workers_stop(app: AppHandle, id: String) -> crate::commands::PtyOpResult {
     crate::commands::kill_agent(app, id)
 }
