@@ -3,6 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { AgentHoldButton } from './AgentHoldButton';
 import { isComposingKey } from '@shared/imeGuard';
+import { stripAnsi } from './ansiText';
+import { buildSessionExport, sessionExportFileName } from '@shared/sessionExport';
+import { useStore } from '@/store/store';
 
 /**
  * Operator control for one agent (#7C.1-7C.3) — pause (deny tools at the next
@@ -71,6 +74,36 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     flash(t('agentControl.flashSteer'));
   };
 
+  /** Export this agent's session (identity + usage + hive mail + terminal
+   *  tail) as a Markdown file in a folder the user picks. Everything rides
+   *  existing commands — chooseFolder → compose → fs_write → reveal. */
+  const exportSession = async () => {
+    const res = await window.cth.chooseFolder();
+    if (!res?.ok || !res.path) return;
+    flash(t('agentControl.exporting'));
+    try {
+      const agent = useStore.getState().agents.find((a) => a.id === agentId);
+      const [usage, mail, tail] = await Promise.all([
+        window.cth.telemetryUsage(agentId).catch(() => null),
+        window.cth.hiveMessages(agentId, null, 200).catch(() => []),
+        agent?.ptyId ? window.cth.redrawPty(agent.ptyId).catch(() => '') : Promise.resolve('')
+      ]);
+      const md = buildSessionExport(
+        agent,
+        usage as Parameters<typeof buildSessionExport>[1],
+        Array.isArray(mail) ? mail : [],
+        stripAnsi(typeof tail === 'string' ? tail : '')
+      );
+      const w = await window.cth.writeFile(res.path, sessionExportFileName(agent?.name ?? agentId), md);
+      if (w?.path) {
+        flash(t('agentControl.exported'));
+        await window.cth.revealPath(w.path);
+      }
+    } catch {
+      flash(t('agentControl.exportFailed'));
+    }
+  };
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 6,
@@ -106,6 +139,15 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             Michael — so the tooltip carries that distinction now that the
             grouping no longer does. */}
         <AgentHoldButton agentId={agentId} />
+        <PixelButton variant="secondary" size="sm" onClick={exportSession}>
+          <span
+            className="cth-tip cth-tip-wrap"
+            data-tip={t('agentControl.exportTip')}
+            aria-label={t('agentControl.exportAria')}
+          >
+            {t('agentControl.export')}
+          </span>
+        </PixelButton>
         {/* v0.3.4: the auto-delivery switch moved to the god's Command Center
             header — ONE floor-wide control instead of a per-agent toggle. */}
         {snap?.autoDeliveryPaused && (

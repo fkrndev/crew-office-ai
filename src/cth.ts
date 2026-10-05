@@ -174,7 +174,15 @@ export function installCth(): void {
     hiveLog: (...args: unknown[]) => invoke('hive_log', pack(args, ["limit"])),
     hiveMemory: (...args: unknown[]) => invoke('read_memory', pack(args, ["agentId"])),
     hiveInbox: (...args: unknown[]) => invoke('hive_inbox', pack(args, ["agentId"])),
-    hiveMessages: (...args: unknown[]) => invoke('hive_messages', pack(args, ["agentId","id","limit","includeArchived"])),
+    hiveMessages: (...args: unknown[]) => {
+      // Upstream callers pass an opts object ({agentId,id,limit,...}); newer
+      // call sites pass positionally. Accept both.
+      const first = args[0];
+      const opts = typeof first === 'object' && first !== null
+        ? first as Record<string, unknown>
+        : pack(args, ["agentId","id","limit","includeArchived"]);
+      return invoke('hive_messages', opts);
+    },
     hiveAgentDirectory: (...args: unknown[]) => invoke('hive_agent_directory', pack(args, ["id"])),
     listWorkers: (...args: unknown[]) => invoke('workers_list', pack(args, [])),
     stopWorker: (...args: unknown[]) => invoke('workers_stop', pack(args, ["id"])),

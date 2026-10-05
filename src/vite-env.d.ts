@@ -23,7 +23,7 @@ declare global {
     hiveAddTask(fields: Record<string, any>): Promise<any>;
     hiveLog(n?: number): Promise<any>;
     hiveSend(partial: unknown, from?: string): Promise<any>;
-    hiveMessages(opts?: unknown): Promise<any>;
+    hiveMessages(...args: any[]): Promise<any>;
     hiveInbox(id: string): Promise<any>;
     hiveAgentDirectory(): Promise<any>;
     onHiveMessage(cb: (e: HiveRouteEvent) => void): () => void;
