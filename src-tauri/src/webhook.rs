@@ -913,3 +913,52 @@ fn percent_decode(s: &str) -> Option<String> {
     }
     String::from_utf8(out).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_eq_constant_time_shape() {
+        assert!(secret_eq("abc123", "abc123"));
+        assert!(!secret_eq("abc123", "abc124"));
+        assert!(!secret_eq("abc", "abcd")); // length mismatch → false
+        assert!(!secret_eq("", "x"));
+        assert!(secret_eq("", ""));
+    }
+
+    #[test]
+    fn hash_token_is_sha256_hex() {
+        let h = hash_token("capability-token");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+        // Same input → same hash; different input → different hash.
+        assert_eq!(h, hash_token("capability-token"));
+        assert_ne!(h, hash_token("other"));
+    }
+
+    #[test]
+    fn percent_decode_round_trips() {
+        assert_eq!(percent_decode("a%20b").as_deref(), Some("a b"));
+        assert_eq!(percent_decode("plain").as_deref(), Some("plain"));
+        assert_eq!(percent_decode("%2Fpath%2F").as_deref(), Some("/path/"));
+        // Truncated % escape passes through literally — the caller fallbacks
+        // on the raw text rather than dropping the value.
+        assert_eq!(percent_decode("a%2").as_deref(), Some("a%2"));
+    }
+
+    #[test]
+    fn set_endpoints_counts_enabled_and_secreted_only() {
+        let srv = WebhookServer::new();
+        let eps = vec![
+            WebhookEndpoint { id: "a".into(), secret: "s1".into(), enabled: true, ..Default::default() },
+            WebhookEndpoint { id: "b".into(), secret: "s2".into(), enabled: false, ..Default::default() },
+            // Enabled but NO secret → never served: an unsigned endpoint is an
+            // open door, refusing it is the security rule, not a nicety.
+            WebhookEndpoint { id: "c".into(), enabled: true, ..Default::default() },
+        ];
+        assert_eq!(srv.set_endpoints(&eps), 1);
+        assert_eq!(srv.endpoint_ids(), vec!["a"]);
+    }
+}
+

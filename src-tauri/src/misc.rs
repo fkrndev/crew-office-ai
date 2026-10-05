@@ -819,3 +819,103 @@ fn pid_alive(pid: u32) -> bool {
             .unwrap_or(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_receive_inbox_matches_frontend_table() {
+        // Providers that CAN take typed inbox nudges.
+        for p in [
+            "claude", "codex", "gemini", "grok", "antigravity", "hermes", "openclaw", "pi",
+            "opencode", "qwen", "crush", "cursor",
+        ] {
+            assert!(can_receive_inbox(p), "{p} should receive inbox");
+        }
+        // The three that cannot — the router hands these to the terminal path.
+        for p in ["kimi", "copilot", "custom"] {
+            assert!(!can_receive_inbox(p), "{p} must not receive inbox");
+        }
+    }
+
+    #[test]
+    fn inbox_delivery_terminal_only_proxy_tier() {
+        assert!(inbox_delivery_terminal("qwen"));
+        assert!(inbox_delivery_terminal("crush"));
+        assert!(!inbox_delivery_terminal("claude"));
+        assert!(!inbox_delivery_terminal("hermes"));
+    }
+
+    #[test]
+    fn compact_command_focus_only_where_parsed() {
+        // claude reads trailing focus text.
+        assert_eq!(
+            compact_command("claude", "keep the task").as_deref(),
+            Some("/compact keep the task")
+        );
+        // codex drops the focus (its parser ignores it).
+        assert_eq!(compact_command("codex", "keep the task").as_deref(), Some("/compact"));
+        // providers with no trustworthy verb get None — never type a guess.
+        assert_eq!(compact_command("hermes", "x"), None);
+        assert_eq!(compact_command("crush", "x"), None);
+        assert_eq!(compact_command("custom", "x"), None);
+    }
+
+    #[test]
+    fn clear_command_override_and_fallback() {
+        // A non-empty message is a VERBATIM override (escape hatch for
+        // providers the table maps to nothing).
+        assert_eq!(clear_command("custom", "/nuke").as_deref(), Some("/nuke"));
+        assert_eq!(clear_command("claude", "").as_deref(), Some("/clear"));
+        assert_eq!(clear_command("grok", "").as_deref(), Some("/new"));
+        assert_eq!(clear_command("hermes", ""), None);
+    }
+
+    #[test]
+    fn provider_install_table() {
+        let (posix, win32, npm) = provider_install("claude");
+        assert!(posix.unwrap().contains("claude.ai/install.sh"));
+        assert!(win32.unwrap().contains("install.ps1"));
+        assert_eq!(npm, Some("npm install -g @anthropic-ai/claude-code"));
+        // cursor is native-only (no npm).
+        let (cp, cw, cn) = provider_install("cursor");
+        assert!(cp.is_some() && cw.is_some() && cn.is_none());
+        // unknown provider → no rungs at all.
+        assert_eq!(provider_install("zzz"), (None, None, None));
+    }
+
+    #[test]
+    fn tokenize_command_quotes_and_glue() {
+        assert_eq!(tokenize_command("claude --model opus"), ["claude", "--model", "opus"]);
+        assert_eq!(
+            tokenize_command(r#"agy --model "Gemini 3.1 Pro (High)""#),
+            ["agy", "--model", "Gemini 3.1 Pro (High)"]
+        );
+        assert_eq!(tokenize_command("a 'b c' d"), ["a", "b c", "d"]);
+        assert_eq!(tokenize_command(""), Vec::<String>::new());
+        assert_eq!(tokenize_command("   "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn expand_tilde_rules() {
+        assert_eq!(expand_tilde(""), "");
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+        let expanded = expand_tilde("~/sub");
+        assert!(!expanded.starts_with('~'), "tilde must expand: {expanded}");
+        assert!(expanded.ends_with("sub"));
+    }
+
+    #[test]
+    fn is_filesystem_root_blocks_volume_roots() {
+        // The reset guard: roots must read true, normal dirs false.
+        let tmp = std::env::temp_dir();
+        assert!(!is_filesystem_root(&tmp));
+        #[cfg(windows)]
+        assert!(is_filesystem_root(std::path::Path::new("C:\\")));
+        #[cfg(not(windows))]
+        assert!(is_filesystem_root(std::path::Path::new("/")));
+    }
+}
+

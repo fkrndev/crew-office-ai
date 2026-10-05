@@ -143,3 +143,77 @@ impl ControlRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_gates_every_tool() {
+        let mut r = ControlRegistry::default();
+        assert_eq!(r.tool_decision("a1", "Bash"), None); // untouched agent is free
+        r.pause("a1", true);
+        assert!(r.tool_decision("a1", "Bash").is_some());
+        // Paused decision rides for ANY tool, not just gated ones.
+        assert!(r.tool_decision("a1", "").is_some());
+        r.pause("a1", false);
+        assert_eq!(r.tool_decision("a1", "Bash"), None);
+    }
+
+    #[test]
+    fn gate_tool_blocks_only_named_tools() {
+        let mut r = ControlRegistry::default();
+        r.gate_tool("a1", "Bash", true);
+        assert!(r.tool_decision("a1", "Bash").is_some());
+        assert_eq!(r.tool_decision("a1", "Edit"), None);
+        r.gate_tool("a1", "Bash", false);
+        assert_eq!(r.tool_decision("a1", "Bash"), None);
+    }
+
+    #[test]
+    fn steer_queue_is_fifo_and_capped() {
+        let mut r = ControlRegistry::default();
+        r.steer("a1", "first");
+        r.steer("a1", "second");
+        assert_eq!(r.take_steer("a1").as_deref(), Some("first"));
+        assert_eq!(r.take_steer("a1").as_deref(), Some("second"));
+        assert_eq!(r.take_steer("a1"), None);
+        // Empty / whitespace steer is dropped silently.
+        r.steer("a1", "   ");
+        assert_eq!(r.snapshot("a1").pending_steers, 0);
+        // Overflow drops the OLDEST — newest instruction wins.
+        for i in 0..25 {
+            r.steer("a1", &format!("n{i}"));
+        }
+        assert_eq!(r.snapshot("a1").pending_steers, MAX_PENDING_STEERS);
+        assert_eq!(r.take_steer("a1").as_deref(), Some("n5"));
+    }
+
+    #[test]
+    fn steer_text_is_length_capped() {
+        let mut r = ControlRegistry::default();
+        r.steer("a1", &"x".repeat(MAX_STEER_LEN + 500));
+        assert_eq!(r.take_steer("a1").unwrap().chars().count(), MAX_STEER_LEN);
+    }
+
+    #[test]
+    fn halt_then_resume_keeps_tool_gates() {
+        let mut r = ControlRegistry::default();
+        r.gate_tool("a1", "Bash", true);
+        r.pause("a1", true);
+        r.halt("a1");
+        assert!(r.should_halt("a1"));
+        r.resume("a1");
+        assert!(!r.should_halt("a1"));
+        assert!(r.tool_decision("a1", "Bash").is_some()); // gate survives resume
+        assert_eq!(r.tool_decision("a1", "Edit"), None); // pause cleared
+    }
+
+    #[test]
+    fn snapshot_of_unknown_agent_is_all_clear() {
+        let r = ControlRegistry::default();
+        let s = r.snapshot("ghost");
+        assert!(!s.paused && !s.halted && s.gated_tools.is_empty() && s.pending_steers == 0);
+    }
+}
+
