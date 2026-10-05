@@ -95,7 +95,7 @@ fn preset_command(provider: &str, model: Option<&str>, auto_mode: bool) -> Strin
         "copilot" => ("copilot", "-s --allow-all-tools --no-ask-user"),
         "cursor" => ("cursor-agent", "--force --trust"),
         "hermes" => ("hermes --cli", ""),
-        "openclaw" => ("openclaw tui", ""),
+        "openclaw" => ("openclaw tui --local", ""),
         _ => ("claude", "--permission-mode bypassPermissions"),
     };
     let mut cmd = bin.to_string();

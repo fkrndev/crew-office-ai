@@ -571,15 +571,18 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
   },
   {
     // OpenClaw — the open-source agentic CLI (openclaw.ai / openclaw/openclaw).
-    // Interactive TUI (`openclaw tui`) by default; `openclaw agent exec` is the
-    // headless one-shot path for CI. Non-hiveAware: no --append-system-prompt
-    // equivalent, so the hive protocol rides in as the initial prompt.
-    // OpenClaw has no `--yolo`-style spawn flag: auto-approve is configured
-    // persistently via `openclaw exec-policy preset yolo` (tools.exec.mode=full
-    // + approvals.ask=off), so no auto flag is spliced onto the command.
+    // `openclaw tui --local` runs the embedded agent runtime standalone (same
+    // as `openclaw chat`) — no Gateway needed, so a per-agent PTY spawn is
+    // self-contained. Non-hiveAware: no --append-system-prompt equivalent, so
+    // the hive protocol is typed into the TUI after boot.
+    // Auto mode needs NO flag: no-approval exec is OpenClaw's DEFAULT on
+    // gateway/node hosts (tools.exec.mode=full, per docs.openclaw.ai/tools/exec),
+    // and `agent exec` runs under the full headless policy automatically.
+    // Per-session control exists as the `/elevated` + `/exec` slash verbs if a
+    // user needs to tighten a session — none is needed to open it up.
     id: 'openclaw',
     label: 'OpenClaw',
-    defaultCommand: 'openclaw tui',
+    defaultCommand: 'openclaw tui --local',
     commandGroups: [],
     autoModeFlag: '',
     autoFlag: '',
