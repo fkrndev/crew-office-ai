@@ -212,11 +212,6 @@ export function SettingsHeroCard() {
               <Icon name="sparkle" /> {t('settingsHero.whatsNew')}
             </span>
           </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(GITHUB_REPO_URL)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              ⭐ {t('settingsHero.starOnGitHub')}
-            </span>
-          </PixelButton>
           <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(DISCORD_URL)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               💬 {t('settingsHero.joinDiscord')}

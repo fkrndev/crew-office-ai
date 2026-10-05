@@ -7,10 +7,15 @@
  * - jsdom shims for APIs the app touches but jsdom lacks.
  */
 import '@/i18n';
+import i18n from 'i18next';
 import { vi } from 'vitest';
 import { installFakeBridge } from './fakeBridge';
 import { cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
+
+// Pin the test language to English — tests assert English strings, and the
+// app default is Bahasa Indonesia.
+void i18n.changeLanguage('en');
 
 installFakeBridge({
   // These are SYNC methods upstream (sendSync → loopback XHR): they must
