@@ -360,6 +360,8 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
   const [tokenCap, setTokenCap] = useState<number | undefined>(undefined);
   // Per-agent token limit (overrides the floor budget for that agent), keyed by id.
   const [agentTokenCaps, setAgentTokenCaps] = useState<Record<string, number>>({});
+  // Per-agent USD budget — bounds this agent alone regardless of floor total.
+  const [agentCostCaps, setAgentCostCaps] = useState<Record<string, number>>({});
   const [restarting, setRestarting] = useState<string | null>(null);
   const [engineProvider, setEngineProvider] = useState<AgentProvider>('claude');
   const [engineModel, setEngineModel] = useState<string | undefined>(undefined);
@@ -382,6 +384,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
       setRepos(c.registeredRepos ?? []);
       setTokenCap(c.costCapTokens);
       setAgentTokenCaps(c.agentTokenCaps ?? {});
+      setAgentCostCaps(c.agentCostCaps ?? {});
       setEngineProvider(c.godProvider ?? 'claude');
       setEngineModel(c.godModel);
       setDefaultModel(c.defaultModel);
@@ -626,6 +629,23 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
     });
   };
 
+  // Same read-modify-write contract as the token cap, in dollars.
+  const setAgentUsdCap = (id: string, usd: number | undefined) => {
+    setAgentCostCaps((current) => {
+      const optimistic = { ...current };
+      if (usd && usd > 0) optimistic[id] = usd;
+      else delete optimistic[id];
+      return optimistic;
+    });
+    void window.cth.setAgentCostCap(id, usd).then((updated) => {
+      setAgentCostCaps(updated.agentCostCaps ?? {});
+    }).catch(() => {
+      void window.cth.getConfig().then((current) => {
+        setAgentCostCaps(current.agentCostCaps ?? {});
+      }).catch(() => { /* noop */ });
+    });
+  };
+
   // The token meter is scaled to the agent's own limit when set, else the floor
   // token budget — so each bar reads as "tokens used vs budget" with the remaining
   // headroom visible, never pinned to a useless 100%.
@@ -729,6 +749,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
                 {t('commandCenter.toolCalls', { count: toolCounts[a.id] ?? 0 })}
               </span>
               <TokenLimitEditor value={agentCap} onSet={(t) => setAgentCap(a.id, t)} />
+              <UsdLimitEditor value={agentCostCaps[a.id]} onSet={(v) => setAgentUsdCap(a.id, v)} />
             </div>
             <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', wordBreak: 'break-all' }}>{a.cwd}</div>
             {/* Live telemetry (folded in from the old Fleet tab) */}
@@ -1237,6 +1258,61 @@ function TokenLimitEditor({ value, onSet }: { value?: number; onSet: (tokens: nu
         placeholder={t('common.tokens')}
         style={{
           width: 84, padding: '2px 4px', background: 'var(--cth-paper-100)', border: 'none',
+          boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontFamily: 'var(--cth-font-mono)',
+          fontSize: 11, color: 'var(--cth-ink-900)', outline: 'none'
+        }}
+      />
+      <button
+        onMouseDown={(e) => e.preventDefault()} onClick={commit} title={t('commandCenter.saveLimit')}
+        style={{ flexShrink: 0, padding: '1px 5px', border: 'none', cursor: 'pointer', background: 'var(--cth-mint)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)', fontSize: 11, color: 'var(--cth-ink-900)' }}
+      >✓</button>
+    </span>
+  );
+}
+
+/** Per-agent USD budget control — sits beside TokenLimitEditor. Same commit
+ *  keys (Enter/✓/blur, Escape cancels); empty or ≤0 clears the cap. */
+function UsdLimitEditor({ value, onSet }: { value?: number; onSet: (usd: number | undefined) => void }) {
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(value != null ? String(value) : '');
+  const skipBlur = useRef(false);
+  const commit = () => {
+    const raw = text.trim().replace(/^\$/, '');
+    const n = raw === '' ? undefined : Number(raw);
+    onSet(typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined);
+    setEditing(false);
+  };
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setText(value != null ? String(value) : ''); setEditing(true); }}
+        title={t('commandCenter.costLimitTitle')}
+        style={{
+          flexShrink: 0, padding: '1px 6px', border: 'none', cursor: 'pointer',
+          background: value && value > 0 ? 'var(--cth-coral)' : 'var(--cth-cream-200)',
+          boxShadow: `inset 0 0 0 1px ${value && value > 0 ? 'var(--cth-ink-900)' : 'var(--cth-ink-700)'}`,
+          fontFamily: 'var(--cth-font-ui)', fontSize: 11, color: 'var(--cth-ink-900)'
+        }}
+      >{value && value > 0
+        ? `$${value}`
+        : t('commandCenter.setCostLimit')}</button>
+    );
+  }
+  return (
+    <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      <input
+        type="number" min="0" step="1" value={text} autoFocus
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (isComposingKey(e)) return;
+          if (e.key === 'Enter') commit();
+          else if (e.key === 'Escape') { skipBlur.current = true; setEditing(false); }
+        }}
+        onBlur={() => { if (skipBlur.current) { skipBlur.current = false; return; } commit(); }}
+        placeholder="USD"
+        style={{
+          width: 64, padding: '2px 4px', background: 'var(--cth-paper-100)', border: 'none',
           boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontFamily: 'var(--cth-font-mono)',
           fontSize: 11, color: 'var(--cth-ink-900)', outline: 'none'
         }}

@@ -482,6 +482,7 @@ pub fn run() {
                         cfg.cost_cap_usd,
                         cfg.cost_cap_tokens,
                         &cfg.agent_token_caps,
+                        &cfg.agent_cost_caps,
                     );
                     for d in decisions {
                         let _ = handle2.emit("control:breakerState", &d.state);
@@ -1058,6 +1059,7 @@ pub fn run() {
             cmd_misc::config_ensure_home,
             cmd_misc::config_home_sync,
             cmd_misc::config_set_agent_token_cap,
+            cmd_misc::config_set_agent_cost_cap,
             cmd_misc::control_set_breaker_state,
             cmd_misc::control_auto_delivery,
             cmd_misc::triggers_get_context,

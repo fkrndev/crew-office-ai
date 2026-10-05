@@ -142,6 +142,7 @@ export function installCth(): void {
     getConfig: (...args: unknown[]) => invoke('get_config', pack(args, [])),
     updateConfig: (...args: unknown[]) => invoke('config_update', pack(args, ["patch"])),
     setAgentTokenCap: (...args: unknown[]) => invoke('config_set_agent_token_cap', pack(args, ["agentId","cap"])),
+    setAgentCostCap: (...args: unknown[]) => invoke('config_set_agent_cost_cap', pack(args, ["agentId","cap"])),
     ensureHarnessHome: (...args: unknown[]) => invoke('config_ensure_home', pack(args, ["path"])),
     changeHome: (...args: unknown[]) => invoke('config_change_home', pack(args, ["newHome"])),
     listDir: (...args: unknown[]) => invoke('fs_list', pack(args, ["root","rel"])),

@@ -27,6 +27,11 @@ pub struct Config {
     pub cost_cap_tokens: Option<u64>,
     /// Per-agent work-token caps (cache_read excluded, upstream #189).
     pub agent_token_caps: HashMap<String, u64>,
+    /// Per-agent USD spend caps — trips the breaker for that agent alone.
+    /// Distinct from cost_cap_usd (a floor-wide budget that trips only the
+    /// single biggest spender): this bounds ONE agent regardless of the
+    /// floor total. Set per hire or in Command Center.
+    pub agent_cost_caps: HashMap<String, f64>,
     /// Recurring auto-dispatch missions (missions.rs + scheduler loop).
     pub missions: Vec<ScheduledMission>,
     /// One-time seeding guards — a user who deletes a built-in mission does
@@ -135,6 +140,7 @@ impl Default for Config {
             cost_cap_usd: None,
             cost_cap_tokens: None,
             agent_token_caps: HashMap::new(),
+            agent_cost_caps: HashMap::new(),
             missions: Vec::new(),
             ops_standup_seeded: false,
             heartbeat_seeded: false,

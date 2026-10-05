@@ -116,6 +116,10 @@ export interface HarnessConfig {
   /** Per-agent total-token ceiling, keyed by agent id. Overrides the floor budget
    *  for that agent's meter and trips the breaker for it alone. */
   agentTokenCaps?: Record<string, number>;
+  /** Per-agent USD spend ceiling, keyed by agent id. Bounds THIS agent no matter
+   *  what the floor total is (unlike costCapUsd, which only trips the single
+   *  biggest spender). */
+  agentCostCaps?: Record<string, number>;
   autoDeliveryPausedAgents?: string[];
   maxTurns?: number;
   circuitBreaker?: CircuitBreakerConfig;

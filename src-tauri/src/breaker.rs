@@ -190,6 +190,7 @@ impl CircuitBreaker {
         cost_cap_usd: Option<f64>,
         cost_cap_tokens: Option<u64>,
         agent_token_caps: &HashMap<String, u64>,
+        agent_cost_caps: &HashMap<String, f64>,
     ) -> Vec<BreakerDecision> {
         let enabled = cfg.enabled.unwrap_or(true);
         let hard_stop = cfg.hard_stop.unwrap_or(false);
@@ -265,6 +266,7 @@ impl CircuitBreaker {
                     error_storm_limit,
                     token_velocity,
                     agent_token_caps.get(&input.agent_id).copied(),
+                    agent_cost_caps.get(&input.agent_id).copied(),
                     top_spender == Some(input.agent_id.as_str()),
                     cost_cap_usd,
                     top_token_spender == Some(input.agent_id.as_str()),
@@ -342,6 +344,7 @@ fn evaluate(
     error_storm_limit: u32,
     token_velocity: u64,
     per_agent_cap: Option<u64>,
+    per_agent_usd_cap: Option<f64>,
     is_top_spender: bool,
     cost_cap_usd: Option<f64>,
     is_top_token_spender: bool,
@@ -362,6 +365,16 @@ fn evaluate(
             return Some(format!(
                 "token limit: {work} work tokens over the agent cap of {cap} ({} total incl. cache reads)",
                 tokens_of(input.sample.as_ref())
+            ));
+        }
+    }
+    // Per-agent USD budget — bounds THIS agent regardless of the floor total
+    // (unlike cost_cap_usd, which only trips the single biggest spender).
+    if let Some(cap) = per_agent_usd_cap.filter(|c| *c > 0.0) {
+        let usd = input.sample.map(|s| s.usd).unwrap_or(0.0);
+        if usd > cap {
+            return Some(format!(
+                "cost cap: ${usd:.2} spent over the agent budget of ${cap:.2}"
             ));
         }
     }
@@ -463,3 +476,73 @@ fn capped_json(v: &serde_json::Value, out: &mut String) {
         _ => out.push_str(&v.to_string()),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(id: &str, usd: f64) -> BreakerInput {
+        BreakerInput {
+            agent_id: id.into(),
+            sample: Some(UsageSample {
+                usd,
+                ts: 1_000,
+                ..Default::default()
+            }),
+            progressing: true,
+            last_work_at: Some(1_000),
+        }
+    }
+
+    fn cfg() -> BreakerConfig {
+        BreakerConfig {
+            enabled: Some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn per_agent_usd_cap_trips_only_that_agent() {
+        let mut b = CircuitBreaker::default();
+        let token_caps = HashMap::new();
+        let mut usd_caps = HashMap::new();
+        usd_caps.insert("spender".to_string(), 1.0f64);
+
+        let inputs = vec![input("spender", 5.0), input("thrifty", 0.01)];
+        let decisions = b.tick(&inputs, 1_000, &cfg(), None, None, &token_caps, &usd_caps);
+
+        let spender = decisions.iter().find(|d| d.state.agent_id == "spender").unwrap();
+        let thrifty = decisions.iter().find(|d| d.state.agent_id == "thrifty").unwrap();
+        assert_eq!(spender.state.level, BreakerLevel::Steering);
+        assert!(spender.state.reason.contains("cost cap"));
+        assert_eq!(thrifty.state.level, BreakerLevel::Healthy);
+    }
+
+    #[test]
+    fn per_agent_usd_cap_no_cap_no_trip() {
+        let mut b = CircuitBreaker::default();
+        let token_caps = HashMap::new();
+        let usd_caps = HashMap::new(); // no cap at all
+
+        let inputs = vec![input("whale", 999.0)];
+        let decisions = b.tick(&inputs, 1_000, &cfg(), None, None, &token_caps, &usd_caps);
+        assert_eq!(decisions[0].state.level, BreakerLevel::Healthy);
+    }
+
+    #[test]
+    fn floor_usd_cap_still_only_blames_top_spender() {
+        let mut b = CircuitBreaker::default();
+        let token_caps = HashMap::new();
+        let usd_caps = HashMap::new();
+
+        // Floor total 6.00 > cap 5.00 ? only the biggest spender escalates.
+        let inputs = vec![input("big", 5.0), input("small", 1.0)];
+        let decisions = b.tick(&inputs, 1_000, &cfg(), Some(5.0), None, &token_caps, &usd_caps);
+        let big = decisions.iter().find(|d| d.state.agent_id == "big").unwrap();
+        let small = decisions.iter().find(|d| d.state.agent_id == "small").unwrap();
+        assert_eq!(big.state.level, BreakerLevel::Steering);
+        assert_eq!(small.state.level, BreakerLevel::Healthy);
+    }
+}
+

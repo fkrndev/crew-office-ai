@@ -901,6 +901,39 @@ pub fn config_set_agent_token_cap(
     serde_json::to_value(&*cfg).map_err(|e| e.to_string())
 }
 
+/// config:setAgentCostCap — set/clear one agent's USD spend ceiling
+/// (None/0 clears; sanity ceiling $1M so a typo can't pin a $1e12 budget).
+/// Mirrors config_set_agent_token_cap: read-modify-write on the live config.
+#[tauri::command(async)]
+pub fn config_set_agent_cost_cap(
+    app: AppHandle,
+    agent_id: String,
+    cap: Option<f64>,
+) -> Result<Value, String> {
+    const MAX_AGENT_COST_CAP_USD: f64 = 1_000_000.0;
+    let id = agent_id.trim();
+    if id.is_empty() {
+        return Err("invalid agent cost cap".into());
+    }
+    if let Some(v) = cap {
+        if !v.is_finite() || v <= 0.0 || v > MAX_AGENT_COST_CAP_USD {
+            return Err("invalid agent cost cap".into());
+        }
+    }
+    let st = state(&app);
+    let mut cfg = st.config.lock().unwrap();
+    match cap {
+        Some(v) => {
+            cfg.agent_cost_caps.insert(id.to_string(), v);
+        }
+        None => {
+            cfg.agent_cost_caps.remove(id);
+        }
+    }
+    st.config_store.save(&cfg).map_err(err_str)?;
+    serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+}
+
 /// control:setBreakerState — upstream fanned a BreakerState from the breaker
 /// policy out to the renderer on `control:breakerState` (the avatar adapter
 /// reads it). The breaker policy in this port already emits `breaker-state`

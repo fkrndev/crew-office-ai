@@ -463,6 +463,8 @@
     "tokenLimitTitle": "设置该智能体的令牌上限（工作令牌：输入 + 输出 + 缓存写入；不计缓存读取）",
     "tokenLimit": "上限 {{value}}",
     "setLimit": "设置上限",
+    "setCostLimit": "设置 $ 上限",
+    "costLimitTitle": "设置该智能体的美元预算——支出超过上限时断路器只暂停它（独立于全楼预算）",
     "saveLimit": "保存上限",
     "fleetTokens": "Σ {{value}} tok",
     "fleetInputs": "输入 {{value}}（缓存 {{pct}}%）",

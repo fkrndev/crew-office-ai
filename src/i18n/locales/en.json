@@ -463,6 +463,8 @@
     "tokenLimitTitle": "Set this agent's token limit (work tokens: input + output + cache writes; cache reads don't count)",
     "tokenLimit": "limit {{value}}",
     "setLimit": "set limit",
+    "setCostLimit": "set $ cap",
+    "costLimitTitle": "Set this agent's USD budget — the circuit breaker pauses it alone when its spend passes the cap (independent of the floor-wide budget)",
     "saveLimit": "Save limit",
     "fleetTokens": "Σ {{value}} tok",
     "fleetInputs": "inputs {{value}} (cache {{pct}}%)",
