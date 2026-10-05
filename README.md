@@ -22,10 +22,6 @@ you on one screen, wherever they came from.
 
 ## What it does
 
-Coding-agent CLIs are single-player tools: you open one terminal, run one
-agent, and babysit it until it finishes. Agent Office turns them into a
-team.
-
 You see every agent on a visual office floor — each one sits at a desk,
 shows what it's working on, and reports whether it's idle, busy, stuck, or
 waiting on you. You can hire as many agents as you need, mixing engines:
@@ -59,6 +55,113 @@ supervisor tells everyone to park their work, each agent saves its state
 and acknowledges, and the app only exits once every worker is safe —
 so you can pick up tomorrow exactly where you left off.
 
+## Requirements
+
+Agent Office itself is a self-contained native app. What it needs on your
+machine:
+
+- **At least one agent engine** — the CLI of any supported provider
+  (Claude Code is the recommended orchestrator and installs itself on
+  first run). Other engines (Codex, Gemini, Grok, Hermes, Pi, OpenCode,
+  Qwen, Crush, Cursor, Copilot, OpenClaw) are optional extras you can mix
+  in later. If a picked engine is missing, the app offers its official
+  installer automatically on first spawn.
+- **Git** — required for worktree isolation (each agent working in its
+  own copy of your repo) and for the hive's internal history.
+- **An API key or login for whichever provider you run** — same as using
+  the CLI directly (e.g. `claude login`, or an `ANTHROPIC_API_KEY` stored
+  in Settings → Connections).
+
+Optional extras that unlock more features:
+
+- **Node.js** — only needed by the engines that are npm-installed
+  (OpenCode, Claude on machines without the native build). The app ships
+  a checksum-verified installer and sets it up automatically when needed.
+- **uv + MemPalace** — meaning-based memory search. Without it agents
+  still keep plain markdown notes; with it they can recall by meaning.
+  Both install themselves from the missing-tool banner.
+
+## Install
+
+Build the app from source (Rust + Node required for building, not for
+running):
+
+```bash
+git clone https://github.com/fkrndev/crew-office-ai.git
+cd crew-office-ai
+npm install
+npm run tauri build
+```
+
+The installer lands under `src-tauri/target/release/bundle/` — `.msi`/`.nsis`
+on Windows, `.dmg`/`.app` on macOS, `.AppImage`/`.deb` on Linux. Run it,
+and Agent Office behaves like any installed desktop app.
+
+For day-to-day development use `npm run tauri dev`, which compiles the
+backend once and then hot-reloads the UI on every save.
+
+## First-run setup
+
+The first launch walks a four-step onboarding wizard:
+
+1. **Who are you** — technical or not. The copy throughout the app adjusts
+   to match, nothing else changes.
+2. **Your clone** — pick the engine that runs the orchestrator. Every
+   engine the app can actually boot is listed, marked INSTALLED or
+   INSTALLS ON FIRST RUN. Claude Code is the default and the safest pick.
+   Engines that can only work as floor workers (no inbox channel) are
+   shown but not selectable here.
+3. **Harness home** — the folder that holds the hive: agent mail, memory,
+   tasks, the roster, and config. The default `~/HarnessAgents` works;
+   you can have several homes and switch between them later.
+4. **Permissions** — notifications, launch at login, keep-awake. All
+   optional, all changeable later in Settings.
+
+Finish creates the folder, writes the config, and boots your orchestrator
+with the engine you picked. If the engine binary isn't installed yet, the
+app runs its installer in front of you and continues when it succeeds.
+
+API keys for voice features or external integrations live in Settings →
+Connections and go to the OS credential store — they never touch the
+config file.
+
+## Daily use
+
+- **Hire an agent** — `+` on the floor or the sidebar. Pick a provider,
+  model, name, workspace, and whether to isolate it in a git worktree.
+  Saved **agent templates** make a hire one click for setups you repeat.
+- **Give the orchestrator a goal** — type into the god's chat; it plans,
+  hires, and delegates. You can also hand a task to a specific agent.
+- **Steer without disturbing** — pause tools mid-run, halt after the
+  current step, or send a note that lands as context on the next turn.
+  Nothing is typed into the agent's terminal.
+- **Answer when asked** — agents that need a human (credentials, a
+  decision, a review) post to the Ask Me inbox; answers route back to the
+  agent that asked.
+- **Watch the money** — the Command Center shows per-agent and floor-wide
+  spend. Set a per-agent token or USD cap and the breaker pauses that
+  agent alone when it goes over; the floor cap pauses the biggest spender.
+- **Schedule recurring work** — Schedules (in the Command Center) dispatch
+  a prompt to one agent, the orchestrator, or everyone, on an interval or
+  a weekly day/time plan.
+- **Export a session** — any agent's identity, usage, mail, and terminal
+  tail as one Markdown file, useful for audits or handoffs.
+- **Closing time** — quitting the app runs a graceful shutdown: agents
+  park their work and acknowledge before the process exits.
+
+## Settings tour
+
+- **General** — theme, language (English, 简体中文, العربية), god's name.
+- **Prerequisites** — the tool catalog (engines, git, uv, MemPalace) with
+  live install status and one-click "set up everything".
+- **Agents & Models** — per-provider defaults and model picks.
+- **Autonomy & Budgets** — auto mode, circuit-breaker thresholds, spend
+  caps (floor-wide and per-agent).
+- **Connections** — webhooks, Slack, integrations, API keys (stored in
+  the OS credential store).
+- **Voice** — Voice Michael / free-flow dictation providers and keys.
+- **Memory & Knowledge** — agent memory, MemPalace, knowledge graph.
+
 ## Stack
 
 Tauri v2 (Rust + React/TypeScript/Vite). The backend is one native binary —
@@ -66,14 +169,32 @@ no Node runtime to install: lifecycle hooks run through a bundled `hive-hook`
 shim, PTYs via `portable-pty`, secrets via the OS credential store,
 durable state in SQLite/WAL.
 
-## Run
+## Develop
 
 ```bash
 npm install
-npm run tauri dev        # dev build
-npm run tauri build      # release bundle
-cargo test --manifest-path src-tauri/Cargo.toml   # backend suite
+npm run tauri dev        # dev build (backend once, UI hot-reload)
+npm run tauri build      # release bundle → src-tauri/target/release/bundle/
+
+npm test                 # full suite: renderer tests + backend suite
+npm run test:ui          # renderer only (vitest + jsdom, ~20 tests)
+npm run test:rs          # backend only (cargo test: lib + parity + shim +
+                         #   onboarding + e2e suites, ~135 tests)
 ```
+
+## Troubleshooting
+
+- **An engine shows "not installed"** — the picker greys out engines the
+  app can't install for you; install the CLI by hand, then press "check
+  again" in Settings → Prerequisites.
+- **An agent spawns but does nothing** — its engine needs a login first
+  (run `claude login`, `codex login`, etc. once in a normal terminal).
+- **Cost cap tripped unexpectedly** — the circuit breaker blames the
+  biggest spender; its row in the Command Center shows why. Clear or
+  raise the cap there.
+- **The floor is empty after a restart** — the roster mirror lives in
+  `<harness home>/roster.json`; the agents' real sessions live in the
+  hive and respawn on next boot even if the mirror is lost.
 
 ## Credits
 
