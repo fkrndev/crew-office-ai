@@ -156,7 +156,7 @@ pub fn run() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 if let Err(e) = app.deep_link().register_all() {
-                    eprintln!("[deep-link] register_all failed: {e}");
+                    log::warn!("[deep-link] register_all failed: {e}");
                 }
             }
             let harness_home = app
@@ -709,7 +709,7 @@ pub fn run() {
                             .otel_endpoint
                             .set(format!("http://127.0.0.1:{port}"));
                     }
-                    Err(e) => eprintln!("[telemetry] collector not started: {e:#}"),
+                    Err(e) => log::warn!("[telemetry] collector not started: {e:#}"),
                 }
             }
 
@@ -731,7 +731,7 @@ pub fn run() {
                     let app2 = app.handle().clone();
                     std::thread::spawn(move || {
                         if let Err(e) = wh.run(port, hive, app2) {
-                            eprintln!("[webhook] server stopped: {e:#}");
+                            log::warn!("[webhook] server stopped: {e:#}");
                         }
                     });
                 }

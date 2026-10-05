@@ -327,10 +327,10 @@ pub(crate) fn spawn_inner(
                         std::path::Path::new(&args.cwd),
                         &wt_path,
                     ) {
-                        eprintln!("[worktree] dependency link failed: {e}");
+                        log::warn!("[worktree] dependency link failed: {e}");
                     }
                 }
-                Err(e) => eprintln!("[worktree] addWorktree failed: {e}"),
+                Err(e) => log::warn!("[worktree] addWorktree failed: {e}"),
             }
         }
     }
@@ -1122,7 +1122,7 @@ fn ensure_webhook_server(
     let app2 = app.clone();
     std::thread::spawn(move || {
         if let Err(e) = wh.run(port, hive, app2) {
-            eprintln!("[webhook] server stopped: {e:#}");
+            log::warn!("[webhook] server stopped: {e:#}");
             STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     });
@@ -1682,14 +1682,14 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
                     .to_string(),
             );
         }
-        Err(e) => eprintln!("[slack] reply endpoint failed to start: {e}"),
+        Err(e) => log::warn!("[slack] reply endpoint failed to start: {e}"),
     }
     // Public tunnel (upstream slack.ts openTunnel — Slack's servers need a
     // reachable Request URL). Non-fatal: the local handler is the security
     // boundary and stays up even if the tunnel can't be established.
     match crate::misc::start_tunnel(port) {
         Ok((url, child)) => *st.slack_tunnel.lock().unwrap() = Some((url, child)),
-        Err(e) => eprintln!("[slack] tunnel unavailable: {e}"),
+        Err(e) => log::warn!("[slack] tunnel unavailable: {e}"),
     }
     Ok(true)
 }
@@ -1844,10 +1844,10 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
                 // hammering every tick; fix the bot scope and later posts work.
                 notified.insert(id.to_string());
                 persist(&notified);
-                eprintln!("[slack] done-summary for task {id} — giving up (terminal error: {e})");
+                log::warn!("[slack] done-summary for task {id} — giving up (terminal error: {e})");
             }
             Err(e) => {
-                eprintln!("[slack] done-summary for task {id} failed — will retry: {e}");
+                log::warn!("[slack] done-summary for task {id} failed — will retry: {e}");
             }
         }
     }

@@ -21,6 +21,7 @@ dependencies = [
  "jsonschema",
  "junction",
  "keyring",
+ "log",
  "portable-pty",
  "regex",
  "rusqlite",

@@ -733,7 +733,7 @@ pub fn dispatch_webhook_work(
         card["webhook"] = json!({ "tokenHash": h });
     }
     if hive.add_task(&card).is_err() {
-        eprintln!("[webhook] could not create task card");
+        log::warn!("[webhook] could not create task card");
         return false;
     }
     // Body carries ONLY the sender's message + the card id — never the secret,

@@ -532,7 +532,7 @@ impl MemoryPalace {
         ];
         let r = self.run_cli(&args, Duration::from_millis(MINE_TIMEOUT_MS));
         if !r.ok {
-            eprintln!("[memory] mine {id} failed: {}", r.error.unwrap_or_default());
+            log::warn!("[memory] mine {id} failed: {}", r.error.unwrap_or_default());
         }
         r.ok
     }
@@ -577,7 +577,7 @@ impl MemoryPalace {
             }
         }
         if removed > 0 {
-            eprintln!("[memory] reaped {removed} quarantined palace segment(s)");
+            log::warn!("[memory] reaped {removed} quarantined palace segment(s)");
         }
         fresh
     }

@@ -200,7 +200,7 @@ fn finalize_worker_worktree(
     rec: &WorkerRec,
 ) {
     if let Err(e) = crate::git_ops::unlink_worktree_deps(orig_cwd, wt_path) {
-        eprintln!("[worktree] dependency unlink failed: {e}");
+        log::warn!("[worktree] dependency unlink failed: {e}");
     }
     let keep = crate::git_ops::worktree_unintegrated_details(wt_path, &rec.base_branch);
     let register = |st: &AppState| {
@@ -219,7 +219,7 @@ fn finalize_worker_worktree(
     };
     match keep {
         Some((true, detail, branch)) => {
-            eprintln!("[worker] PRESERVING worktree with unintegrated work: {}", wt_path.display());
+            log::warn!("[worker] PRESERVING worktree with unintegrated work: {}", wt_path.display());
             register(st);
             inform_god(
                 &st.hive,
@@ -241,12 +241,12 @@ fn finalize_worker_worktree(
             // deferred GC sweep — upstream does the same so the memory miner
             // can ingest memory.md before the dir is reclaimed.
             if keep.is_none() {
-                eprintln!("[worker] unintegrated check failed; keeping worktree {}", wt_path.display());
+                log::warn!("[worker] unintegrated check failed; keeping worktree {}", wt_path.display());
                 register(st);
                 return;
             }
             if let Err(e) = crate::git_ops::remove_worktree(wt_path) {
-                eprintln!("[worker] removeWorktree failed: {e}");
+                log::warn!("[worker] removeWorktree failed: {e}");
             }
             register(st);
         }
@@ -264,7 +264,7 @@ pub fn finalize_teardown(st: &AppState, id: &str) {
             Some(rec) => finalize_worker_worktree(st, &wt_path, &orig_cwd, &rec),
             None => {
                 if let Err(e) = crate::git_ops::remove_worktree(&wt_path) {
-                    eprintln!("[worktree] removeWorktree failed: {e}");
+                    log::warn!("[worktree] removeWorktree failed: {e}");
                 }
             }
         }
@@ -306,7 +306,7 @@ pub fn gc_preserved_worktrees(st: &AppState) {
         }
         // (b) Still on disk → reclaim ONLY when provably integrated + clean.
         if let Err(err) = crate::git_ops::unlink_worktree_deps(&e.orig_cwd, &e.wt_path) {
-            eprintln!("[worker gc] dependency unlink failed (keeping): {err}");
+            log::warn!("[worker gc] dependency unlink failed (keeping): {err}");
             continue;
         }
         match crate::git_ops::worktree_integrated_against(&e.wt_path, &e.base_branch) {
@@ -314,7 +314,7 @@ pub fn gc_preserved_worktrees(st: &AppState) {
             _ => continue, // keep — fail-safe
         }
         if let Err(err) = crate::git_ops::remove_worktree(&e.wt_path) {
-            eprintln!("[worker gc] removeWorktree failed (keeping {}): {err}", e.worker_id);
+            log::warn!("[worker gc] removeWorktree failed (keeping {}): {err}", e.worker_id);
             continue;
         }
         remove_worker_scratch(st, &e.worker_id);
@@ -339,7 +339,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
     let raw: Value = match fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
         Some(v) => v,
         None => {
-            eprintln!("[worker] unparseable spawn-request: {}", path.display());
+            log::warn!("[worker] unparseable spawn-request: {}", path.display());
             inform_god(
                 &st.hive,
                 "[worker spawn rejected] unparseable request",
@@ -515,9 +515,9 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
     );
     msg.conversation = format!("worker-{req_id}");
     if let Err(e) = st.hive.send_routed(&msg) {
-        eprintln!("[worker] dispatch send failed: {e}");
+        log::warn!("[worker] dispatch send failed: {e}");
     }
-    eprintln!("[worker] spawned {worker_id} (cwd={cwd})");
+    log::warn!("[worker] spawned {worker_id} (cwd={cwd})");
     archive_request(path, ".done");
 }
 

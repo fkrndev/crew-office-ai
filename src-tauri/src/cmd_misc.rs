@@ -592,7 +592,7 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
     let app2 = app.clone();
     std::thread::spawn(move || {
         if let Err(e) = wh.run(port, hive, app2) {
-            eprintln!("[webhook] server stopped: {e:#}");
+            log::warn!("[webhook] server stopped: {e:#}");
         }
         WEBHOOK_BOUND.store(false, Ordering::SeqCst);
         if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
@@ -604,7 +604,7 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
     if WEBHOOK_TUNNEL.lock().unwrap().is_none() {
         match crate::misc::start_tunnel(port) {
             Ok((url, child)) => *WEBHOOK_TUNNEL.lock().unwrap() = Some((url, child)),
-            Err(e) => eprintln!("[webhook] tunnel unavailable: {e}"),
+            Err(e) => log::warn!("[webhook] tunnel unavailable: {e}"),
         }
     }
     let tunnel_url = WEBHOOK_TUNNEL.lock().unwrap().as_ref().map(|(u, _)| u.clone());

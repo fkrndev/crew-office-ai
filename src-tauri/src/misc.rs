@@ -672,7 +672,7 @@ pub fn power_resume_probe(app: &tauri::AppHandle, reason: &str, away_ms: u64) {
         .map(|(id, _)| id.clone())
         .collect();
     if !dead.is_empty() {
-        eprintln!(
+        log::warn!(
             "[power] {reason} (away ~{}s): {}/{} PTY(s) look wedged (process gone): {}",
             away_ms / 1000,
             dead.len(),

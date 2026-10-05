@@ -43,6 +43,7 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-notification = "2.5.1"
 tauri-plugin-opener = "2.7.0"
+log = "0.4.34"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop"] }
 junction = "1"
