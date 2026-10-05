@@ -25,7 +25,7 @@ mod github;
 pub mod hidden_claude;
 mod hire;
 pub mod hive;
-mod hive_admin;
+pub mod hive_admin;
 mod hooks;
 pub mod integrations;
 pub mod kg;

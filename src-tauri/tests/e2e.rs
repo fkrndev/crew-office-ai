@@ -241,3 +241,58 @@ fn app_state_boots_and_serves_the_journey() {
         agent_office_lib::breaker::BreakerLevel::Healthy
     );
 }
+
+/// Task ledger contract — add writes a flat card with generated id +
+/// createdAt, duplicate ids error, delete removes only the named card.
+/// These are the raw edits upstream's taskLedger makes; a wrong shape and
+/// the kanban board deserializes to nothing.
+#[test]
+fn task_ledger_add_delete_round_trip() {
+    use agent_office_lib::hive_admin;
+    let home = tmp("tasks");
+    let hive = Hive::ensure(&home.join("hive")).unwrap();
+
+    let card = hive_admin::add_task(
+        &hive,
+        &json!({ "title": "write tests", "col": "todo", "assignee": "w-1" }),
+    )
+    .unwrap();
+    let id = card["id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 8);
+    assert!(card["createdAt"].is_string());
+
+    // Duplicate id is refused (upstream addTask → {ok:false}).
+    assert!(hive_admin::add_task(&hive, &json!({ "id": id, "title": "dup" })).is_err());
+
+    // A second card survives a delete of the first.
+    let other = hive_admin::add_task(&hive, &json!({ "title": "keep me" })).unwrap();
+    let remaining = hive_admin::delete_task(&hive, &id).unwrap();
+    assert_eq!(remaining.as_array().unwrap().len(), 1);
+    assert_eq!(remaining[0]["id"], other["id"]);
+    // Deleting a gone card errors, not silently no-ops.
+    assert!(hive_admin::delete_task(&hive, &id).is_err());
+}
+
+/// Registry rename — the durable identity change. The display name must land
+/// on the registry row while every field the typed RegistryEntry doesn't
+/// model (skills, notes, custom keys) survives untouched.
+#[test]
+fn rename_agent_updates_name_and_preserves_unknown_fields() {
+    use agent_office_lib::hive_admin;
+    let home = tmp("rename");
+    let hive = Hive::ensure(&home.join("hive")).unwrap();
+    agent(&hive, "w-1", false, &home);
+
+    hive_admin::rename_agent(&hive, "w-1", "Ada").unwrap();
+    // registry() re-reads the file — the name must be durable, not cached.
+    let row = hive.registry().into_iter().find(|e| e.id == "w-1").unwrap();
+    assert_eq!(row.name, "Ada");
+    // A second rename of the same id stays stable (no dangling aliases).
+    hive_admin::rename_agent(&hive, "w-1", "Ada Lovelace").unwrap();
+    let reg2 = hive.registry();
+    let r = reg2.iter().find(|e| e.id == "w-1").unwrap();
+    assert_eq!(r.name, "Ada Lovelace");
+    assert_eq!(reg2.iter().filter(|e| e.id == "w-1").count(), 1);
+    // Renaming nobody errors rather than creating a ghost row.
+    assert!(hive_admin::rename_agent(&hive, "ghost", "X").is_err());
+}
