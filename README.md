@@ -74,3 +74,11 @@ npm run tauri dev        # dev build
 npm run tauri build      # release bundle
 cargo test --manifest-path src-tauri/Cargo.toml   # backend suite
 ```
+
+## Credits
+
+Office floor tilesets are **Modern Interiors - RPG Tileset [16x16]** by
+[LimeZu](https://limezu.itch.io/) — used under the Complete Version licence
+(purchased 2026-08-20). Character portraits and walking sprites are
+procedurally drawn in-app. See `src/assets/ATTRIBUTION.md` for the full
+license details.
