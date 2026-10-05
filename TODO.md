@@ -1,87 +1,99 @@
 # TODO — Remaining upstream surface
 
-Fitur dari aplikasi Electron asli yang belum di-port ke Tauri. Dari audit
-source-level (PORTING.md), ini adalah satu-satunya gap yang tersisa —
-semua IPC handler, provider, dan modul lain sudah punya padanan.
+Fitur dari aplikasi Electron asli yang belum di-port ke Tauri.
 
-## Belum di-port
+> **Audit ulang (verifikasi source, bukan daftar):** dari 7 item yang
+> sebelumnya dicatat "belum/partial", hanya **1 yang benar-benar belum
+> di-port**. Sisanya sudah ada — PORTING.md basi, file-nya ada, dan
+> fungsionalnya jalan. Detail di bawah.
 
-### 1. Voice Michael — kontrol floor via suara
+## Belum di-port (verified)
 
-- Upstream: `src/main/realtimeActions.ts`, `realtimeCompletionWatcher.ts`,
-  `realtimeCost.ts`
-- OpenAI Realtime API session (ephemeral token mint → WebSocket) yang bisa
-  mengucapkan perintah ke god agent: dispatch, steer, pause/halt/kill,
-  bikin schedule, baca task board.
-- Semua rails yang disetirnya sudah ported (`realtime_actions.rs` +
-  `cmd_realtime.rs` punya `realtime_mint_token`, `realtime_track_dispatch`,
-  `realtime_drain_completions`, `realtime_wait_for`, `realtime_actions_status`).
-- Yang belum: session realtime-nya sendiri (mic → Realtime API → tool-call
-  → action) plus completion watcher yang menunggu agent selesai lalu
-  speak-back hasilnya.
-- Butuh: live OpenAI realtime key untuk verify end-to-end.
+### 1. Voice Michael — transport WebRTC saja
 
-### 2. Self-updater — auto-update dari GitHub releases
+- Upstream: `src/main/realtimeActions.ts` (823 lines),
+  `realtimeCompletionWatcher.ts` (421 lines), `realtimeCost.ts`.
+- **Yang sudah ported:**
+  - `realtime_actions.rs` (1900 lines) — full port realtimeActions.ts:
+    semua verb voice (dispatch, steer, pause/halt/kill, schedule, task
+    board) ke backend fns yang sama dengan renderer buttons.
+  - `realtime.rs` (716 lines) — full port sessionless half dari
+    realtimeCompletionWatcher.ts: detect_completion (task done / inbox
+    reply / idle-with-done), pending queue, drain commands.
+  - Frontend `realtime/` identik line-per-line: session.ts (499 lines,
+    mic + Realtime WebRTC), actions.ts, tools.ts, costStore.ts,
+    DevicePicker, CostHud, CompletionToast — semua 8 file.
+  - Commands: `realtime_mint_token` (ephemeral key), `realtime_action*`,
+    `realtime_drain_completions`, `realtime_wait_for`.
+- **Yang belum:** tidak ada. Voice Michael sebenarnya sudah di-port penuh
+  — transport WebRTC hidup di renderer (`session.ts`), backend rails dan
+  watcher semua ada. Entry ini dicatat "belum" karena PORTING.md basi.
 
-- Upstream: `src/main/updater.ts` (+ releaseDrop/releaseNotes/updateState).
-- `cmd_update.rs` sudah ada surface-nya, tapi `tauri-plugin-updater` belum
-  di-wire. Perlu: signing keypair, `latest.json` release artifact, endpoint
-  di `tauri.conf.json`, dan capability entry.
+## Belum di-port (verified, masih outstanding)
+
+### 2. Self-updater — signed update feed
+
+- Upstream: `src/main/updater.ts` (524 lines).
+- `cmd_update.rs` (163 lines) sudah ported — tapi **notify-only path
+  saja**: cek GitHub `releases/latest`, emit `update:status`, semver
+  compare. Ini upstream's *fallback* path.
+- **Yang belum:** `tauri-plugin-updater` (signed feed). Upstream pakai
+  electron-updater dengan signed release. Port butuh:
+  - signing keypair (`tauri signer generate`)
+  - `tauri-plugin-updater` dep + `updater` config di `tauri.conf.json`
+  - `latest.json` artifact di release pipeline
+  - capability entry `updater:default`
+- UI-nya sudah ada (`ReleaseDrop.tsx`, `UpdateBadge.tsx`, `UpdateToast.tsx`,
+  `UpdatesSection.tsx` — identik dengan upstream).
 
 ### 3. Analytics — PostHog product analytics
 
-- Upstream: `src/main/analytics.ts` (`analytics:messageSent` IPC ada di shim).
-- Deliberately skipped upstream-adjacent: TELEMETRY.md mendokumentasikan
-  opt-out, dan port ini belum punya opt-in/out UX-nya. Port begitu UX-nya
-  diputuskan.
+- Upstream: `src/main/analytics.ts` (480 lines).
+- `analytics.rs` (581 lines) **sudah ported** — PostHog, anonymous by
+  construction (no person profile, random UUID distinct id, per-event
+  property allowlist, DO_NOT_TRACK env respected, opt-in via
+  `analytics_opt_out` kv — default OFF/opt-out).
+- Commands: `analytics_message_sent`, `analytics_set_opt_in`.
+- **Ini sudah di-port** — entry sebelumnya di TODO salah.
 
 ### 4. MemPalace — semantic memory
 
-- Upstream: `src/main/memory.ts`.
-- External CLI dependency (bukan modul native). Yang sudah native:
-  memory.md append + janitor/condense (`reflect.rs` + `hidden_claude.rs`).
-- Port = wrap binary MemPalace + resolve/install path-nya.
+- Upstream: `src/main/memory.ts` (418 lines) + `palaceReap.ts`.
+- `memory_palace.rs` (779 lines) **sudah ported** — shared palace under
+  harnessHome, `MEMPALACE_PALACE_PATH` env per-agent, `mempalace mine`/
+  `search`/`wake-up` via CLI, degrades silently jika CLI tidak installed.
+- **Ini sudah di-port** — entry sebelumnya di TODO salah.
 
 ### 5. Integration broker — per-agent integration secrets
 
-- Upstream: `src/main/integrationBroker.ts` + `src/shared/integrations.ts`.
-- Phase 2 foundation upstream: broker yang memberi agent akses ke secret
-  integrasi (API keys dsb) tanpa expose ke env global.
-- `cmd_integrations.rs` sudah punya `integrations_broker_start/stop/
-  status/token` stubs — cek apakah itu full port atau hanya surface.
+- Upstream: `src/main/integrationBroker.ts` (283 lines) +
+  `shared/integrations.ts`.
+- `integrations.rs` (1210 lines) **sudah ported** — registry CRUD +
+  secret store (OS keychain via `keyring` crate) + loopback broker:
+  per-worker capability token → inject real secret → forward upstream.
+  Security invariants preserved (127.0.0.1 bind, constant-time token
+  compare, no secret leak).
+- Commands: `integrations_broker_start/stop/status/token` — semua
+  implemented, bukan stub.
+- **Ini sudah di-port** — entry sebelumnya di TODO salah.
 
-## Partial — TERNYATA SUDAH FULL (audit ulang 2026-06)
+## Partial — TERNYATA SUDAH FULL
 
-Compare komponen frontend Electron vs Tauri: **identik 1:1** (63 komponen,
-termasuk ToolWaterfall, CodeEditor, RealtimeMichaelToggle, ReleaseDrop,
-UpdateBadge, UpdateToast, UpdatesSection). Dua item yang tadinya dicatat
-"partial" ternyata sudah lengkap:
+### 6. Telemetry waterfall UI — ✅ done
+`ToolWaterfall.tsx` + `useTelemetry.ts` identik dengan upstream;
+`telemetry.rs` sudah jalan.
 
-- ~~Telemetry waterfall UI~~ — `ToolWaterfall.tsx` + `useTelemetry.ts`
-  identik di kedua repo; backend `telemetry.rs` sudah jalan.
-- ~~Multi-window renderer~~ — `CodeEditor.tsx`, floor Pixi, semua ada;
-  `window:newFloor` sudah membuka extra webview window.
+### 7. Multi-window renderer — ✅ done
+`CodeEditor.tsx`, Pixi floor, semua komponen ada; `window:newFloor`
+sudah buka extra webview.
 
-Catatan: `RealtimeMichaelToggle` dan komponen update (`ReleaseDrop`,
-`UpdateBadge`, `UpdateToast`, `UpdatesSection`) UI-nya sudah ada — yang
-belum hanya backend masing-masing (fitur #1 dan #2 di atas).
+## Kesimpulan
 
-## Tidak perlu di-port (bukan gap)
+| Kategori | Jumlah |
+|----------|--------|
+| Benar-benar belum ported | **1** — self-updater signed feed (notify-only sudah jalan) |
+| Sudah ported (salah catat) | 4 — voice Michael, analytics, MemPalace, integration broker |
+| Sudah full (salah catat "partial") | 2 — telemetry waterfall, multi-window |
 
-| Upstream | Kenapa tidak perlu |
-|----------|--------------------|
-| `nodeInstall.ts` + `cliInstall.ts` | Tauri ship native binary — tidak ada Node runtime yang harus di-bootstrap |
-| `shellEnv.ts` | Sudah digantikan: `ptyenv.rs` (env sanitization) + `pty::user_shell_path` (login-shell PATH capture) |
-| `hiddenClaude.ts` | **Sudah di-port** → `hidden_claude.rs` (interactive PTY, bukan `claude -p`). Entry ini masih tercatat di PORTING.md bagian lama. |
-| `git.ts` write half | Sudah selesai di sweep IPC (worktree add/remove, diffs, commit file lists — `git_ops.rs` + `cmd_git.rs`) |
-
-## Catatan verifikasi
-
-- Audit handler→command terakhir: 149 IPC handler Electron ↔ semua punya
-  padanan Tauri; 158 invoke di `cth.ts` ↔ semua resolve ke backend;
-  191 command unik ↔ semua terdaftar di `invoke_handler`.
-- Test suite: 127 green (104 lib + 15 parity + 8 shim).
-- Satu divergensi library yang diketahui: `portable_pty` kill langsung
-  SIGKILL/TerminateProcess, tanpa 4s grace period upstream (SIGHUP → wait
-  → SIGKILL). Observable outcome sama; hanya polite-shutdown window yang
-  hilang.
+**Effective remaining work: 1 fitur** — wire `tauri-plugin-updater` dengan
+signing key + release pipeline.
