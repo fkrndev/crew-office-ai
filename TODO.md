@@ -50,21 +50,21 @@ semua IPC handler, provider, dan modul lain sudah punya padanan.
 - `cmd_integrations.rs` sudah punya `integrations_broker_start/stop/
   status/token` stubs — cek apakah itu full port atau hanya surface.
 
-## Partial — sebagian sudah ada
+## Partial — TERNYATA SUDAH FULL (audit ulang 2026-06)
 
-### 6. Telemetry waterfall UI
+Compare komponen frontend Electron vs Tauri: **identik 1:1** (63 komponen,
+termasuk ToolWaterfall, CodeEditor, RealtimeMichaelToggle, ReleaseDrop,
+UpdateBadge, UpdateToast, UpdatesSection). Dua item yang tadinya dicatat
+"partial" ternyata sudah lengkap:
 
-- Backend `telemetry.rs` sudah: embedded OTLP collector, per-session
-  accum → per-agent sample, 200-span ring, tool_decision,
-  api_error→breaker, OTEL_* env injection saat spawn claude.
-- Belum: waterfall visualization di frontend + fallback path
-  grok/costLifetime (lihat PORTING.md line 27).
+- ~~Telemetry waterfall UI~~ — `ToolWaterfall.tsx` + `useTelemetry.ts`
+  identik di kedua repo; backend `telemetry.rs` sudah jalan.
+- ~~Multi-window renderer~~ — `CodeEditor.tsx`, floor Pixi, semua ada;
+  `window:newFloor` sudah membuka extra webview window.
 
-### 7. Multi-window renderer
-
-- `window:newFloor` sudah membuka extra webview window.
-- Belum: Monaco editor dan Pixi office floor penuh di window terpisah
-  (upstream punya CodeEditor + Pixi surfaces per-window).
+Catatan: `RealtimeMichaelToggle` dan komponen update (`ReleaseDrop`,
+`UpdateBadge`, `UpdateToast`, `UpdatesSection`) UI-nya sudah ada — yang
+belum hanya backend masing-masing (fitur #1 dan #2 di atas).
 
 ## Tidak perlu di-port (bukan gap)
 
