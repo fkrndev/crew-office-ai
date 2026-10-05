@@ -14,12 +14,12 @@ const CFG = (autoMode: boolean, defaultCommand = 'claude') =>
 describe('buildSpawnCommand', () => {
   it('hermes: preset binary + --model + --yolo under auto mode', () => {
     expect(buildSpawnCommand(CFG(true), 'anthropic/claude-sonnet-4.6', 'hermes'))
-      .toBe('hermes --cli --model anthropic/claude-sonnet-4.6 --yolo');
+      .toBe('hermes chat --model anthropic/claude-sonnet-4.6 --yolo');
   });
 
   it('hermes: no --yolo when autoMode is off', () => {
     expect(buildSpawnCommand(CFG(false), undefined, 'hermes'))
-      .toBe('hermes --cli');
+      .toBe('hermes chat');
   });
 
   it('openclaw: tui --local; auto mode adds NO flag (full policy is the default)', () => {

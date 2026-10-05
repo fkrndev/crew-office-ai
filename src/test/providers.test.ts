@@ -20,7 +20,7 @@ describe('provider presets', () => {
     expect(hermes).toBeTruthy();
     expect(openclaw).toBeTruthy();
     // Spawnable defaults: a real command + a verified auto flag.
-    expect(hermes!.defaultCommand).toBe('hermes --cli');
+    expect(hermes!.defaultCommand).toBe('hermes chat');
     expect(hermes!.autoModeFlag).toBe('--yolo');
     expect(hermes!.supportsModel).toBe(true);
     expect(hermes!.canReceiveInbox).toBe(true); // real hook bridge

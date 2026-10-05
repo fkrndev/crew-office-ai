@@ -571,21 +571,22 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
   },
   {
     // Hermes — Nous Research's agent CLI (NousResearch/hermes-agent).
-    // `hermes --cli` forces the classic prompt_toolkit REPL even when the
-    // user's config.yaml defaults to the Ink TUI — deterministic for a PTY.
+    // `hermes chat` opens the classic prompt_toolkit REPL — deterministic for
+    // a PTY. (An earlier preset used `--cli`; that flag does not exist on
+    // v0.15.x — argparse rejects it and the process exits instantly, which
+    // surfaced as a spawn that "never came up".)
     // Non-hiveAware in the Claude-flag sense, BUT Hermes has a real hook
     // bridge: install_hermes_hooks copies the user's config + env into a
     // per-agent home and wires shell_hooks.py through the hive-hook shim's
     // --hermes translator mode, so live status + Stop→inbox-drain work like
     // agy/codex.
-    // Flags verified against hermes_cli/_parser.py: --yolo bypasses all
-    // dangerous-command approval prompts (auto mode); --model takes
-    // provider/model ids (e.g. anthropic/claude-sonnet-4.6); --resume takes
-    // a session id or 'latest'; -q would seed a first turn, but a long hive
-    // protocol on argv is fragile — type the protocol into the REPL instead.
+    // Flags verified against the installed v0.15.2 parser: `chat` accepts
+    // --yolo (bypasses dangerous-command approvals — auto mode), -m/--model,
+    // --resume, -q would seed a first turn, but a long hive protocol on argv
+    // is fragile — type the protocol into the REPL instead.
     id: 'hermes',
     label: 'Hermes',
-    defaultCommand: 'hermes --cli',
+    defaultCommand: 'hermes chat',
     commandGroups: [],
     autoModeFlag: '--yolo',
     autoFlag: '--yolo',
