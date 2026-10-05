@@ -1,17 +1,27 @@
 //! End-to-end floor lifecycle — one harness home through the whole operator
-//! journey, exercised at the same store/module layer the commands call:
+//! journey.
 //!
-//!   ensure home (hive + config + roster stores) → wizard config write →
-//!   hire agents → god dispatches mail → worker inbox → roster mirror →
-//!   mission due → per-agent budget trips only that agent.
+//! Two layers, matching how Tauri apps are meant to be tested (official
+//! guidance: thin commands, testable cores — the `tauri::test` MockRuntime
+//! path would need every command generic over `R: Runtime` for no extra
+//! behavioural coverage):
 //!
-//! The #[tauri::command] fns take an AppHandle, so they stay thin and are
-//! covered transitively: every leg here calls the same underlying function.
+//!   - module/store level: ConfigStore::update, Hive, RosterStore, missions —
+//!     the functions the commands delegate to;
+//!   - AppState level: `commands::AppState::new(harness_home)` is the REAL
+//!     state object every `#[tauri::command]` resolves via `state(&app)` —
+//!     constructing it exercises boot, hive seeding, hook staging, DB open,
+//!     and every store exactly as the app does.
+//!
+//! The IPC boundary itself stays untested by design: the command fns are
+//! 1–5 line delegations, and a true renderer↔backend pass is what the
+//! optional WebDriver suite (@wdio/tauri-service) is for, if we ever want it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use agent_office_lib::config::{Config, ConfigStore};
+use agent_office_lib::commands::AppState;
+use agent_office_lib::config::ConfigStore;
 use agent_office_lib::hive::{Hive, PartialMessage, RegistryEntry};
 use agent_office_lib::missions::{is_mission_due, mission_due_ms, ScheduledMission};
 use agent_office_lib::roster::RosterStore;
@@ -157,4 +167,77 @@ fn scheduled_mission_fires_when_due() {
     // Disabled missions are never armed — the gate sits in mission_due_ms.
     m.enabled = false;
     assert_eq!(mission_due_ms(&m, 1_000 + 120_000, &HashMap::new()), None);
+}
+
+/// The REAL state object — `state(&app)` in every command resolves to this.
+/// Booting it on a fresh home exercises the entire init path the app takes:
+/// hive seeding, config load + mission seeding, hook-bin staging, DB open.
+/// Then the whole journey runs against the same fields commands touch.
+#[test]
+fn app_state_boots_and_serves_the_journey() {
+    let home = tmp("appstate");
+    let st = AppState::new(home.clone()).unwrap();
+
+    // Boot side-effects a command-level test would otherwise fake.
+    assert!(home.join("hive/PROTOCOL.md").exists());
+    assert!(home.join("harness.db").exists());
+    // Fresh-home seed: default missions landed through the config store.
+    let cfg_missions = st.config.lock().unwrap().missions.len();
+    assert!(cfg_missions >= 1, "seed_missions should populate defaults");
+
+    // Wizard finish through the same store the command calls.
+    let patch = json!({
+        "onboardingComplete": true,
+        "harnessHome": home.display().to_string(),
+        "godProvider": "claude"
+    });
+    let (cfg, _raw) = st.config_store.update(patch.as_object().unwrap()).unwrap();
+    *st.config.lock().unwrap() = cfg;
+    let on_disk: Value =
+        serde_json::from_str(&fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
+    assert_eq!(on_disk["onboardingComplete"], true);
+
+    // Agents + mail through st.hive — the Arc the commands share.
+    st.hive
+        .register_agent(&RegistryEntry {
+            id: "god-1".into(),
+            name: "god-1".into(),
+            provider: "claude".into(),
+            role: "orchestrator".into(),
+            cwd: home.join("god-1").display().to_string(),
+            is_god: true,
+            status: "idle".into(),
+            session_id: None,
+            command: String::new(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    st.hive
+        .send_partial(
+            &PartialMessage {
+                to: Some("god-1".into()),
+                act: Some("done".into()),
+                body: Some("worker reporting".into()),
+                ..Default::default()
+            },
+            "worker-1",
+        )
+        .unwrap();
+    assert!(st.hive.inbox("god-1").unwrap().iter().any(|m| m.body == "worker reporting"));
+
+    // Roster mirror + persist store — same stores the commands wrap.
+    st.roster
+        .write(&json!({
+            "agents": [{ "id": "a1" }], "archived": [], "restorable": [],
+            "queues": {}, "selectedId": "a1"
+        }))
+        .unwrap();
+    assert!(st.roster.read().is_some());
+
+    // Breaker state defaults — the floor starts un-paused.
+    assert_eq!(
+        st.breaker.lock().unwrap().level_for("a1"),
+        agent_office_lib::breaker::BreakerLevel::Healthy
+    );
 }
