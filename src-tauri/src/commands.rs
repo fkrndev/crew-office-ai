@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::breaker::CircuitBreaker;
@@ -2800,14 +2801,21 @@ pub fn skills_catalog(
 }
 
 #[tauri::command(async)]
-pub fn skills_install(url: String, name: String) -> Result<String, String> {
-    crate::skills::install_skill(&url, &name)
+/// Upstream returns {ok, path?} | {ok:false, error} — the renderer's res.ok
+/// check fails on a bare Ok(String), so wrap instead of Result<>.
+pub fn skills_install(url: String, name: String) -> Value {
+    match crate::skills::install_skill(&url, &name) {
+        Ok(path) => serde_json::json!({ "ok": true, "path": path }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
 }
 
 #[tauri::command(async)]
-pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Result<bool, String> {
-    crate::skills::uninstall_skill(&path, &cwds)?;
-    Ok(true)
+pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Value {
+    match crate::skills::uninstall_skill(&path, &cwds) {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
 }
 
 // ─── trigger ledger (inbound webhook history + verdicts) ────────────────────
