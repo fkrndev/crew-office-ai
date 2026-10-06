@@ -922,10 +922,21 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         if let Some(bin) = &st.hook_bin {
             let seed = {
                 let cfg = st.config.lock().unwrap();
-                let api_key = crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK")
-                    .or_else(|| crate::misc::secret_get("PROVIDER_KEY_OPENAI"));
+                let base_url = cfg.provider_base_urls.get("hermes").cloned();
+                // First-class hermes provider when the URL says DeepSeek —
+                // hermes reads DEEPSEEK_API_KEY natively; anything else is the
+                // generic "custom" OpenAI-compatible route.
+                let provider = base_url.as_deref().map(|u| {
+                    if u.contains("deepseek.com") { "deepseek" } else { "custom" }.to_string()
+                });
+                let api_key = match provider.as_deref() {
+                    Some("deepseek") => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK"),
+                    _ => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK")
+                        .or_else(|| crate::misc::secret_get("PROVIDER_KEY_OPENAI")),
+                };
                 crate::hive::HermesSeed {
-                    base_url: cfg.provider_base_urls.get("hermes").cloned(),
+                    provider,
+                    base_url,
                     model: cfg.provider_default_models.get("hermes").cloned(),
                     api_key,
                 }
