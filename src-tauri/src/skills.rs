@@ -140,6 +140,113 @@ fn scan_plugin_dir(dir: &Path, provider: &str, scope: &str, out: &mut Vec<LocalS
     }
 }
 
+/// Where the app-shipped skill pack lives. Packaged builds get it as
+/// `<exe>/resources/skills`; dev runs (target/debug/agent-office.exe) fall
+/// back to the source tree via CARGO_MANIFEST_DIR so `tauri dev` sees the
+/// same set a shipped build would.
+pub fn bundled_skills_dir() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let p = exe.parent()?.join("resources").join("skills");
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("skills");
+    if dev.is_dir() {
+        return Some(dev);
+    }
+    None
+}
+
+/// One bundled skill row for the offline picker: frontmatter name/desc plus
+/// `installed` = already present under ~/.claude/skills (user scope).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundledSkill {
+    pub name: String,
+    pub dir_name: String,
+    pub description: String,
+    pub category: String,
+    pub installed: bool,
+}
+
+pub fn list_bundled_skills() -> Vec<BundledSkill> {
+    let Some(dir) = bundled_skills_dir() else { return Vec::new() };
+    let user_root = dirs::home_dir().unwrap_or_default().join(".claude").join("skills");
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(&dir) else { return out };
+    for e in rd.flatten() {
+        let skill_dir = e.path();
+        if !skill_dir.is_dir() || !skill_dir.join("SKILL.md").exists() {
+            continue;
+        }
+        let dir_name = e.file_name().to_string_lossy().to_string();
+        let (name, desc) = fs::read_to_string(skill_dir.join("SKILL.md"))
+            .map(|t| parse_skill_frontmatter(&t))
+            .unwrap_or((None, None));
+        // Flat bundled dir — bucket by name keywords so the UI can group.
+        let n = dir_name.to_lowercase();
+        let category = if n.contains("meta") || n.contains("facebook") || n.contains("ads") || n.contains("ad-") {
+            "ads"
+        } else if n.contains("tiktok") || n.contains("shopee") || n.contains("ecommerce")
+            || n.contains("marketplace") || n.contains("store") || n.contains("product")
+            || n.contains("inventory") || n.contains("wholesale") || n.contains("seller")
+        {
+            "commerce"
+        } else if n.contains("customer") || n.contains("ticket") || n.contains("support")
+            || n.contains("sentiment") || n.contains("reply") || n.contains("escalat")
+            || n.contains("refund") || n.contains("whatsapp") || n.contains("csat")
+            || n.contains("tone") || n.contains("translate") || n.contains("macro")
+            || n.contains("vip") || n.contains("angry")
+        {
+            "support"
+        } else if n.contains("cold") || n.contains("sales") || n.contains("outreach")
+            || n.contains("lead") || n.contains("pitch") || n.contains("proposal")
+        {
+            "sales"
+        } else {
+            "general"
+        };
+        let installed = user_root.join(&dir_name).join("SKILL.md").exists()
+            || name.as_deref().is_some_and(|n| user_root.join(n).join("SKILL.md").exists());
+        out.push(BundledSkill {
+            name: name.unwrap_or_else(|| dir_name.clone()),
+            dir_name: dir_name.clone(),
+            description: desc.unwrap_or_default(),
+            category: category.to_string(),
+            installed,
+        });
+    }
+    out.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
+    out
+}
+
+/// Copy one bundled skill folder into the user skills root. The dir_name must
+/// resolve inside the bundled dir — no traversal, same paranoia as the
+/// network installer.
+pub fn install_bundled_skill(dir_name: &str) -> Result<String, String> {
+    let Some(root) = bundled_skills_dir() else {
+        return Err("no bundled skills dir".into());
+    };
+    let src = root.join(dir_name);
+    let canon = src.canonicalize().map_err(|e| e.to_string())?;
+    if !canon.starts_with(root.canonicalize().map_err(|e| e.to_string())?)
+        || !canon.join("SKILL.md").exists()
+    {
+        return Err("not a bundled skill".into());
+    }
+    let dest = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("skills")
+        .join(dir_name);
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    crate::hive::copy_dir(&canon, &dest).map_err(|e| e.to_string())?;
+    Ok(dest.display().to_string())
+}
+
 /// Everything installed, deduped by (provider,name) with the most specific
 /// scope winning — the same precedence the CLIs apply.
 pub fn list_local_skills(cwds: &[String], bundled_dir: Option<&Path>) -> Vec<LocalSkill> {
@@ -702,6 +809,25 @@ mod tests {
         );
         assert_eq!(d2.as_deref(), Some("first line second line"));
         assert_eq!(parse_skill_frontmatter("no frontmatter"), (None, None));
+    }
+
+    /// The shipped pack: every bundled dir must carry a SKILL.md and the
+    /// listing must surface it with a category + no false "installed" flag.
+    /// Runs against the real resources/skills (dev path fallback).
+    #[test]
+    fn bundled_catalog_lists_every_shipped_skill() {
+        let list = list_bundled_skills();
+        assert!(!list.is_empty(), "bundled_skills_dir should resolve in dev");
+        assert!(list.iter().all(|s| !s.name.is_empty() && !s.dir_name.is_empty()));
+        assert!(list.iter().all(|s| ["ads", "commerce", "support", "sales", "general"].contains(&s.category.as_str())));
+    }
+
+    #[test]
+    fn install_bundled_rejects_traversal() {
+        assert!(install_bundled_skill("../..").is_err());
+        assert!(install_bundled_skill("..").is_err());
+        assert!(install_bundled_skill("").is_err());
+        assert!(install_bundled_skill("no-such-skill-xyz").is_err());
     }
 
     #[test]

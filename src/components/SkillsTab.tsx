@@ -12,9 +12,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
-import type { LocalSkill, CatalogSkill } from '@/skillsTypes';
+import type { LocalSkill, CatalogSkill, BundledSkill } from '@/skillsTypes';
 
-type Mode = 'installed' | 'browse';
+type Mode = 'installed' | 'browse' | 'offline';
 
 const PROVIDER_LABEL: Record<LocalSkill['provider'], string> = {
   claude: 'Claude Code',
@@ -40,6 +40,7 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
   const [query, setQuery] = useState('');
   const [local, setLocal] = useState<LocalSkill[] | null>(null);
   const [catalog, setCatalog] = useState<CatalogSkill[] | null>(null);
+  const [bundled, setBundled] = useState<BundledSkill[] | null>(null);
   const [catalogMeta, setCatalogMeta] = useState<{ stale: boolean; error?: string; fetchedAt: number } | null>(null);
   const [owner, setOwner] = useState<string>('all');
   const [category, setCategory] = useState<string>('all');
@@ -67,7 +68,12 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
     } finally { setBusy(false); }
   }, [t]);
 
+  const loadBundled = useCallback(async () => {
+    try { setBundled(await window.cth.skillsBundled()); } catch { setBundled([]); }
+  }, []);
+
   useEffect(() => { void loadLocal(); }, [loadLocal]);
+  useEffect(() => { if (mode === 'offline' && bundled === null) void loadBundled(); }, [mode, bundled, loadBundled]);
   // The catalog is fetched only when the user actually opens Browse — no network
   // call for someone who just wanted to see what is installed.
   useEffect(() => { if (mode === 'browse' && catalog === null) void loadCatalog(); }, [mode, catalog, loadCatalog]);
@@ -114,6 +120,35 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
     return list.filter((s) =>
       s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)).length;
   }, [catalog, owner, category, q]);
+
+  const shownBundled = useMemo(() => {
+    let list = bundled ?? [];
+    if (category !== 'all') list = list.filter((s) => s.category === category);
+    if (q) list = list.filter((s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
+    return list;
+  }, [bundled, category, q]);
+
+  const bundledCategories = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of bundled ?? []) counts.set(s.category, (counts.get(s.category) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [bundled]);
+
+  const installBundled = async (s: BundledSkill) => {
+    setAction((a) => ({ ...a, [`bundled:${s.dirName}`]: { busy: true } }));
+    try {
+      const res = await window.cth.skillsInstallBundled(s.dirName);
+      if (res.ok) {
+        setAction((a) => ({ ...a, [`bundled:${s.dirName}`]: { done: t('skillsTab.installed') } }));
+        void loadLocal();
+        void loadBundled(); // installed flag flips
+      } else {
+        setAction((a) => ({ ...a, [`bundled:${s.dirName}`]: { error: res.error } }));
+      }
+    } catch (e) {
+      setAction((a) => ({ ...a, [`bundled:${s.dirName}`]: { error: e instanceof Error ? e.message : t('skillsTab.installFailed') } }));
+    }
+  };
 
   const install = async (c: CatalogSkill) => {
     setAction((a) => ({ ...a, [c.url]: { busy: true } }));
@@ -176,10 +211,13 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
         <button onClick={() => setMode('browse')} style={tabBtn('browse', t('skillsTab.browse'))}>
           {t('skillsTab.browse')}{catalog ? ` (${catalog.length})` : ''}
         </button>
+        <button onClick={() => setMode('offline')} style={tabBtn('offline', t('skillsTab.offline'))}>
+          {t('skillsTab.offline')}{bundled ? ` (${bundled.length})` : ''}
+        </button>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={mode === 'installed' ? t('skillsTab.searchInstalled') : t('skillsTab.searchCatalog')}
+          placeholder={mode === 'installed' ? t('skillsTab.searchInstalled') : mode === 'offline' ? t('skillsTab.searchOffline') : t('skillsTab.searchCatalog')}
           style={{
             flex: 1, minWidth: 140, padding: '4px 8px',
             background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)',
@@ -187,7 +225,7 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
             fontFamily: 'var(--cth-font-ui)', fontSize: 12
           }}
         />
-        {mode === 'browse' && (
+        {(mode === 'browse' || mode === 'offline') && (
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
@@ -200,7 +238,7 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
             }}
           >
             <option value="all">{t('skillsTab.allCategories')}</option>
-            {categories.map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
+            {(mode === 'offline' ? bundledCategories : categories).map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
           </select>
         )}
         {mode === 'browse' && (
@@ -221,7 +259,7 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
         <PixelButton
           variant="ghost"
           size="sm"
-          onClick={() => (mode === 'installed' ? void loadLocal() : void loadCatalog(true))}
+          onClick={() => (mode === 'installed' ? void loadLocal() : mode === 'offline' ? void loadBundled() : void loadCatalog(true))}
           disabled={busy}
         >{busy ? t('skillsTab.loading') : t('skillsTab.refresh')}</PixelButton>
       </div>
@@ -288,6 +326,55 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
                 </div>
               ))}
             </div>
+          )
+        ) : mode === 'offline' ? (
+          bundled === null ? <Muted>{t('skillsTab.loadingCatalog')}</Muted>
+          : shownBundled.length === 0 ? (
+            <Muted>{t('skillsTab.nothingMatches')}</Muted>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', marginBottom: 8 }}>
+                {t('skillsTab.offlineNote', { count: shownBundled.length })}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {shownBundled.map((s) => {
+                  const key = `bundled:${s.dirName}`;
+                  const a = action[key];
+                  return (
+                    <div key={s.dirName} style={rowStyle}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ fontFamily: 'var(--cth-font-display)', fontSize: 11, flex: 1, minWidth: 0 }}>
+                          {s.name.toUpperCase()}
+                        </span>
+                        <Chip text={s.category} />
+                        <Chip text="offline" tone="accent" />
+                      </div>
+                      {s.description && (
+                        <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.45 }}>
+                          {s.description.length > 220 ? `${s.description.slice(0, 220)}…` : s.description}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {s.installed ? (
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('skillsTab.installed')}</span>
+                        ) : (
+                          <button
+                            onClick={() => void installBundled(s)}
+                            disabled={!!a?.busy || !!a?.done}
+                            style={actionBtn(a?.done ? 'quiet' : 'primary')}
+                          >
+                            {a?.busy ? t('skillsTab.installing') : a?.done ?? t('skillsTab.install')}
+                          </button>
+                        )}
+                        {a?.error && (
+                          <span style={{ fontSize: 11, color: 'var(--cth-coral)', flex: 1, minWidth: 0 }}>{a.error}</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )
         ) : catalog === null ? <Muted>{t('skillsTab.loadingCatalog')}</Muted>
         : (

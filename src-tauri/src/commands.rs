@@ -897,13 +897,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // (same policy as identity.md — overwritten so the shipped set tracks
     // the app; missing/empty source is a no-op, never a spawn blocker).
     {
-        let bundled = std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
-        if let Some(src) = bundled {
-            if src.is_dir() {
-                let _ = crate::hive::copy_dir(&src, &agent_dir.join(".claude").join("skills"));
-            }
+        if let Some(src) = crate::skills::bundled_skills_dir() {
+            let _ = crate::hive::copy_dir(&src, &agent_dir.join(".claude").join("skills"));
         }
     }
     if args.provider == "codex" {
@@ -2148,9 +2143,7 @@ pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
 pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
     let st = state(&app);
     let cwds: Vec<String> = st.hive.registry().iter().map(|a| a.cwd.clone()).collect();
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
+    let bundled = crate::skills::bundled_skills_dir();
     let dir = crate::skills::list_local_skills(&cwds, bundled.as_deref())
         .into_iter()
         .find(|s| s.id == id)
@@ -2785,9 +2778,7 @@ pub fn task_answer(
 #[tauri::command(async)]
 pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>, String> {
     // Bundled skills staged next to the running exe (app resources/skills/).
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("resources").join("skills")));
+    let bundled = crate::skills::bundled_skills_dir();
     Ok(crate::skills::list_local_skills(&cwds, bundled.as_deref()))
 }
 
@@ -2806,6 +2797,21 @@ pub fn skills_catalog(
 pub fn skills_install(url: String, name: String) -> Value {
     match crate::skills::install_skill(&url, &name) {
         Ok(path) => serde_json::json!({ "ok": true, "path": path }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+/// Offline catalog — the skill pack shipped in resources/skills. No network.
+#[tauri::command(async)]
+pub fn skills_bundled() -> Vec<crate::skills::BundledSkill> {
+    crate::skills::list_bundled_skills()
+}
+
+/// Install one bundled skill into ~/.claude/skills — same {ok,error} envelope.
+#[tauri::command(async)]
+pub fn skills_install_bundled(dir_name: String) -> Value {
+    match crate::skills::install_bundled_skill(&dir_name) {
+        Ok(p) => serde_json::json!({ "ok": true, "path": p }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
 }

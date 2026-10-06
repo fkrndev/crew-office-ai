@@ -167,7 +167,6 @@
     "visit": "زيارة",
     "whatsNew": "ما الجديد",
     "whatsNewTitle": "اعرض ملاحظات إصدار التحديث الذي أُخبرت عنه آخر مرة",
-    
     "reportProblem": "أبلغ عن مشكلة",
     "fullChangelog": "سجل التغييرات الكامل ←",
     "announcement": "إعلان",
@@ -1184,7 +1183,10 @@
     "installFailed": "فشل التثبيت",
     "removeFailed": "تعذّرت إزالته",
     "uninstallFailed": "فشل إلغاء التثبيت",
-    "catalogUnreachable": "تعذّر الوصول إلى الفهرس"
+    "catalogUnreachable": "تعذّر الوصول إلى الفهرس",
+    "offline": "دون اتصال",
+    "searchOffline": "ابحث في المهارات المضمّنة…",
+    "offlineNote": "{{count}} مهارة مضمّنة في التطبيق — التثبيت لا يحتاج اتصالاً بالإنترنت."
   },
   "workersTab": {
     "stopping": "يتوقّف",

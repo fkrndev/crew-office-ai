@@ -167,7 +167,6 @@
     "visit": "访问",
     "whatsNew": "新功能",
     "whatsNewTitle": "显示上次告知你的更新的发布说明",
-    
     "reportProblem": "反馈问题",
     "fullChangelog": "完整更新日志 →",
     "announcement": "公告",
@@ -1184,7 +1183,10 @@
     "installFailed": "安装失败",
     "removeFailed": "无法移除",
     "uninstallFailed": "卸载失败",
-    "catalogUnreachable": "无法访问目录"
+    "catalogUnreachable": "无法访问目录",
+    "offline": "离线",
+    "searchOffline": "搜索内置技能…",
+    "offlineNote": "应用内置 {{count}} 个技能 — 无需联网即可安装。"
   },
   "workersTab": {
     "stopping": "停止中",

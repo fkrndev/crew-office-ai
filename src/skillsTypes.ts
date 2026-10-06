@@ -12,6 +12,19 @@ export interface LocalSkill {
   path: string;
 }
 
+/** A skill shipped inside the app bundle — the OFFLINE catalog. */
+export interface BundledSkill {
+  /** Frontmatter name (falls back to the folder name). */
+  name: string;
+  /** Folder name under resources/skills — the install handle. */
+  dirName: string;
+  description: string;
+  /** Keyword bucket: ads | commerce | support | sales | general. */
+  category: string;
+  /** Already present under ~/.claude/skills — show as Installed, not Install. */
+  installed: boolean;
+}
+
 export interface CatalogSkill {
   name: string;
   description: string;

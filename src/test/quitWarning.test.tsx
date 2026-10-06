@@ -4,6 +4,7 @@
  * suspended while closing-time runs so a stray click can't cancel a shutdown.
  */
 import { describe, it, expect } from 'vitest';
+import { vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { installFakeBridge } from './fakeBridge';
 import { QuitWarningModal } from '@/components/QuitWarningModal';

@@ -194,6 +194,8 @@ export function installCth(): void {
     skillsCatalog: (...args: unknown[]) => invoke('skills_catalog', pack(args, ["force"])),
     skillsInstall: (...args: unknown[]) => invoke('skills_install', pack(args, ["url","name"])),
     skillsUninstall: (...args: unknown[]) => invoke('skills_uninstall', pack(args, ["path","cwds"])),
+    skillsBundled: (...args: unknown[]) => invoke('skills_bundled', pack(args, [])),
+    skillsInstallBundled: (...args: unknown[]) => invoke('skills_install_bundled', pack(args, ["dirName"])),
     skillsReveal: (...args: unknown[]) => invoke('skills_reveal', pack(args, ["id"])),
     searchMemory: (...args: unknown[]) => invoke('search_memory', pack(args, ["query","wing","limit"])),
     memoryWakeUp: (...args: unknown[]) => invoke('memory_wake_up', pack(args, ["wing"])),

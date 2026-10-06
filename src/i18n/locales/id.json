@@ -167,7 +167,6 @@
     "visit": "kunjungi",
     "whatsNew": "apa yang baru",
     "whatsNewTitle": "Tampilkan catatan rilis untuk pembaruan yang terakhir diberitahukan kepadamu",
-    
     "reportProblem": "laporkan masalah",
     "fullChangelog": "changelog lengkap →",
     "announcement": "Pengumuman",
@@ -1184,7 +1183,10 @@
     "installFailed": "instalasi gagal",
     "removeFailed": "tidak bisa menghapusnya",
     "uninstallFailed": "uninstall gagal",
-    "catalogUnreachable": "tidak bisa menjangkau katalog"
+    "catalogUnreachable": "tidak bisa menjangkau katalog",
+    "offline": "offline",
+    "searchOffline": "Cari skill bawaan…",
+    "offlineNote": "{{count}} skill sudah dibundel di app — install tanpa internet."
   },
   "workersTab": {
     "stopping": "menghentikan",

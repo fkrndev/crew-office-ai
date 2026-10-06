@@ -1,13 +1,14 @@
-﻿/**
- * Project (registeredRepos) CRUD â€” the AddAgentModal quick-pick row.
+/**
+ * Project (registeredRepos) CRUD — the AddAgentModal quick-pick row.
  * Renders the real modal against fakeBridge and drives the two real actions:
- * "add project" (chooseFolder â†’ registerProject) and the per-chip Ã— remove.
+ * "add project" (chooseFolder → registerProject) and the per-chip × remove.
  *
- * Note: fakeBridge only records calls that hit the DEFAULT stub â€” overrides
+ * Note: fakeBridge only records calls that hit the DEFAULT stub — overrides
  * return their own function verbatim, so these tests capture patches through
  * the override itself.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { installFakeBridge, type FakeBridge } from './fakeBridge';
 import { AddAgentModal } from '@/components/AddAgentModal';

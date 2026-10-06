@@ -1115,6 +1115,8 @@ pub fn run() {
             commands::skills_local,
             commands::skills_catalog,
             commands::skills_install,
+            commands::skills_bundled,
+            commands::skills_install_bundled,
             commands::skills_uninstall,
             commands::secret_set,
             commands::secret_delete,
