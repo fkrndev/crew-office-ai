@@ -280,8 +280,18 @@ export function installCth(): void {
     // Upstream shape: providerKeySet({backend, key}) — an OBJECT, not two
     // positional args. pack() would put the whole object under "provider" and
     // the backend's `provider: String` param rejects it ("invalid type: map").
-    providerKeySet: (req: { backend: string; key: string }) =>
-      invoke('provider_key_set', { provider: req.backend, value: req.key }),
+    // Return envelope: backend returns a bare bool; upstream returns
+    // {ok, error?} — wrap it so `r.ok` is never undefined on success.
+    providerKeySet: async (req: { backend: string; key: string }) => {
+      try {
+        const v = await invoke('provider_key_set', { provider: req.backend, value: req.key });
+        return v === true || (v as { ok?: boolean })?.ok === true
+          ? { ok: true }
+          : { ok: false, error: typeof v === 'string' ? v : 'rejected' };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
     providerKeyHas: (backend: string) =>
       invoke('provider_key_has', { provider: backend }),
     providerKeyClear: (backend: string) =>
