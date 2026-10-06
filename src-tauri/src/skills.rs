@@ -612,6 +612,10 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
         return Err("No files found at that source.".into());
     }
 
+    // dest doesn't exist yet (only file parents were mkdir'd above) — create
+    // it so canonicalize succeeds. Without this `dest` stays un-prefixed while
+    // every `parent_canon` carries \\?\ and starts_with always fails.
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     let dest_canon = dest.canonicalize().unwrap_or(dest.clone());
     for (rel, url) in &files {
         let target = dest.join(rel);
@@ -748,6 +752,21 @@ mod tests {
         assert_eq!(out[0].owner, "a");
         assert_eq!(out[1].category, "Testing");
         assert_eq!(out[1].owner, "c");
+    }
+
+    /// Real-network e2e — `cargo test -- --ignored real_install`. Installs the
+    /// smallest catalog skill (vercel web-design-guidelines) into
+    /// ~/.claude/skills, then removes it. Not run in CI.
+    #[test]
+    #[ignore]
+    fn real_install_and_uninstall() {
+        let url =
+            "https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines";
+        let dest = install_skill(url, "web-design-guidelines").expect("install failed");
+        let p = PathBuf::from(&dest);
+        assert!(p.join("SKILL.md").exists(), "SKILL.md missing at {dest}");
+        uninstall_skill(&dest, &[]).expect("uninstall failed");
+        assert!(!p.exists());
     }
 
     #[test]
