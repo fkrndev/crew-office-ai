@@ -920,7 +920,17 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // multiplex state never collides with the user's own hermes.
     if args.provider == "hermes" {
         if let Some(bin) = &st.hook_bin {
-            if let Ok(home) = st.hive.install_hermes_hooks(&agent_dir, bin) {
+            let seed = {
+                let cfg = st.config.lock().unwrap();
+                let api_key = crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK")
+                    .or_else(|| crate::misc::secret_get("PROVIDER_KEY_OPENAI"));
+                crate::hive::HermesSeed {
+                    base_url: cfg.provider_base_urls.get("hermes").cloned(),
+                    model: cfg.provider_default_models.get("hermes").cloned(),
+                    api_key,
+                }
+            };
+            if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
                 agent_env.insert("HERMES_HOME".into(), home.display().to_string());
                 agent_env.insert(
                     "HERMES_RUNTIME_DIR".into(),
