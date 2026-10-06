@@ -273,6 +273,47 @@ fn task_ledger_add_delete_round_trip() {
     assert!(hive_admin::delete_task(&hive, &id).is_err());
 }
 
+/// Project CRUD — `registeredRepos` is a passthrough (not a typed field), so
+/// the update path is what keeps it durable. Add → reorder → remove must each
+/// land on disk verbatim, and a reload must see the last write.
+#[test]
+fn registered_repos_crud_persists_through_config_store() {
+    let home = tmp("repos");
+    let store = ConfigStore::new(home.clone());
+
+    // Add: the dedupe-prepend order the renderer sends lands as-is.
+    let (_c, _r) = store
+        .update(
+            json!({ "registeredRepos": ["C:/new", "C:/a", "C:/b"] })
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+    let on_disk: Value =
+        serde_json::from_str(&fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        on_disk["registeredRepos"].as_array().unwrap(),
+        &json!(["C:/new", "C:/a", "C:/b"]).as_array().unwrap()[..]
+    );
+
+    // Remove: a shorter array replaces — no merge, no resurrection.
+    let (_c, _r) = store
+        .update(json!({ "registeredRepos": ["C:/b"] }).as_object().unwrap())
+        .unwrap();
+    let reloaded = ConfigStore::new(home.clone()).raw_value();
+    assert_eq!(
+        reloaded["registeredRepos"].as_array().unwrap(),
+        &json!(["C:/b"]).as_array().unwrap()[..]
+    );
+
+    // Empty list is a legal state (fresh install after onboarding).
+    let (_c, _r) = store
+        .update(json!({ "registeredRepos": [] }).as_object().unwrap())
+        .unwrap();
+    let reloaded = ConfigStore::new(home.clone()).raw_value();
+    assert_eq!(reloaded["registeredRepos"], json!([]));
+}
+
 /// Registry rename — the durable identity change. The display name must land
 /// on the registry row while every field the typed RegistryEntry doesn't
 /// model (skills, notes, custom keys) survives untouched.

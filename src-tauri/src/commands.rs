@@ -3105,6 +3105,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Killing every agent drains EVERY namespace — ptys map, both directions
+    /// of the pty↔agent index, and each registry row lands on "gone". This is
+    /// the "close the app → all agents die" contract: nothing may outlive its
+    /// kill.
+    #[test]
+    fn kill_all_agents_drains_every_namespace() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("killall");
+        let cwd = home.display().to_string();
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+
+        for id in ["g", "w1", "w2"] {
+            let res = spawn_agent_core(
+                &handle,
+                req(serde_json::json!({
+                    "id": format!("pty-{id}"), "cwd": cwd, "command": "cmd",
+                    "hive": { "id": id, "name": id, "isGod": id == "g" }
+                })),
+            );
+            assert!(res.ok, "spawn {id} failed: {:?}", res.error);
+        }
+        assert_eq!(st.ptys.lock().unwrap().len(), 3);
+
+        for id in ["g", "w1", "w2"] {
+            let k = kill_agent_core(&handle, id);
+            assert!(k.ok, "kill {id} failed: {:?}", k.error);
+        }
+
+        assert!(st.ptys.lock().unwrap().is_empty(), "ptys map must drain");
+        for id in ["g", "w1", "w2"] {
+            assert!(st.pty_for_agent(id).is_none(), "{id} still has a pty");
+            assert!(st.agent_for_pty(&format!("pty-{id}")).is_none());
+            assert_eq!(
+                st.hive.registry().iter().find(|a| a.id == id).unwrap().status,
+                "gone",
+                "{id} registry row must read gone"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn pty_op_results_match_upstream_envelope() {
         // submitToPty reads `wrote.ok`; a dead pty resolves {ok:false,
