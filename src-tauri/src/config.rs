@@ -69,6 +69,13 @@ pub struct Config {
     /// OS toast notifications for agent idle/blocked events (upstream
     /// notifications; hooks.ts gates every toast on it).
     pub notifications: bool,
+    /// Per-CLI-provider local/custom base URLs (upstream HarnessConfig
+    /// .providerBaseUrls) — non-secret; how "use my DeepSeek endpoint" reaches
+    /// the qwen/crush proxy upstream and OpenCode's local provider block.
+    /// Keyed by CLI provider id, not backend.
+    pub provider_base_urls: HashMap<String, String>,
+    /// Per-CLI-provider default models (upstream providerDefaultModels).
+    pub provider_default_models: HashMap<String, String>,
 }
 
 /// shared/triggers.ts ContextTriggerConfig — {compact, clear} rules.
@@ -154,6 +161,8 @@ impl Default for Config {
             worker_idle_timeout_minutes: 20,
             default_worker_token_cap: 0,
             notifications: false,
+            provider_base_urls: HashMap::new(),
+            provider_default_models: HashMap::new(),
         }
     }
 }

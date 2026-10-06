@@ -41,6 +41,28 @@ pub fn harness_home(app: &AppHandle) -> PathBuf {
 /// user home; a value still relative afterwards is returned trimmed and
 /// unchanged (callers keep their own not-absolute errors); empty passes
 /// through.
+/// Upstream `BACKEND_KEY_ENV` (index.ts:399) — translate a keyring entry name
+/// like `PROVIDER_KEY_OPENAI` into the env var name(s) the spawned CLI actually
+/// reads. Returns None for non-provider secrets (custom env keys pass through
+/// unchanged — the user named them literally).
+/// Google maps to TWO names: OpenCode/AI-SDK's Google provider reads
+/// GOOGLE_GENERATIVE_AI_API_KEY, not GEMINI_API_KEY (upstream Jim NIT #1).
+/// DeepSeek's OpenAI-compatible platform reads DEEPSEEK_API_KEY — the backend
+/// id "deepseek" pairs with a providerBaseUrls override to api.deepseek.com.
+pub fn provider_env_names(keyring_name: &str) -> Option<Vec<&'static str>> {
+    let rest = keyring_name.strip_prefix("PROVIDER_KEY_")?;
+    let envs: Vec<&'static str> = match rest {
+        "ANTHROPIC" => vec!["ANTHROPIC_API_KEY"],
+        "OPENAI" => vec!["OPENAI_API_KEY"],
+        "GOOGLE" => vec!["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+        "OPENROUTER" => vec!["OPENROUTER_API_KEY"],
+        "GROQ" => vec!["GROQ_API_KEY"],
+        "DEEPSEEK" => vec!["DEEPSEEK_API_KEY", "OPENAI_API_KEY"],
+        _ => return None,
+    };
+    Some(envs)
+}
+
 /// AGENT_PROVIDER_PRESETS.canReceiveInbox — the backend copy (the preset
 /// table lives renderer-side). Only providers that can't take typed inbox
 /// nudges return false: the router hands their delivery off to the frontend

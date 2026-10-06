@@ -869,10 +869,22 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // OTLP/HTTP-JSON to the embedded collector, tagged by agent.id.
     // Keychain secrets configured for injection (config.secret_env_keys) —
     // values come out of the OS credential store at spawn, never from disk.
+    // PROVIDER_KEY_<backend> entries map to the env var the CLIs actually read
+    // (upstream BACKEND_KEY_ENV): without the translation a saved "OpenAI" key
+    // reached the agent as PROVIDER_KEY_OPENAI — a name nothing consumes.
     for key in &st.config.lock().unwrap().secret_env_keys {
         if let Ok(entry) = keyring::Entry::new("agent-office", key) {
             if let Ok(v) = entry.get_password() {
-                agent_env.insert(key.clone(), v);
+                match crate::misc::provider_env_names(key) {
+                    Some(envs) => {
+                        for e in envs {
+                            agent_env.insert(e.to_string(), v.clone());
+                        }
+                    }
+                    None => {
+                        agent_env.insert(key.clone(), v);
+                    }
+                }
             }
         }
     }
@@ -959,11 +971,20 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // Proxy-tier bridges (qwen, crush): a loopback ProxyBridge tees the
     // agent's LLM traffic into the same hook payloads — Status/CostSample/
     // PostToolUse/Stop without any hook surface at all. The upstream is the
-    // user's REAL base URL (read from the parent env before we rewrite it).
+    // user's REAL base URL — the provider's providerBaseUrls override first
+    // (this is how a DeepSeek key + api.deepseek.com reach a BYOK CLI), then
+    // the parent env, then OpenAI itself (upstream index.ts:2766).
     if args.provider == "qwen" || args.provider == "crush" {
         if let Some(sock) = &st.sock_addr {
-            let upstream = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".into());
+            let upstream = st
+                .config
+                .lock()
+                .unwrap()
+                .provider_base_urls
+                .get(args.provider.as_str())
+                .cloned()
+                .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+                .unwrap_or_else(|| "https://api.openai.com".into());
             let bridge = std::sync::Arc::new(crate::proxy::ProxyBridge::new(
                 agent_id.clone(),
                 crate::proxy::ProxyApi::OpenAi,
