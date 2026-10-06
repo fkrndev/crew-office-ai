@@ -3155,6 +3155,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Offline skills reach the agent: spawn copies the whole bundled pack into
+    /// <agent_dir>/.claude/skills so a cwd=agent_dir session (god) discovers
+    /// them exactly like a user's own ~/.claude/skills.
+    #[test]
+    fn spawn_stages_bundled_skills_into_agent_dir() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("bundled-spawn");
+        let cwd = home.display().to_string();
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-b1", "cwd": cwd, "command": "cmd",
+                "hive": { "id": "b1", "name": "Bundled", "role": "dev" }
+            })),
+        );
+        assert!(res.ok, "spawn failed: {:?}", res.error);
+
+        let skills_dir = st
+            .hive
+            .agent_dir("b1")
+            .join(".claude")
+            .join("skills");
+        assert!(skills_dir.is_dir(), "bundled skills must land in the agent dir");
+        assert!(
+            std::fs::read_dir(&skills_dir).unwrap().count() >= 10,
+            "expected the bundled pack, got an empty/near-empty dir"
+        );
+        assert!(skills_dir.join("meta-ads").join("SKILL.md").exists());
+
+        let _ = kill_agent_core(&handle, "b1");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn pty_op_results_match_upstream_envelope() {
         // submitToPty reads `wrote.ok`; a dead pty resolves {ok:false,

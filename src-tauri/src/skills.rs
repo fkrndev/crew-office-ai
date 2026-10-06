@@ -227,6 +227,16 @@ pub fn list_bundled_skills() -> Vec<BundledSkill> {
 /// resolve inside the bundled dir — no traversal, same paranoia as the
 /// network installer.
 pub fn install_bundled_skill(dir_name: &str) -> Result<String, String> {
+    let dest_root = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("skills");
+    install_bundled_skill_into(dir_name, &dest_root)
+}
+
+/// Install under an explicit skills root — the public fn pins ~/.claude; tests
+/// pass a temp dir so the real user store is never touched.
+fn install_bundled_skill_into(dir_name: &str, dest_root: &Path) -> Result<String, String> {
     let Some(root) = bundled_skills_dir() else {
         return Err("no bundled skills dir".into());
     };
@@ -237,11 +247,7 @@ pub fn install_bundled_skill(dir_name: &str) -> Result<String, String> {
     {
         return Err("not a bundled skill".into());
     }
-    let dest = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".claude")
-        .join("skills")
-        .join(dir_name);
+    let dest = dest_root.join(dir_name);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     crate::hive::copy_dir(&canon, &dest).map_err(|e| e.to_string())?;
     Ok(dest.display().to_string())
@@ -824,10 +830,37 @@ mod tests {
 
     #[test]
     fn install_bundled_rejects_traversal() {
-        assert!(install_bundled_skill("../..").is_err());
+        let dst = std::env::temp_dir().join(format!("oa-skill-trav-{}", uuid::Uuid::new_v4()));
+        assert!(install_bundled_skill_into("../..", &dst).is_err());
+        assert!(install_bundled_skill_into("..", &dst).is_err());
+        assert!(install_bundled_skill_into("", &dst).is_err());
+        assert!(install_bundled_skill_into("no-such-skill-xyz", &dst).is_err());
+        std::fs::remove_dir_all(&dst).ok();
+    }
+
+    /// The real round-trip: pick the first bundled skill, install it into a
+    /// temp skills root, and prove the landed dir scans as a local skill.
+    #[test]
+    fn install_bundled_round_trip_lands_a_scannable_skill() {
+        let list = list_bundled_skills();
+        assert!(!list.is_empty());
+        let pick = &list[0];
+        let dst = std::env::temp_dir().join(format!("oa-skill-inst-{}", uuid::Uuid::new_v4()));
+        let path = install_bundled_skill_into(&pick.dir_name, &dst).unwrap();
+        // The installed folder is exactly what scan_skill_dir discovers.
+        let mut found = Vec::new();
+        scan_skill_dir(&dst, "claude", "user", &mut found);
+        assert!(found.iter().any(|s| s.name == pick.name),
+            "installed skill must scan: {path}");
+        std::fs::remove_dir_all(&dst).ok();
+    }
+
+    /// install_bundled_skill (the public fn) must refuse traversal BEFORE it
+    /// touches ~/.claude — the early Err paths never write.
+    #[test]
+    fn install_bundled_public_entry_refuses_bad_names() {
         assert!(install_bundled_skill("..").is_err());
-        assert!(install_bundled_skill("").is_err());
-        assert!(install_bundled_skill("no-such-skill-xyz").is_err());
+        assert!(install_bundled_skill("definitely-not-shipped-xyz").is_err());
     }
 
     #[test]
