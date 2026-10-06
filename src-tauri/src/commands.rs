@@ -929,6 +929,19 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 agent_env.insert("HERMES_ACCEPT_HOOKS".into(), "1".into());
             }
         }
+        // OpenAI-compatible reroute — Settings → Agents & Models → Hermes base
+        // URL lands here as OPENAI_BASE_URL so the agent hits DeepSeek/Ollama/
+        // vLLM instead of api.openai.com (hermes reads it natively).
+        if let Some(url) = st
+            .config
+            .lock()
+            .unwrap()
+            .provider_base_urls
+            .get("hermes")
+            .cloned()
+        {
+            agent_env.insert("OPENAI_BASE_URL".into(), url);
+        }
     }
     // Gemini lifecycle bridge — per-agent system-settings.json bound via
     // GEMINI_CLI_SYSTEM_SETTINGS_PATH; the shim's --gemini mode translates.

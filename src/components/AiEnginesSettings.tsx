@@ -37,7 +37,10 @@ const CLIS: Array<{ id: AgentProvider; label: string; hint: string }> = [
   { id: 'opencode', label: 'OpenCode', hint: 'http://localhost:11434/v1 (Ollama) — injected as a local provider' },
   { id: 'crush', label: 'Crush', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
   { id: 'pi', label: 'Pi', hint: 'local models are file-based (models.json); base-URL reserved' },
-  { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' }
+  { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
+  // Hermes reads OPENAI_BASE_URL natively — pointing it at api.deepseek.com
+  // (+ a DeepSeek key above) makes a Hermes worker talk DeepSeek.
+  { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)' }
 ];
 
 const inputStyle: CSSProperties = {

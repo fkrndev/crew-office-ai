@@ -277,9 +277,15 @@ export function installCth(): void {
     integrationsSetSecret: (...args: unknown[]) => invoke('integrations_set_secret', pack(args, ["payload"])),
     integrationsRemove: (...args: unknown[]) => invoke('integrations_remove', pack(args, ["payload"])),
     integrationsTest: (...args: unknown[]) => invoke('integrations_test', pack(args, ["payload"])),
-    providerKeySet: (...args: unknown[]) => invoke('provider_key_set', pack(args, ["provider","value"])),
-    providerKeyHas: (...args: unknown[]) => invoke('provider_key_has', pack(args, ["provider"])),
-    providerKeyClear: (...args: unknown[]) => invoke('provider_key_clear', pack(args, ["provider"])),
+    // Upstream shape: providerKeySet({backend, key}) — an OBJECT, not two
+    // positional args. pack() would put the whole object under "provider" and
+    // the backend's `provider: String` param rejects it ("invalid type: map").
+    providerKeySet: (req: { backend: string; key: string }) =>
+      invoke('provider_key_set', { provider: req.backend, value: req.key }),
+    providerKeyHas: (backend: string) =>
+      invoke('provider_key_has', { provider: backend }),
+    providerKeyClear: (backend: string) =>
+      invoke('provider_key_clear', { provider: backend }),
     realtimeHasOpenAiKey: (...args: unknown[]) => invoke('realtime_has_key', pack(args, [])),
     realtimeMintToken: (...args: unknown[]) => invoke('realtime_mint_token', pack(args, ["model"])),
     realtimeAction: (payload?: unknown) => invoke('realtime_action', { payload }),
