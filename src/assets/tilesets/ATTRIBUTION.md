@@ -1,12 +1,14 @@
 # Asset attribution
 
-## Tilesets — procedurally generated, 100% license-clean
+## Tilesets — procedural base + Antea furniture (CC-BY)
 
-The tileset PNGs in `tilesets/` (`office-tileset.png`, `a5-office-floors-walls.png`,
-`interiors.png`) are **generated programmatically by the project's own pixel-art
-script** (`cc0-assets/gen_tilesets.py` in the dev workspace). They contain no
-third-party art and carry no license obligations — safe for commercial
-distribution with no attribution required.
+The tileset PNGs in `tilesets/` are produced by `scripts/gen_tilesets.py`. The
+**floor, wall and carpet tiles are the project's own procedural art** (no third-party
+license). The **furniture sprites** (desks, chairs, cabinets, vending machine,
+bookshelf, plants, wall props) are adapted from
+**[Furniture Office Equipment Set](https://stcrbcn.itch.io/furniture-office-set)
+by Antea ✮⋆˙**, used under **CC-BY** — commercial use allowed, attribution
+required. Credit line: *"Office furniture: Antea (CC-BY)."*
 
 The original LimeZu tilesets were replaced on 2026-09-08 because the purchased
 Complete Version licence did not transfer cleanly to this project's owner. The

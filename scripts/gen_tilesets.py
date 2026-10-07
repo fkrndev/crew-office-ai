@@ -1,14 +1,19 @@
 """
-Procedurally generate license-clean replacement tilesets for the office app.
+Generate replacement tilesets for the office app.
 
 Replaces (same dimensions / 16x16 grid / 16 cols, alpha preserved):
   - office-tileset.png        256x512   gids 1-512    (tid = gid - 1)
   - a5-office-floors-walls.png 256x512  gids 513-1024 (tid = gid - 513)
   - interiors.png             256x1424  gids 1025-2448 (tid = gid - 1025)
 
-All art is drawn from scratch with PIL rectangles/points only
-(integer coords, binary alpha, no AA). Only the tile slots actually
-referenced by the maps are painted; every other slot stays transparent.
+Furniture slots are composited from Antea's CC-BY "Office Furniture
+Pixel Art" sprites (see ANTEA_DIR); floors, walls, carpet, counters,
+doors and the doormat stay procedural (PIL rectangles/points, integer
+coords, binary alpha, no AA). Only the tile slots actually referenced
+by the maps are painted; every other slot stays transparent.
+
+Set ANTEA_DIR to point at the sprite folder; if it is missing the
+script falls back to the original procedural furniture art.
 """
 
 import os
@@ -739,23 +744,196 @@ def wood_counter_top():
     return im
 
 # ================================================================
+#  Antea "Office Furniture Pixel Art" (CC-BY) sprites
+#
+#  Furniture slots are cut/composited from these sprites instead of
+#  the procedural drawings above.  All resizing uses NEAREST so the
+#  pixel grid and binary alpha survive intact.
+# ================================================================
+ANTEA_DIR = os.environ.get(
+    "ANTEA_DIR",
+    r"D:\project\super-agent\cc0-assets\antea\Office-Furniture-Pixel-Art"
+    r"\Office-Furniture-Pixel-Art")
+HAVE_ANTEA = os.path.isdir(ANTEA_DIR)
+
+_ANTEA_CACHE = {}
+
+def antea(name):
+    """Load (and cache) an Antea sprite as RGBA."""
+    if name not in _ANTEA_CACHE:
+        _ANTEA_CACHE[name] = Image.open(
+            os.path.join(ANTEA_DIR, name)).convert("RGBA")
+    return _ANTEA_CACHE[name]
+
+def antea_tile(name, box=None, size=(T, T)):
+    """Cut a 16x16 tile from an Antea sprite: optional crop box, then a
+    NEAREST resize to the target size (integer up/downscales stay crisp)."""
+    im = antea(name)
+    if box is not None:
+        im = im.crop(box)
+    if im.size != tuple(size):
+        im = im.resize(size, Image.NEAREST)
+    return im
+
+# Antea palette samples (dark navy desk line, maroon vending line)
+A_SURF   = (74, 78, 104, 255)    # desktop
+A_EDGE   = (89, 93, 121, 255)    # desktop edge
+A_BAND   = (53, 56, 76, 255)     # front shadow band
+A_BAND2  = (58, 62, 85, 255)
+A_LEG    = (63, 67, 89, 255)     # legs
+A_LEG_D  = (44, 47, 67, 255)
+A_VEND   = (111, 34, 54, 255)    # vending body maroon
+A_VEND_D = (72, 28, 46, 255)
+A_VEND_X = (49, 19, 31, 255)     # kick / feet
+
+def desk_unit_antea():
+    """48x32 worker-desk stamp built on Antea Desk.png.
+
+    The sprite is a whole workstation (monitor + keyboard + phone on a
+    dark desk with legs).  The bottom 24 rows are pasted into the right
+    two columns so the desktop band straddles the tile seam like the old
+    stamp; the remaining monitor stub sits under the app's own 2x2
+    monitor tiles.  Column 1 is a matching extension drawn in the same
+    palette (flat surface, side edge, one leg).
+    """
+    s = Image.new("RGBA", (48, 32), (0, 0, 0, 0))
+    body = antea("Desk.png").crop((0, 8, 32, 32))   # drop monitor top
+    s.paste(body, (16, 8), body)
+    d = ImageDraw.Draw(s)
+    rect(d, 0, 13, 16, 1, A_EDGE)     # desktop back edge
+    rect(d, 0, 14, 16, 9, A_SURF)     # desktop interior
+    rect(d, 0, 23, 16, 1, A_EDGE)     # desktop front edge
+    rect(d, 0, 24, 16, 1, A_BAND)     # front shadow bands
+    rect(d, 0, 25, 16, 1, A_BAND2)
+    rect(d, 0, 13, 1, 13, A_EDGE)     # left side edge
+    rect(d, 1, 26, 2, 4, A_LEG)       # left leg
+    rect(d, 3, 26, 1, 4, A_LEG_D)
+    return s
+
+def monitor_pair_antea(on):
+    """32x32 monitor: bezel+screen cropped from Antea Desk.png, upscaled
+    2x (NEAREST), on a stand drawn in the desk palette.  OFF darkens the
+    screen ramp to a dim slate; ON remaps it to the app's teal glow."""
+    src = antea("Desk.png").crop((3, 1, 17, 12))      # 14x11 monitor
+    screen = {(84, 97, 125): 0, (95, 108, 138): 1,
+              (111, 125, 157): 2, (143, 154, 179): 3}
+    ramp = ([(26, 110, 96), (35, 179, 154), (62, 224, 192), (139, 240, 220)]
+            if on else
+            [(34, 40, 49), (43, 51, 61), (53, 63, 76), (68, 80, 96)])
+    p = src.load()
+    for y in range(src.height):
+        for x in range(src.width):
+            r, g, b, a = p[x, y]
+            if a and (r, g, b) in screen:
+                p[x, y] = (*ramp[screen[(r, g, b)]], a)
+    mon = src.resize((28, 22), Image.NEAREST)
+    s = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+    s.paste(mon, (2, 3), mon)
+    d = ImageDraw.Draw(s)
+    rect(d, 13, 25, 6, 4, A_BAND)          # stand stem
+    rect(d, 9, 29, 14, 2, A_LEG)           # base
+    rect(d, 9, 29, 14, 1, A_EDGE)
+    return [carve(s, 0, 0, 16, 16), carve(s, 16, 0, 16, 16),
+            carve(s, 0, 16, 16, 16), carve(s, 16, 16, 16, 16)]
+
+def antea_plank(end=False):
+    """Conference-table plank in Antea's dark desk palette; symmetric so
+    the map's H/V/D flips render the same."""
+    im = new_tile(); d = ImageDraw.Draw(im)
+    rect(d, 0, 0, 16, 16, A_SURF)
+    rect(d, 0, 0, 16, 1, A_BAND2)
+    rect(d, 0, 15, 16, 1, A_BAND2)
+    rect(d, 0, 0, 1, 16, A_BAND2)
+    rect(d, 15, 0, 1, 16, A_BAND2)
+    if end:
+        rect(d, 0, 0, 1, 16, A_EDGE)
+        rect(d, 15, 0, 1, 16, A_EDGE)
+    rect(d, 5, 2, 1, 12, A_BAND2)
+    rect(d, 10, 2, 1, 12, A_BAND2)
+    for y in (3, 7, 11):
+        px(d, 2, y, A_EDGE)
+        px(d, 13, y, A_EDGE)
+    return im
+
+def antea_drawer():
+    """Table end-cap / drawer in Antea's dark desk palette (symmetric)."""
+    im = new_tile(); d = ImageDraw.Draw(im)
+    rect(d, 0, 0, 16, 16, A_SURF)
+    rect(d, 0, 0, 16, 1, A_EDGE)
+    rect(d, 0, 15, 16, 1, A_EDGE)
+    rect(d, 0, 0, 1, 16, A_EDGE)
+    rect(d, 15, 0, 1, 16, A_EDGE)
+    rect(d, 1, 2, 14, 1, A_BAND2)
+    rect(d, 1, 13, 14, 1, A_BAND2)
+    rect(d, 5, 6, 6, 2, A_LEG_D)          # handle
+    rect(d, 5, 6, 6, 1, A_EDGE)
+    return im
+
+def counter_tile_antea():
+    """16x16 counter in the Small-Table palette (dark navy slab)."""
+    im = new_tile(); d = ImageDraw.Draw(im)
+    rect(d, 0, 0, 16, 1, (116, 138, 166, 255))   # top highlight
+    rect(d, 0, 1, 16, 9, A_SURF)                 # surface
+    rect(d, 0, 10, 16, 4, A_BAND2)               # front face
+    rect(d, 0, 14, 16, 2, A_LEG_D)               # kick
+    return im
+
+def coffee_counter_antea():
+    """Counter tile with the Antea coffee machine standing on it."""
+    im = counter_tile_antea()
+    m = antea("Coffee-Machine.png").crop((0, 1, 16, 15))
+    im.paste(m, (0, 0), m)
+    return im
+
+def plinth_tile():
+    """Bottom row under the vending machine / water dispenser."""
+    im = new_tile(); d = ImageDraw.Draw(im)
+    rect(d, 0, 0, 16, 1, A_VEND_D)
+    rect(d, 0, 1, 16, 11, A_VEND)
+    rect(d, 0, 12, 16, 4, A_VEND_X)      # kick plate
+    return im
+
+def vending_block_antea():
+    """48x48 refreshment nook.
+
+    Antea Vending-Machine.png (32x32) fills the left 2x2; the right
+    column gets a wall shelf (top) and the water dispenser (middle);
+    the bottom row is a matching kick plate.  gid order per map:
+      1041 1042 1043
+      1044 1076 1061     (1076 is VD-flipped in the map -> stored
+      1073 1074 1075      pre-flipped so it renders upright)
+    """
+    vend = antea("Vending-Machine.png")
+    tl = vend.crop((0, 0, 16, 16))
+    tr = vend.crop((16, 0, 32, 16))
+    bl = vend.crop((0, 16, 16, 32))
+    br = vend.crop((16, 16, 32, 32))
+    # cancel the map's diagonal+vertical flip on the centre tile
+    br_pre = br.transpose(Image.FLIP_TOP_BOTTOM).transpose(Image.TRANSPOSE)
+    shelf = antea_tile("Wall-Shelf.png")
+    disp = antea_tile("Water-Dispenser.png")          # 32x32 -> 16x16
+    plinth = plinth_tile()
+    return [tl, tr, shelf, bl, br_pre, disp, plinth, plinth, plinth]
+
+# ================================================================
 #  build atlases
 # ================================================================
 def build_office():
     img = Image.new("RGBA", (256, 512), (0, 0, 0, 0))
     F = 1
 
-    # --- desk unit (2,3,4 top / 18,19,20 front)
-    du = desk_unit()
+    # --- desk unit (2,3,4 top / 18,19,20 front): Antea Desk.png composite
+    du = desk_unit_antea() if HAVE_ANTEA else desk_unit()
     for i, g in enumerate((2, 3, 4)):
         paste_tile(img, g, F, carve(du, i * 16, 0, 16, 16))
     for i, g in enumerate((18, 19, 20)):
         paste_tile(img, g, F, carve(du, i * 16, 16, 16, 16))
 
-    # --- 54,55,56 : wood front-face row (map order 54,56,55 -> left,mid,right)
-    paste_tile(img, 54, F, carve(du, 0, 16, 16, 16))
-    paste_tile(img, 56, F, carve(du, 16, 16, 16, 16))
-    paste_tile(img, 55, F, carve(du, 32, 16, 16, 16))
+    # --- 54,55,56 : counter front faces (map order 54,56,55 -> l,mid,r)
+    dup = desk_unit()
+    paste_tile(img, 54, F, carve(dup, 0, 16, 16, 16))
+    paste_tile(img, 56, F, carve(dup, 16, 16, 16, 16))
+    paste_tile(img, 55, F, carve(dup, 32, 16, 16, 16))
 
     # --- 38,39,40 : white counter tops (identical, seam dividers)
     cu = counter_top_unit()
@@ -764,82 +942,145 @@ def build_office():
 
     paste_tile(img, 1, F, thin_table())
 
-    # conference table planks (flipped in map -> symmetric)
-    paste_tile(img, 161, F, drawer())
-    paste_tile(img, 162, F, drawer())
+    if not HAVE_ANTEA:
+        # ---- procedural fallback (no Antea sprites on disk) ----
+        paste_tile(img, 161, F, drawer())
+        paste_tile(img, 162, F, drawer())
+        for g in (177, 178, 229):
+            paste_tile(img, g, F, plank(end=True))
+        paste_tile(img, 193, F, plank(end=True))
+        paste_tile(img, 194, F, plank(end=True))
+        paste_tile(img, 191, F, partition("l"))
+        paste_tile(img, 192, F, partition("r"))
+        bs = bookshelf_pair()
+        paste_tile(img, 207, F, bs[0]); paste_tile(img, 208, F, bs[1])
+        paste_tile(img, 223, F, grey_cabinet("l"))
+        paste_tile(img, 224, F, grey_cabinet("r"))
+        paste_tile(img, 257, F, mauve_chair_back())
+        paste_tile(img, 258, F, mauve_cushion())
+        paste_tile(img, 260, F, mauve_armchair_side())
+        paste_tile(img, 266, F, side_table())
+        paste_tile(img, 274, F, mauve_chair_front())
+        paste_tile(img, 269, F, microwave())
+        paste_tile(img, 276, F, small_tray())
+        paste_tile(img, 281, F, appliance_white())
+        paste_tile(img, 282, F, appliance_grey())
+        paste_tile(img, 285, F, appliance_panel())
+        paste_tile(img, 289, F, office_chair((110, 78, 50, 255), (70, 48, 28, 255), (150, 116, 80, 255)))
+        paste_tile(img, 305, F, office_chair(GREY, GREY_XD, GREY_L))
+        paste_tile(img, 297, F, dark_bin(0))
+        paste_tile(img, 298, F, dark_bin(1))
+        paste_tile(img, 301, F, paper_or_mug())
+        paste_tile(img, 313, F, phone_device())
+        paste_tile(img, 327, F, wall_ac("l"))
+        paste_tile(img, 328, F, wall_ac("r"))
+        paste_tile(img, 329, F, filing("l"))
+        paste_tile(img, 330, F, filing("r"))
+        win = window_pair()
+        paste_tile(img, 343, F, win[0]); paste_tile(img, 344, F, win[1])
+        paste_tile(img, 349, F, keyboard())
+        paste_tile(img, 354, F, alarm_clock())
+        paste_tile(img, 370, F, plant_pot_small())
+        paste_tile(img, 395, F, flip_chart())
+        paste_tile(img, 411, F, red_mug())
+        off = monitor_pair(False)
+        on = monitor_pair(True)
+        for g, t in zip((365, 366, 381, 382), off):
+            paste_tile(img, g, F, t)
+        for g, t in zip((367, 368, 383, 384), on):
+            paste_tile(img, g, F, t)
+        paste_tile(img, 431, F, plant_tall(0))
+        paste_tile(img, 451, F, plant_tall(1))
+        paste_tile(img, 467, F, plant_tall(2))
+        paste_tile(img, 432, F, plant_mid(0))
+        paste_tile(img, 452, F, plant_mid(1))
+        paste_tile(img, 468, F, plant_mid(2))
+        paste_tile(img, 470, F, plant_leafy(0))
+        paste_tile(img, 471, F, plant_leafy(1))
+        paste_tile(img, 472, F, plant_leafy(2))
+        return img
+
+    # ---- Antea CC-BY furniture ----
+    # conference table: dark navy planks + end caps (map H/V/D flips ->
+    # symmetric designs only)
+    paste_tile(img, 161, F, antea_drawer())
+    paste_tile(img, 162, F, antea_drawer())
     for g in (177, 178, 229):
-        paste_tile(img, g, F, plank(end=True))
-    paste_tile(img, 193, F, plank(end=True))
-    paste_tile(img, 194, F, plank(end=True))
+        paste_tile(img, g, F, antea_plank(end=True))
+    paste_tile(img, 193, F, antea_plank(end=True))
+    paste_tile(img, 194, F, antea_plank(end=True))
 
-    # partitions 191,192
-    paste_tile(img, 191, F, partition("l"))
-    paste_tile(img, 192, F, partition("r"))
+    # wall shelves above the storage nook
+    for g in (191, 192):
+        paste_tile(img, g, F, antea_tile("Wall-Shelf.png"))
 
-    # bookshelf 207,208
-    bs = bookshelf_pair()
-    paste_tile(img, 207, F, bs[0]); paste_tile(img, 208, F, bs[1])
+    # bookshelf pair + small filing cabinets below
+    for g in (207, 208):
+        paste_tile(img, g, F, antea_tile("Bookshelf.png"))
+    for g in (223, 224):
+        paste_tile(img, g, F, antea_tile("Filing-Cabinet-Small.png"))
 
-    # grey cabinet 223,224
-    paste_tile(img, 223, F, grey_cabinet("l"))
-    paste_tile(img, 224, F, grey_cabinet("r"))
+    # conference chairs: Boss-Chair backrest (upper) / seat+base (lower),
+    # a left-facing side chair, and small side tables
+    boss_top = antea_tile("Boss-Chair.png", (8, 4, 24, 20))
+    boss_bot = antea_tile("Boss-Chair.png", (8, 16, 24, 32))
+    paste_tile(img, 257, F, boss_top)
+    paste_tile(img, 258, F, boss_top)
+    paste_tile(img, 274, F, boss_bot)
+    paste_tile(img, 260, F, antea_tile("Chair-2.png"))
+    paste_tile(img, 266, F, antea_tile("Small-Table.png"))
+    paste_tile(img, 276, F, antea_tile("Small-Table.png"))
 
-    # mauve seating
-    paste_tile(img, 257, F, mauve_chair_back())
-    paste_tile(img, 258, F, mauve_cushion())
-    paste_tile(img, 260, F, mauve_armchair_side())
-    paste_tile(img, 266, F, side_table())
-    paste_tile(img, 274, F, mauve_chair_front())
+    # appliances: copier, water dispenser, tall cabinet, printer stand
+    paste_tile(img, 269, F, antea_tile("Big-Office-Printer.png"))
+    paste_tile(img, 281, F, antea_tile("Water-Dispenser.png"))
+    paste_tile(img, 282, F, antea_tile("Filing-Cabinet-Tall.png"))
+    paste_tile(img, 285, F, antea_tile("Printer-Furniture.png"))
 
-    # counters / appliances
-    paste_tile(img, 269, F, microwave())
-    paste_tile(img, 276, F, small_tray())
-    paste_tile(img, 281, F, appliance_white())
-    paste_tile(img, 282, F, appliance_grey())
-    paste_tile(img, 285, F, appliance_panel())
-
-    # chairs
-    paste_tile(img, 289, F, office_chair((110, 78, 50, 255), (70, 48, 28, 255), (150, 116, 80, 255)))
-    paste_tile(img, 305, F, office_chair(GREY, GREY_XD, GREY_L))
-    paste_tile(img, 297, F, dark_bin(0))
-    paste_tile(img, 298, F, dark_bin(1))
+    # worker chairs + bins + desk smalls
+    ch = antea_tile("Chair.png")
+    paste_tile(img, 289, F, ch)
+    paste_tile(img, 305, F, ch)
+    paste_tile(img, 297, F, antea_tile("Bin.png"))
+    paste_tile(img, 298, F,
+               antea_tile("Bin.png").transpose(Image.FLIP_LEFT_RIGHT))
     paste_tile(img, 301, F, paper_or_mug())
-    paste_tile(img, 313, F, phone_device())
+    paste_tile(img, 313, F, antea_tile("Printer.png"))
 
-    # wall units / cabinets
-    paste_tile(img, 327, F, wall_ac("l"))
-    paste_tile(img, 328, F, wall_ac("r"))
-    paste_tile(img, 329, F, filing("l"))
-    paste_tile(img, 330, F, filing("r"))
-
-    # windows
+    # wall-mounted shelves + windows (windows stay procedural)
+    for g in (327, 328):
+        paste_tile(img, g, F, antea_tile("Wall-Shelf.png"))
     win = window_pair()
     paste_tile(img, 343, F, win[0]); paste_tile(img, 344, F, win[1])
+    paste_tile(img, 349, F, antea_tile("Books.png"))
+    paste_tile(img, 354, F, antea_tile("Wall-Clock.png"))
+    paste_tile(img, 370, F, antea_tile("Small-Plant.png"))
+    paste_tile(img, 395, F, antea_tile("Wall-Graph.png"))
+    paste_tile(img, 411, F, antea_tile("Wall-Note.png"))
 
-    paste_tile(img, 349, F, keyboard())
-    paste_tile(img, 354, F, alarm_clock())
-    paste_tile(img, 370, F, plant_pot_small())
-    paste_tile(img, 395, F, flip_chart())
-    paste_tile(img, 411, F, red_mug())
+    # items on the break counter: coffee machine + paper tray
+    paste_tile(img, 329, F, antea_tile("Coffee-Machine.png"))
+    paste_tile(img, 330, F, antea_tile("Papers.png"))
 
-    # monitors (2x2)
-    off = monitor_pair(False)
-    on = monitor_pair(True)
+    # monitors (2x2) cropped out of Antea Desk.png
+    off = monitor_pair_antea(False)
+    on = monitor_pair_antea(True)
     for g, t in zip((365, 366, 381, 382), off):
         paste_tile(img, g, F, t)
     for g, t in zip((367, 368, 383, 384), on):
         paste_tile(img, g, F, t)
 
-    # plants
-    paste_tile(img, 431, F, plant_tall(0))
-    paste_tile(img, 451, F, plant_tall(1))
-    paste_tile(img, 467, F, plant_tall(2))
-    paste_tile(img, 432, F, plant_mid(0))
-    paste_tile(img, 452, F, plant_mid(1))
-    paste_tile(img, 468, F, plant_mid(2))
-    paste_tile(img, 470, F, plant_leafy(0))
-    paste_tile(img, 471, F, plant_leafy(1))
-    paste_tile(img, 472, F, plant_leafy(2))
+    # plants: desk pots + floor plants split/downscaled from Big-Plant
+    paste_tile(img, 431, F, antea_tile("Small-Plant.png"))
+    paste_tile(img, 432, F, antea_tile("Small-Plant.png"))
+    bp_top = antea_tile("Big-Plant.png", (8, 0, 24, 16))
+    bp_bot = antea_tile("Big-Plant.png", (8, 16, 24, 32))
+    for g in (451, 452):
+        paste_tile(img, g, F, bp_top)
+    for g in (467, 468):
+        paste_tile(img, g, F, bp_bot)
+    for g in (470, 471, 472):
+        paste_tile(img, g, F, antea_tile("Big-Plant.png"))
 
     return img
 
@@ -870,20 +1111,34 @@ def build_a5():
 def build_interiors():
     img = Image.new("RGBA", (256, 1424), (0, 0, 0, 0))
     F = 1025
-    # coffee counter row
-    paste_tile(img, 1029, F, wood_counter_top())
-    paste_tile(img, 1026, F, coffee_counter("machine"))
-    paste_tile(img, 1027, F, coffee_counter("plain"))
+    if HAVE_ANTEA:
+        # cafe counter row: counter + Antea coffee machine + counter
+        c = counter_tile_antea()
+        paste_tile(img, 1029, F, c)
+        paste_tile(img, 1026, F, coffee_counter_antea())
+        paste_tile(img, 1027, F, c)
+        # refreshment nook 3x3: vending + shelf + water dispenser + plinth
+        vb = vending_block_antea()
+        for g, t in zip((1041, 1042, 1043, 1044, 1076, 1061,
+                         1073, 1074, 1075), vb):
+            paste_tile(img, g, F, t)
+        # hutch pair -> a 2-wide bookcase
+        paste_tile(img, 1650, F, antea_tile("Bookshelf.png"))
+    else:
+        # coffee counter row
+        paste_tile(img, 1029, F, wood_counter_top())
+        paste_tile(img, 1026, F, coffee_counter("machine"))
+        paste_tile(img, 1027, F, coffee_counter("plain"))
 
-    # vending composite 3x3
-    vm = vending_machine()
-    for g, t in zip((1041, 1042, 1043, 1044, 1076, 1061, 1073, 1074, 1075), vm):
-        paste_tile(img, g, F, t)
+        # vending composite 3x3
+        vm = vending_machine()
+        for g, t in zip((1041, 1042, 1043, 1044, 1076, 1061, 1073, 1074, 1075), vm):
+            paste_tile(img, g, F, t)
 
-    # hutch: the map uses two adjacent 1650 tiles, so the single tile
-    # is drawn to tile seamlessly when repeated side by side.
-    paste_tile(img, 1650, F, hutch_as_single())
-    # doormat 2x2
+        # hutch: the map uses two adjacent 1650 tiles, so the single tile
+        # is drawn to tile seamlessly when repeated side by side.
+        paste_tile(img, 1650, F, hutch_as_single())
+    # doormat 2x2 (no Antea equivalent)
     dm = doormat_unit()
     for g, t in zip((1698, 1699, 1714, 1715), dm):
         paste_tile(img, g, F, t)
@@ -913,6 +1168,13 @@ def hutch_as_single():
     px(d, 2, 15, GREY_XXD); px(d, 13, 15, GREY_XXD)
     return im
 
+def _binarize_alpha(img):
+    """Snap the alpha channel to 0/255 so the sheets keep binary alpha
+    even where an Antea sprite carries soft translucent edge pixels."""
+    a = img.getchannel("A").point(lambda v: 255 if v >= 128 else 0)
+    img.putalpha(a)
+    return img
+
 def main():
     outs = {
         "office-tileset.png": build_office(),
@@ -920,6 +1182,7 @@ def main():
         "interiors.png": build_interiors(),
     }
     for name, img in outs.items():
+        img = _binarize_alpha(img)
         path = os.path.join(REPO_TILESETS, name)
         img.save(path)
         print("wrote", path, img.size)
