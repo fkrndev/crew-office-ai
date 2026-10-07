@@ -834,11 +834,17 @@ pub fn window_new_floor(app: AppHandle) -> Result<Value, String> {
 /// config:changeHome — repointing the harness home requires re-init of every
 /// hive-bound service (Hive, roster, persist, trigger history are all
 /// constructed against the boot-time path in AppState::new). So this
-/// validates + persists the override and defers the actual move to the next
-/// launch. Upstream additionally offered 'move' semantics and relaunched in
-/// place; this port is persist-and-flag only.
+/// validates the target, carries the harness-owned state across on 'move',
+/// records the pointer the next boot reads, and restarts the process —
+/// upstream's writeConfig({harnessHome}) + killAll + app.relaunch(). On
+/// success this NEVER returns (the renderer's await never resolves); a
+/// return means an error the caller surfaces.
 #[tauri::command(async)]
-pub fn config_change_home(app: AppHandle, new_home: String) -> Result<Value, String> {
+pub fn config_change_home(
+    app: AppHandle,
+    new_home: String,
+    mode: Option<String>,
+) -> Result<Value, String> {
     let expanded = expand_tilde(&new_home);
     if expanded.is_empty() {
         return Err("invalid newHome".into());
@@ -860,15 +866,90 @@ pub fn config_change_home(app: AppHandle, new_home: String) -> Result<Value, Str
         return Err("Pick a folder that is not inside (or a parent of) the current home.".into());
     }
     let st = state(&app);
-    st.persist
-        .lock()
-        .unwrap()
-        .set_kv("harness_home", &json!(canon_new.display().to_string()));
-    Ok(json!({
-        "ok": true,
-        "requiresRestart": true,
-        "home": canon_new.display().to_string(),
-    }))
+
+    // 'move' carries the harness-owned state across — hive (memory, tasks,
+    // git history), palace, roster, db, config. 'fresh' leaves the target
+    // empty so the relaunch lands on onboarding there.
+    if mode.as_deref() == Some("move") {
+        // Close the SQLite conn before touching harness.db — the files stay
+        // locked on Windows while a connection holds them.
+        st.persist.lock().unwrap().close();
+        let mut copied: Vec<String> = Vec::new();
+        let mut move_errs: Vec<String> = Vec::new();
+        for name in ["hive", "palace"] {
+            let src = cur.join(name);
+            let dst = canon_new.join(name);
+            if src.exists() {
+                match copy_dir_recursive(&src, &dst) {
+                    Ok(()) => copied.push(dst.display().to_string()),
+                    Err(e) => move_errs.push(format!("{}: {e}", src.display())),
+                }
+            }
+        }
+        for name in [
+            "roster.json",
+            "harness.db",
+            "harness.db-wal",
+            "harness.db-shm",
+            "config.json",
+        ] {
+            let src = cur.join(name);
+            if src.exists() {
+                match std::fs::copy(&src, canon_new.join(name)) {
+                    Ok(_) => copied.push(canon_new.join(name).display().to_string()),
+                    Err(e) => move_errs.push(format!("{}: {e}", src.display())),
+                }
+            }
+        }
+        if !move_errs.is_empty() {
+            return Err(format!("move failed: {}", move_errs.join("; ")));
+        }
+    }
+
+    // Write the pointer where the NEXT boot reads it: `harnessHome` in the
+    // FIXED default-home config.json (lib.rs resolves it before AppState
+    // exists). Also push the old home onto recentHives for the picker.
+    let default_home = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("harness");
+    let pointer = crate::config::ConfigStore::new(default_home);
+    let mut patch = serde_json::Map::new();
+    patch.insert("harnessHome".into(), json!(canon_new.display().to_string()));
+    let mut recents: Vec<Value> = pointer
+        .raw_value()
+        .get("recentHives")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let cur_s = canon_cur.display().to_string();
+    recents.retain(|v| v.as_str() != Some(cur_s.as_str()));
+    recents.insert(0, json!(cur_s));
+    recents.truncate(8);
+    patch.insert("recentHives".into(), json!(recents));
+    pointer
+        .patch_raw(&patch)
+        .map_err(|e| format!("could not persist new home: {e}"))?;
+
+    drop(st);
+    app.restart(); // diverges — the renderer's await never resolves
+}
+
+/// Recursive dir copy for 'move' mode — follows nothing exotic, plain files
+/// and subdirs (upstream copyRecursive for hive + palace).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// config:ensureHome — create the harness home (and its hive/ subdir) on

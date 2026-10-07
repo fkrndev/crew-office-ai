@@ -171,11 +171,23 @@ pub fn run() {
                     log::warn!("[deep-link] register_all failed: {e}");
                 }
             }
-            let harness_home = app
+            let default_home = app
                 .path()
                 .app_data_dir()
                 .expect("app_data_dir")
                 .join("harness");
+            // config_change_home's pointer: `harnessHome` in the FIXED
+            // default-home config.json — the only file readable before we
+            // know which home is active. A custom home survives restarts
+            // this way (upstream's harnessHome config key).
+            let harness_home = crate::config::ConfigStore::new(default_home.clone())
+                .raw_value()
+                .get("harnessHome")
+                .and_then(|v| v.as_str())
+                .map(|s| crate::misc::expand_tilde(s))
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or(default_home);
             // HookServer first: its TCP addr is injected as HIVE_SOCK into every
             // agent spawn. Connections arriving before state is managed harmlessly
             // answer {} (none can — no agents exist yet).

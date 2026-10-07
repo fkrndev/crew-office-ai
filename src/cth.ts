@@ -144,7 +144,7 @@ export function installCth(): void {
     setAgentTokenCap: (...args: unknown[]) => invoke('config_set_agent_token_cap', pack(args, ["agentId","cap"])),
     setAgentCostCap: (...args: unknown[]) => invoke('config_set_agent_cost_cap', pack(args, ["agentId","cap"])),
     ensureHarnessHome: (...args: unknown[]) => invoke('config_ensure_home', pack(args, ["path"])),
-    changeHome: (...args: unknown[]) => invoke('config_change_home', pack(args, ["newHome"])),
+    changeHome: (...args: unknown[]) => invoke('config_change_home', pack(args, ["newHome","mode"])),
     listDir: (...args: unknown[]) => invoke('fs_list', pack(args, ["root","rel"])),
     readFile: (...args: unknown[]) => invoke('fs_read', pack(args, ["root","rel"])),
     readBinary: (...args: unknown[]) => invoke('fs_read_binary', pack(args, ["path"])),
