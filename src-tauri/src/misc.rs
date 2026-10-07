@@ -171,6 +171,13 @@ pub fn provider_install(
             Some("irm https://cursor.com/install?win32=true | iex"),
             None,
         ),
+        // Hermes — Nous Research's installer. Native Windows works without
+        // WSL; the scripts bundle Python+Node+TUI. No npm package.
+        "hermes" => (
+            Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
+            Some("iex (irm https://hermes-agent.nousresearch.com/install.ps1)"),
+            None,
+        ),
         _ => (None, None, None),
     }
 }
@@ -903,6 +910,11 @@ mod tests {
         // cursor is native-only (no npm).
         let (cp, cw, cn) = provider_install("cursor");
         assert!(cp.is_some() && cw.is_some() && cn.is_none());
+        // hermes — Nous installer, native windows rung, no npm.
+        let (hp, hw, hn) = provider_install("hermes");
+        assert!(hp.unwrap().contains("install.sh"));
+        assert!(hw.unwrap().contains("install.ps1"));
+        assert!(hn.is_none());
         // unknown provider → no rungs at all.
         assert_eq!(provider_install("zzz"), (None, None, None));
     }
