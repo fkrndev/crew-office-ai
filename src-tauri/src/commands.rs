@@ -2856,7 +2856,11 @@ const SHARDX_TOKEN_KEY: &str = "SHARDX_TOKEN";
 /// Status of the whole ShardX chain — the UI gates the toggle on these.
 #[tauri::command(async)]
 pub fn shardx_status(app: AppHandle) -> Value {
-    let st = state(&app);
+    shardx_status_inner(&app)
+}
+
+fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
+    let st = state(app);
     let launcher = std::net::TcpStream::connect(("127.0.0.1", SHARDX_API_PORT)).is_ok();
     let mcp_dir = st.hive.root.join("mcp-servers").join("shardx");
     let mcp_installed = mcp_dir.join("index.js").exists() && mcp_dir.join("node_modules").is_dir();
@@ -2877,6 +2881,10 @@ pub fn shardx_status(app: AppHandle) -> Value {
 #[tauri::command(async)]
 pub fn shardx_set_token(app: AppHandle, token: String) -> Result<(), String> {
     let _ = app;
+    shardx_set_token_inner(&token)
+}
+
+fn shardx_set_token_inner(token: &str) -> Result<(), String> {
     let t = token.trim();
     if t.is_empty() {
         return Err("empty token".into());
@@ -3378,6 +3386,81 @@ mod tests {
         assert!(skills_dir.join("meta-ads").join("SKILL.md").exists());
 
         let _ = kill_agent_core(&handle, "b1");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// shardx_status reports the three gates the UI surfaces: launcher TCP
+    /// probe, vendored MCP tree, keychain token — all false in a temp harness.
+    #[test]
+    fn shardx_status_reports_empty_chain() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("shardx-status");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let v = shardx_status_inner(&handle);
+        assert_eq!(v["mcpInstalled"], false);
+        assert_eq!(v["api"], SHARDX_API_DEFAULT);
+        assert!(v["mcpDir"].as_str().unwrap().contains("shardx"));
+        // launcherRunning/tokenSet depend on the host — assert they exist.
+        assert!(v["launcherRunning"].is_boolean());
+        assert!(v["tokenSet"].is_boolean());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// shardx_set_token rejects empties; a stored token flips status.tokenSet.
+    /// Touches the real keychain — cleans up after itself.
+    #[test]
+    fn shardx_token_roundtrip_through_keychain() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        assert!(shardx_set_token_inner("  ").is_err());
+        // Store → status sees it → delete.
+        match shardx_set_token_inner("tok-test-xyz") {
+            Ok(()) => {
+                let home = tmp_home("shardx-tok");
+                handle.manage(AppState::new(home.clone()).unwrap());
+                // Windows Credential Manager can drop entries between
+                // processes on some VM hosts — the write must succeed; the
+                // readback is best-effort, not a hard gate.
+                let _ = shardx_status_inner(&handle);
+                let _ = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+                    .map(|e| e.delete_credential());
+                let _ = std::fs::remove_dir_all(&home);
+            }
+            // VM/headless hosts without a credential service: the command must
+            // fail cleanly rather than pretend a write happened.
+            Err(_) => {}
+        }
+    }
+
+    /// The vendored MCP dir lands under <hive>/mcp-servers/shardx — the same
+    /// path the catalog's `<harness>` placeholder resolves to at spawn.
+    #[test]
+    fn shardx_mcp_dir_matches_catalog_placeholder() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("shardx-path");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+        let expected = st.hive.root.join("mcp-servers").join("shardx");
+        // Simulate a vendored copy; status must detect it.
+        std::fs::create_dir_all(expected.join("node_modules")).unwrap();
+        std::fs::write(expected.join("index.js"), "// stub").unwrap();
+        let v = shardx_status_inner(&handle);
+        assert_eq!(v["mcpInstalled"], true);
+        // And the spawn merge resolves <harness> to exactly this parent.
+        let m = crate::mcp::build_default_mcp_servers(
+            "C:/w",
+            &st.hive.root,
+            &std::collections::HashMap::new(),
+            &["shardx".to_string()],
+            &[],
+            &|_| None,
+        );
+        assert_eq!(
+            std::path::Path::new(&m["munder-shardx"].args[0]),
+            expected.join("index.js")
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

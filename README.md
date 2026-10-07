@@ -162,6 +162,35 @@ config file.
 - **Voice** — Voice Michael / free-flow dictation providers and keys.
 - **Memory & Knowledge** — agent memory, MemPalace, knowledge graph.
 
+## Marketplace automation (ShardX)
+
+Agents can drive real logged-in marketplace sessions (Shopee, TikTok Shop,
+Lazada Seller Center) through the **ShardX anti-detect browser** — one profile
+per account, stable fingerprint + proxy per profile, driven over CDP by an
+MCP server.
+
+Setup once per machine:
+
+1. Install the **ShardX Launcher** from
+   [github.com/ProxyShard/ShardBrowser/releases](https://github.com/ProxyShard/ShardBrowser/releases)
+   (`.msi` / portable `.exe` on Windows, `.AppImage`/`.deb` on Linux,
+   `aarch64.dmg` on macOS). First launch downloads the browser engine.
+2. In the launcher: **Settings → Automation API** → copy the Bearer token,
+   then **Settings → MCP server → Download MCP server**.
+3. Create one **profile per account** and log in manually once (OTP/captcha
+   need a human; sessions persist after that).
+4. In Agent Office: store the token via `shardx_set_token`, vendor the MCP
+   source via `shardx_setup`, and enable **ShardX Browser** either globally in
+   MCP defaults or per-agent in the Add Agent modal ("extra tools").
+
+Docs: [launcher + Automation API](https://docs.proxyshard.com/eng/tools/shardx-launcher) ·
+[MCP server](https://docs.proxyshard.com/eng/shardx-launcher-api/mcp-server) ·
+[HTTP API reference](https://github.com/ProxyShard/ShardBrowser/blob/main/openapi.yaml)
+
+The bundled `marketplace-browser-ops` skill teaches agents the profile → CDP
+workflow and its guardrails (one profile per account, no credential typing,
+hand captchas to a human).
+
 ## Stack
 
 Tauri v2 (Rust + React/TypeScript/Vite). The backend is one native binary —
