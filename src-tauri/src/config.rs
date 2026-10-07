@@ -286,6 +286,21 @@ impl ConfigStore {
         Ok((cfg, raw))
     }
 
+    /// Overwrite the file with first-run defaults (upstream `resetConfig()`)
+    /// — every untyped key (onboardingComplete, harnessHome, godProvider,
+    /// themes…) drops, which is exactly what makes the relaunch land on
+    /// onboarding instead of resurrecting the wiped setup.
+    pub fn reset(&self) -> Result<()> {
+        if let Some(p) = self.path.parent() {
+            fs::create_dir_all(p)?;
+        }
+        fs::write(
+            &self.path,
+            serde_json::to_string_pretty(&Config::default())?,
+        )?;
+        Ok(())
+    }
+
     /// Serialize the typed config but merge it over the raw file so keys the
     /// struct doesn't model survive a save round-trip — upstream's
     /// `writeConfig` writes the whole parsed object, unknown keys included.

@@ -87,6 +87,13 @@ impl PersistStore {
         self.conn.is_some()
     }
 
+    /// Drop the connection (upstream persist.close). app_reset_all calls this
+    /// before deleting harness.db — on Windows the file stays locked while a
+    /// connection holds it, so the delete fails without a close first.
+    pub fn close(&mut self) {
+        self.conn = None;
+    }
+
     // ─── kv ───────────────────────────────────────────────────────────────
 
     pub fn get_kv(&self, key: &str) -> Option<Value> {

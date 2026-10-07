@@ -97,8 +97,10 @@ pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, Stri
 /// destroyed outright), `harness.db`. The home dir itself and anything else
 /// in it is untouched. Refuses outright when home resolves to a filesystem
 /// root — a missing/misconfigured home must never escalate into a volume
-/// wipe. (Upstream also reset config.json and relaunched; this port returns a
-/// summary + `requiresRestart` instead — the caller restarts the app.)
+/// wipe. On success this NEVER returns — config.json goes back to first-run
+/// defaults and the process restarts into onboarding (upstream's
+/// `resetConfig()` + `app.relaunch()` + `app.exit(0)`; the renderer's await
+/// intentionally never resolves).
 #[tauri::command(async)]
 pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     let st = state(&app);
@@ -134,10 +136,14 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     // 3. The roster retires into roster-backups/ — never deleted outright.
     st.roster.archive();
 
+    // 3b. Close the persist connection before deleting harness.db — on
+    //     Windows the SQLite file stays locked while the connection holds
+    //     it, so this must happen before the wipe below.
+    st.persist.lock().unwrap().close();
+
     // 4. Remove the harness-owned files. Each step is independent and
-    //    reported, not fatal — harness.db may still be held open by the
-    //    persist connection on Windows, and a half-reset that reports is
-    //    better than an all-or-nothing that hangs.
+    //    reported, not fatal — a half-reset that reports is better than an
+    //    all-or-nothing that hangs.
     let mut removed: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     let hive_dir = home.join("hive");
@@ -161,16 +167,29 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
             }
         }
     }
-    Ok(json!({
-        "ok": errors.is_empty(),
-        "stoppedSlack": true,
-        "stoppedWebhook": true,
-        "killedPtys": killed,
-        "rosterArchived": true,
-        "removed": removed,
-        "errors": errors,
-        "requiresRestart": true,
-    }))
+    // 5. Back to first-run defaults, then restart into onboarding — upstream
+    //    resetConfig() + app.relaunch() + exit(0). If the config write fails
+    //    we surface it instead of rebooting into a half-wiped home that still
+    //    claims onboarding is done.
+    if let Err(e) = st.config_store.reset() {
+        return Err(format!("reset: could not reset config.json: {e}"));
+    }
+    if !errors.is_empty() {
+        // Wipe had partial failures — report instead of restarting, so the
+        // user sees what was left behind rather than a silent half-reset.
+        return Ok(json!({
+            "ok": false,
+            "stoppedSlack": true,
+            "stoppedWebhook": true,
+            "killedPtys": killed,
+            "rosterArchived": true,
+            "removed": removed,
+            "errors": errors,
+            "requiresRestart": true,
+        }));
+    }
+    drop(st);
+    app.restart(); // diverges — the renderer's await never resolves
 }
 
 /// app:setLoginItem — Windows autostart via the Run key. Non-Windows has no

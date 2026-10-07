@@ -198,6 +198,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const godName = useStore((s) => s.agents.find((a) => a.isGod)?.name) ?? 'the orchestrator';
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resetErr, setResetErr] = useState('');
   const [activeSection, setActiveSection] = useState<Section>(initialSection ?? 'General');
 
   // Change-home flow: null until the user picks a new folder, then the sub-modal
@@ -771,11 +772,21 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   };
 
   const reset = async () => {
-    setBusy(true);
+    setBusy(true); setResetErr('');
     clearLocalState();
-    // Wipes hive + palace, resets config, and relaunches into onboarding.
-    // The app exits, so this never resolves - no need to clear `busy`.
-    await window.cth.resetAll();
+    try {
+      // Wipes hive + palace, resets config, and relaunches into onboarding.
+      // On success the app exits, so this never resolves. A RESOLVED result
+      // means a partial wipe (the backend reported the leftovers) — surface it
+      // and let the user retry instead of hanging on "Resetting…".
+      const res = await window.cth.resetAll();
+      const errs = (res as { errors?: string[] } | null)?.errors;
+      setResetErr(errs?.length ? errs.join('; ') : t('settings.resetFailed'));
+      setBusy(false);
+    } catch (e) {
+      setResetErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
   };
 
   // --- Change home folder ---
@@ -911,6 +922,12 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                   {t('settings.resetConfirm.body', { godName })}
                 </div>
               </div>
+
+              {resetErr && (
+                <div style={{ fontSize: 13, color: 'var(--cth-coral-dark, #b91c1c)', lineHeight: '18px' }}>
+                  {resetErr}
+                </div>
+              )}
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <PixelButton variant="secondary" size="md" onClick={() => setConfirming(false)} disabled={busy}>

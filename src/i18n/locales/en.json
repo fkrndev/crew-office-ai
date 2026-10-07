@@ -209,6 +209,7 @@
     "switchAndRestart": "switch & restart",
     "resetting": "resetting...",
     "eraseEverything": "erase everything & restart",
+    "resetFailed": "reset failed — see errors above",
     "nav": {
       "general": "General",
       "prerequisites": "Prerequisites",

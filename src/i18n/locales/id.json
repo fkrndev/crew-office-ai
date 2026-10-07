@@ -209,6 +209,7 @@
     "switchAndRestart": "ganti & restart",
     "resetting": "mereset...",
     "eraseEverything": "hapus semuanya & restart",
+    "resetFailed": "reset gagal — lihat error di atas",
     "nav": {
       "general": "Umum",
       "prerequisites": "Prasyarat",
