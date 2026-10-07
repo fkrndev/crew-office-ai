@@ -327,7 +327,9 @@ impl CompletionWatcher {
         self.prune_pending(now_ms());
     }
 
-    /// Stop watching a dispatch (e.g. it was cancelled).
+    /// Stop watching a dispatch (e.g. it was cancelled). Reserved for the
+    /// cancel-dispatch path; not wired yet.
+    #[allow(dead_code)]
     pub fn untrack(&mut self, correlation_id: &str) {
         self.pending.remove(correlation_id);
     }
@@ -338,6 +340,7 @@ impl CompletionWatcher {
         self.session_live = live;
     }
 
+    #[allow(dead_code)]
     pub fn session_live(&self) -> bool {
         self.session_live
     }

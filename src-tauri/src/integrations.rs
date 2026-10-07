@@ -794,7 +794,6 @@ impl IntegrationBroker {
             .map_err(|e| format!("broker bind :{preferred_port}: {e}"))?;
         let port = match server.server_addr() {
             tiny_http::ListenAddr::IP(addr) => addr.port(),
-            _ => preferred_port,
         };
         let server = Arc::new(server);
         {

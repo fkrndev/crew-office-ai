@@ -1127,6 +1127,13 @@ pub fn run() {
             commands::secret_delete,
             commands::secrets_list,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running agent-office");
+        .build(tauri::generate_context!())
+        .expect("error while building agent-office")
+        .run(|app, ev| {
+            // Upstream's endSession — one coarse session_ended event on quit,
+            // before the process drops (analytics.rs gates on DNT/opt-out).
+            if matches!(ev, tauri::RunEvent::Exit) {
+                crate::analytics::global().end_session(app);
+            }
+        });
 }

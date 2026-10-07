@@ -570,6 +570,9 @@ pub fn remove_worktree(wt_path: &Path) -> Result<Value, String> {
 /// clean tree AND nothing unpushed (ahead == 0 vs upstream). Fails SAFE:
 /// a dirty tree, unpushed commits, no upstream to prove against, or any
 /// failed query all say "keep it".
+/// Upstream worktree GC gate (hive.ts cleanupOrphanedWorktrees) — kept for the
+/// scheduled-GC workstream; not wired to a command yet.
+#[allow(dead_code)]
 pub fn worktree_is_gc_safe(cwd: &Path) -> Option<Value> {
     let s = status(cwd)?;
     if s["clean"].as_bool() != Some(true) {

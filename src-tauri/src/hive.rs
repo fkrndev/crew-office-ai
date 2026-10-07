@@ -895,7 +895,9 @@ impl Hive {
     }
 
     /// Raw-json registry patch — like write_registry but on the untyped doc,
-    /// so keys no field models are never dropped. Used by hive_admin.
+    /// so keys no field models are never dropped. Reserved for hive_admin's
+    /// untyped-field edits; not wired yet.
+    #[allow(dead_code)]
     pub(crate) fn patch_registry_json(
         &self,
         id: &str,
