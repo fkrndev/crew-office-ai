@@ -492,6 +492,8 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         command: exe,
         args,
         provider,
+        // Flag-less providers (openclaw) get the model seeded into config.
+        model,
         cols,
         rows,
         hive,

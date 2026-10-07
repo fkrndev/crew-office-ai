@@ -135,6 +135,8 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
             command: exe,
             provider,
             args,
+            // Flag-less providers (openclaw) get the model via config seed.
+            model: a.model,
             cols: 100,
             rows: 30,
             // Worktree (if any) already exists on disk — cd into it, don't create a

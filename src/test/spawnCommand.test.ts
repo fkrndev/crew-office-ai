@@ -22,9 +22,13 @@ describe('buildSpawnCommand', () => {
       .toBe('hermes chat');
   });
 
-  it('openclaw: tui --local; auto mode adds NO flag (full policy is the default)', () => {
+  it('openclaw: tui --local; NO --model (tui rejects it → argv-dead spawn) and NO auto flag', () => {
+    // `openclaw tui` accepts only --local/--url/--token/--session/--deliver/
+    // --thinking/--message/--timeout-ms/--history-limit — a --model here is an
+    // argparse reject = spawn that never comes up (same class as hermes' --cli).
+    // The picked model rides SpawnArgs.model → seeded openclaw.json instead.
     expect(buildSpawnCommand(CFG(true), 'openrouter/auto', 'openclaw'))
-      .toBe('openclaw tui --local --model openrouter/auto');
+      .toBe('openclaw tui --local');
     expect(buildSpawnCommand(CFG(false), undefined, 'openclaw'))
       .toBe('openclaw tui --local');
   });

@@ -417,6 +417,8 @@ export function useHive(config: HarnessConfig | null): void {
         command: exe,
         provider: godProvider,
         args,
+        // Flag-less providers (openclaw) get the model via config seed.
+        model: godModel,
         cols: 100,
         rows: 30,
         // Restore Michael's prior conversation across an app restart. His session
@@ -1242,6 +1244,8 @@ export function useHive(config: HarnessConfig | null): void {
           command: exe,
           provider,
           args,
+          // Flag-less providers (openclaw) get the model via config seed.
+          model: a.model,
           cols,
           rows,
           // The worktree (if any) already exists on disk â€” re-enter it, do NOT

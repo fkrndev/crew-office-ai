@@ -623,7 +623,12 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     autoModeFlag: '',
     autoFlag: '',
     supportsModel: true,
-    modelFlag: '--model',
+    // `openclaw tui` has NO --model flag (docs list only --local/--url/
+    // --token/--session/--deliver/--thinking/--message/--timeout-ms/
+    // --history-limit). Appending it would be an argv reject = instant-dead
+    // spawn — the same bug class as hermes' removed --cli. The picked model
+    // rides SpawnArgs.model → seeded agents.defaults.model.primary instead.
+    modelFlag: undefined,
     hiveAware: false,
     // No hook bridge / proxy bridge yet — mail delivery uses the terminal
     // work-order / idle-nudge fallback (same class as Cursor/Crush).

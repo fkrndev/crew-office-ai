@@ -500,6 +500,8 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             no_auto_install: false,
             mcp_enable: Vec::new(),
             mcp_disable: Vec::new(),
+            // Spawn-request JSON may pin a model — flag-less providers seed it.
+            model: raw["model"].as_str().map(|s| s.to_string()),
             cols: 120,
             rows: 32,
         },

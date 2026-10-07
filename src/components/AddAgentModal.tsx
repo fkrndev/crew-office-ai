@@ -484,6 +484,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       command: exe,
       provider,
       args,
+      // Flag-less providers (openclaw) get the model seeded into config —
+      // argv carries nothing, so it has to ride the spawn payload.
+      model,
       cols: 100,
       rows: 30,
       // When set, the main process spawns this agent in its own git worktree.

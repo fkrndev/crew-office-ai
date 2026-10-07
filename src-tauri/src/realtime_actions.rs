@@ -1675,6 +1675,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                 no_auto_install: false,
                 mcp_enable: Vec::new(),
                 mcp_disable: Vec::new(),
+                model: None,
                 cols: 120,
                 rows: 30,
             };

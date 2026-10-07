@@ -76,6 +76,116 @@ pub fn openai_base_url_env(
         .map(|u| ("OPENAI_BASE_URL".to_string(), u.clone()))
 }
 
+/// OpenClaw's `tui` subcommand has NO `--model` flag — a model picked in the
+/// UI would silently corrupt argv and kill the spawn instantly (the same bug
+/// class as hermes' removed `--cli`). The model instead rides a per-agent
+/// config seeded under OPENCLAW_CONFIG_PATH: the user's own
+/// `~/.openclaw/openclaw.json` is merged when present (auth refs and other
+/// keys survive), then `agents.defaults.model.primary` is pinned. A custom
+/// base URL also lands as a `models.providers."office-compat"` entry — the
+/// openai-completions route the env reroute covers — and the model ref is
+/// rewritten to `office-compat/<id>` so it resolves against it. API keys stay
+/// env-referenced (`${...}` substitution is a documented config feature), so
+/// nothing secret lands in the seeded file.
+pub fn openclaw_seed_config(existing: &Value, base_url: Option<&str>, model: Option<&str>) -> Value {
+    let mut cfg = if existing.is_object() {
+        existing.clone()
+    } else {
+        json!({})
+    };
+
+    let mut model_ref = model.map(str::to_string);
+    if let Some(url) = base_url {
+        // "${VAR}" substitution is documented config syntax — the key stays
+        // in the environment, never in the file. DeepSeek endpoints read the
+        // native DEEPSEEK_API_KEY name; everything else falls back to OPENAI.
+        let key_env = if url.contains("deepseek.com") {
+            "DEEPSEEK_API_KEY"
+        } else {
+            "OPENAI_API_KEY"
+        };
+        let model_id = model.and_then(|m| m.rsplit('/').next()).map(str::to_string);
+        // Guard: a hand-edited openclaw.json could carry a non-object `models`
+        // — overwrite rather than panic the spawn path.
+        let models_obj = {
+            let root = cfg.as_object_mut().unwrap();
+            if !root.get("models").map(|v| v.is_object()).unwrap_or(true) {
+                root.insert("models".into(), json!({}));
+            }
+            root.entry("models").or_insert_with(|| json!({}))
+        };
+        models_obj
+            .as_object_mut()
+            .unwrap()
+            .entry("providers")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "office-compat".into(),
+                json!({
+                    "baseUrl": url,
+                    "apiKey": format!("${{{key_env}}}"),
+                    "api": "openai-completions",
+                    "models": model_id
+                        .iter()
+                        .map(|id| json!({ "id": id, "name": id }))
+                        .collect::<Vec<_>>(),
+                }),
+            );
+        if let Some(id) = model_id {
+            model_ref = Some(format!("office-compat/{id}"));
+        }
+    }
+    if let Some(m) = model_ref {
+        let defaults = cfg
+            .as_object_mut()
+            .unwrap()
+            .entry("agents")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap()
+            .entry("defaults")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap();
+        // `model` accepts a bare "provider/model" STRING in openclaw.json —
+        // upgrading a legacy string pin to {primary:…} keeps it valid.
+        match defaults.get_mut("model") {
+            Some(v) if v.is_object() => {
+                v.as_object_mut().unwrap().insert("primary".into(), json!(m));
+            }
+            _ => {
+                defaults.insert("model".into(), json!({ "primary": m }));
+            }
+        }
+    }
+    cfg
+}
+
+/// Write the merged per-agent OpenClaw config and return its path — the value
+/// OPENCLAW_CONFIG_PATH points the spawn at. None when nothing needs seeding.
+pub fn seed_openclaw_config(
+    agent_dir: &Path,
+    base_url: Option<&str>,
+    model: Option<&str>,
+) -> std::io::Result<Option<PathBuf>> {
+    if base_url.is_none() && model.is_none() {
+        return Ok(None);
+    }
+    let user_cfg = dirs::home_dir()
+        .map(|h| h.join(".openclaw").join("openclaw.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    let merged = openclaw_seed_config(&user_cfg, base_url, model);
+    let dir = agent_dir.join("openclaw");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("openclaw.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&merged).unwrap_or_default())?;
+    Ok(Some(path))
+}
+
 /// AGENT_PROVIDER_PRESETS.canReceiveInbox — the backend copy (the preset
 /// table lives renderer-side). Only providers that can't take typed inbox
 /// nudges return false: the router hands their delivery off to the frontend
@@ -970,6 +1080,51 @@ mod tests {
         // A provider with no row configured gets no env — the field is
         // per-provider, not a global override.
         assert!(openai_base_url_env(&cfg, "claude").is_none());
+    }
+
+    /// The openclaw config seed: pins agents.defaults.model.primary, adds an
+    /// office-compat provider only when a base URL is set, env-references the
+    /// key (never plaintext), merges over the user's existing config, and a
+    /// legacy string-form `model` gets upgraded instead of crashing.
+    #[test]
+    fn openclaw_seed_config_shape() {
+        // Model only — no provider block, model ref kept verbatim.
+        let out = openclaw_seed_config(&json!({}), None, Some("openrouter/auto"));
+        assert_eq!(out["agents"]["defaults"]["model"]["primary"], "openrouter/auto");
+        assert!(out["models"].is_null());
+
+        // Base URL + model → office-compat provider + rewritten ref.
+        let out = openclaw_seed_config(
+            &json!({}),
+            Some("https://api.deepseek.com"),
+            Some("deepseek-chat"),
+        );
+        let prov = &out["models"]["providers"]["office-compat"];
+        assert_eq!(prov["baseUrl"], "https://api.deepseek.com");
+        assert_eq!(prov["apiKey"], "${DEEPSEEK_API_KEY}");
+        assert_eq!(prov["models"][0]["id"], "deepseek-chat");
+        assert_eq!(
+            out["agents"]["defaults"]["model"]["primary"],
+            "office-compat/deepseek-chat"
+        );
+
+        // Non-deepseek URL → OPENAI_API_KEY env ref.
+        let out = openclaw_seed_config(&json!({}), Some("http://localhost:4000/v1"), Some("x/y"));
+        assert_eq!(
+            out["models"]["providers"]["office-compat"]["apiKey"],
+            "${OPENAI_API_KEY}"
+        );
+
+        // Existing config survives — unrelated keys and other providers kept.
+        let existing = json!({
+            "gateway": { "port": 18789 },
+            "agents": { "defaults": { "model": "openai/gpt-5.5" } },
+            "models": { "providers": { "ollama": { "baseUrl": "http://localhost:11434/v1" } } }
+        });
+        let out = openclaw_seed_config(&existing, Some("http://x/v1"), Some("llama3"));
+        assert_eq!(out["gateway"]["port"], 18789);
+        assert_eq!(out["models"]["providers"]["ollama"]["baseUrl"], "http://localhost:11434/v1");
+        assert_eq!(out["agents"]["defaults"]["model"]["primary"], "office-compat/llama3");
     }
 
     /// Fresh-install contract: every provider that CAN self-install has a rung

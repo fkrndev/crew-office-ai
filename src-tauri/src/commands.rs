@@ -296,6 +296,10 @@ pub struct SpawnArgs {
     pub mcp_enable: Vec<String>,
     #[serde(default)]
     pub mcp_disable: Vec<String>,
+    /// The UI-picked model — kept off argv for providers whose CLI lacks a
+    /// model flag (openclaw `tui`); consumed by the per-provider seeders.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -354,6 +358,10 @@ pub struct PtySpawnRequest {
     /// pty:write chain (upstream's seedPrompt contract).
     #[serde(default)]
     pub seed_prompt: Option<String>,
+    /// The UI-picked model — carried separately because openclaw's `tui` has
+    /// NO --model flag; it is seeded into the agent's config instead of argv.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub no_auto_install: bool,
     /// Per-agent MCP catalog ids to enable/disable for this spawn — rides on
@@ -642,6 +650,7 @@ pub(crate) fn translate_spawn_request(
             cwd: req.cwd.clone(),
             command: join_command(&req.command, &req.args),
             seed_prompt: req.seed_prompt.clone(),
+            model: req.model.clone(),
             isolate: req.isolate,
             is_god: hive.map(|h| h.is_god).unwrap_or(false),
             is_assistant: hive.map(|h| h.is_assistant).unwrap_or(false),
@@ -719,6 +728,13 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         no_auto_install: false,
         mcp_enable: Vec::new(),
         mcp_disable: Vec::new(),
+        // The registry's recorded model (in `extra`) — respawns re-seed it
+        // for flag-less providers (openclaw).
+        model: entry
+            .extra
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         cols: 120,
         rows: 30,
     };
@@ -839,6 +855,16 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         status: "idle".into(),
         session_id: None,
         command: args.command.clone(),
+        // The picked model rides `extra` (RegistryEntry has no typed field) so
+        // respawns — which rebuild SpawnArgs from this record — re-seed it for
+        // flag-less providers like openclaw.
+        extra: {
+            let mut e = serde_json::Map::new();
+            if let Some(m) = &args.model {
+                e.insert("model".into(), serde_json::json!(m));
+            }
+            e
+        },
         created_at: chrono::Utc::now().to_rfc3339(),
         ..Default::default()
     };
@@ -974,17 +1000,36 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
             agent_env.insert(k, v);
         }
     }
-    // OpenClaw env wiring — the same OpenAI-compatible reroute hermes gets:
-    // `openclaw tui --local` honors OPENAI_BASE_URL on its openai-compat route
-    // (openai-routing), and provider API keys already ride in via
-    // secret_env_keys above (it reads the standard *_API_KEY names).
+    // OpenClaw bridge — `openclaw tui --local` has NO --model flag, so the
+    // UI-picked model rides a per-agent openclaw.json (OPENCLAW_CONFIG_PATH)
+    // instead of argv. The same file carries a custom endpoint as a
+    // models.providers."office-compat" entry; OPENAI_BASE_URL goes in as env
+    // too (openai-routing honors it on the openai-compat route), and provider
+    // API keys already ride in via secret_env_keys above.
     if args.provider == "openclaw" {
-        let env_pair = {
+        let (env_pair, base_url, model) = {
             let cfg = st.config.lock().unwrap();
-            crate::misc::openai_base_url_env(&cfg, "openclaw")
+            (
+                crate::misc::openai_base_url_env(&cfg, "openclaw"),
+                cfg.provider_base_urls.get("openclaw").cloned(),
+                args.model
+                    .clone()
+                    .or_else(|| cfg.provider_default_models.get("openclaw").cloned()),
+            )
         };
         if let Some((k, v)) = env_pair {
             agent_env.insert(k, v);
+        }
+        match crate::misc::seed_openclaw_config(
+            &agent_dir,
+            base_url.as_deref(),
+            model.as_deref(),
+        ) {
+            Ok(Some(path)) => {
+                agent_env.insert("OPENCLAW_CONFIG_PATH".into(), path.display().to_string());
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("[openclaw] config seed failed: {e}"),
         }
     }
     // Gemini lifecycle bridge — per-agent system-settings.json bound via
