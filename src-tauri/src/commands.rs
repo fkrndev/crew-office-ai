@@ -966,15 +966,25 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         // OpenAI-compatible reroute — Settings → Agents & Models → Hermes base
         // URL lands here as OPENAI_BASE_URL so the agent hits DeepSeek/Ollama/
         // vLLM instead of api.openai.com (hermes reads it natively).
-        if let Some(url) = st
-            .config
-            .lock()
-            .unwrap()
-            .provider_base_urls
-            .get("hermes")
-            .cloned()
-        {
-            agent_env.insert("OPENAI_BASE_URL".into(), url);
+        let env_pair = {
+            let cfg = st.config.lock().unwrap();
+            crate::misc::openai_base_url_env(&cfg, "hermes")
+        };
+        if let Some((k, v)) = env_pair {
+            agent_env.insert(k, v);
+        }
+    }
+    // OpenClaw env wiring — the same OpenAI-compatible reroute hermes gets:
+    // `openclaw tui --local` honors OPENAI_BASE_URL on its openai-compat route
+    // (openai-routing), and provider API keys already ride in via
+    // secret_env_keys above (it reads the standard *_API_KEY names).
+    if args.provider == "openclaw" {
+        let env_pair = {
+            let cfg = st.config.lock().unwrap();
+            crate::misc::openai_base_url_env(&cfg, "openclaw")
+        };
+        if let Some((k, v)) = env_pair {
+            agent_env.insert(k, v);
         }
     }
     // Gemini lifecycle bridge — per-agent system-settings.json bound via

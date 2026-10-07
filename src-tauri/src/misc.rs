@@ -63,6 +63,19 @@ pub fn provider_env_names(keyring_name: &str) -> Option<Vec<&'static str>> {
     Some(envs)
 }
 
+/// Settings → AI Engines per-CLI base URL → the `OPENAI_BASE_URL` env pair a
+/// spawn should carry. Hermes and OpenClaw both honor it natively on their
+/// OpenAI-compatible route — this is the DeepSeek / Ollama / vLLM reroute a
+/// user configures in the UI instead of editing CLI config files.
+pub fn openai_base_url_env(
+    cfg: &crate::config::Config,
+    provider: &str,
+) -> Option<(String, String)> {
+    cfg.provider_base_urls
+        .get(provider)
+        .map(|u| ("OPENAI_BASE_URL".to_string(), u.clone()))
+}
+
 /// AGENT_PROVIDER_PRESETS.canReceiveInbox — the backend copy (the preset
 /// table lives renderer-side). Only providers that can't take typed inbox
 /// nudges return false: the router hands their delivery off to the frontend
@@ -931,6 +944,32 @@ mod tests {
         assert!(on.is_none());
         // unknown provider → no rungs at all.
         assert_eq!(provider_install("zzz"), (None, None, None));
+    }
+
+    /// UI-only OpenAI-compatible reroute: the Settings → AI Engines base-URL
+    /// row must reach hermes AND openclaw spawns as OPENAI_BASE_URL, and stay
+    /// silent (no env) when unset — otherwise a configured endpoint is a dead
+    /// setting, or an unset one injects garbage into every spawn.
+    #[test]
+    fn openai_base_url_env_wiring() {
+        let mut cfg = crate::config::Config::default();
+        assert!(openai_base_url_env(&cfg, "hermes").is_none());
+        assert!(openai_base_url_env(&cfg, "openclaw").is_none());
+        cfg.provider_base_urls
+            .insert("hermes".into(), "https://api.deepseek.com".into());
+        cfg.provider_base_urls
+            .insert("openclaw".into(), "http://localhost:4000/v1".into());
+        assert_eq!(
+            openai_base_url_env(&cfg, "hermes"),
+            Some(("OPENAI_BASE_URL".into(), "https://api.deepseek.com".into()))
+        );
+        assert_eq!(
+            openai_base_url_env(&cfg, "openclaw"),
+            Some(("OPENAI_BASE_URL".into(), "http://localhost:4000/v1".into()))
+        );
+        // A provider with no row configured gets no env — the field is
+        // per-provider, not a global override.
+        assert!(openai_base_url_env(&cfg, "claude").is_none());
     }
 
     /// Fresh-install contract: every provider that CAN self-install has a rung

@@ -40,7 +40,10 @@ const CLIS: Array<{ id: AgentProvider; label: string; hint: string }> = [
   { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
   // Hermes reads OPENAI_BASE_URL natively — pointing it at api.deepseek.com
   // (+ a DeepSeek key above) makes a Hermes worker talk DeepSeek.
-  { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)' }
+  { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)' },
+  // OpenClaw honors the same OPENAI_BASE_URL reroute on its openai-compat
+  // route; provider keys ride in via the API-key section above.
+  { id: 'openclaw', label: 'OpenClaw', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL' }
 ];
 
 const inputStyle: CSSProperties = {
