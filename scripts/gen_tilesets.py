@@ -192,17 +192,24 @@ def drawer():
     rect(d, 5, 6, 6, 1, (150, 120, 86, 255))
     return im
 
-def chair(color_ring, color_fill, color_inner, feet=True):
+def office_chair(body, shade, hi):
+    """Top-down office chair: the agent sits facing UP toward the monitor, so
+    the backrest is the dark band at the BOTTOM of the tile. Seat cushion in
+    the middle, armrests at the sides, gas-cylinder dot in the center."""
     im = new_tile(); d = ImageDraw.Draw(im)
-    # rounded-square cushion seen from above
-    rect(d, 2, 1, 12, 14, color_ring)
-    rect(d, 1, 2, 14, 12, color_ring)
-    rect(d, 3, 3, 10, 10, color_fill)
-    rect(d, 4, 4, 8, 8, color_inner)
-    # backrest hint (top band)
-    rect(d, 2, 1, 12, 2, color_ring)
-    if feet:
-        px(d, 4, 15, color_ring); px(d, 11, 15, color_ring)
+    # backrest (bottom, behind the sitter)
+    rect(d, 3, 11, 10, 4, shade)
+    rect(d, 2, 12, 12, 3, shade)
+    rect(d, 3, 11, 10, 1, hi)
+    # seat cushion
+    rect(d, 3, 4, 10, 7, body)
+    rect(d, 2, 5, 12, 5, body)
+    rect(d, 4, 5, 8, 5, hi)
+    # armrests
+    rect(d, 1, 5, 1, 5, shade)
+    rect(d, 14, 5, 1, 5, shade)
+    # casters hint
+    px(d, 3, 15, shade); px(d, 12, 15, shade)
     return im
 
 def mauve_chair_back():
@@ -221,18 +228,26 @@ def mauve_cushion():
     im = new_tile(); d = ImageDraw.Draw(im)
     rect(d, 2, 1, 12, 4, MAUVE_D)
     rect(d, 2, 1, 12, 1, MAUVE_XD)
-    rect(d, 2, 5, 12, 11, MAUVE)
-    rect(d, 3, 6, 10, 9, MAUVE_L)
+    # armrests run down the sides
+    rect(d, 1, 4, 2, 11, MAUVE_D)
+    rect(d, 13, 4, 2, 11, MAUVE_D)
+    rect(d, 1, 4, 2, 1, MAUVE_XD)
+    rect(d, 13, 4, 2, 1, MAUVE_XD)
+    rect(d, 3, 5, 10, 11, MAUVE)
+    rect(d, 4, 6, 8, 9, MAUVE_L)
     return im
 
 def mauve_chair_front():
     """Chair lower half: seat + feet (gid 274)."""
     im = new_tile(); d = ImageDraw.Draw(im)
-    rect(d, 2, 0, 12, 10, MAUVE)
-    rect(d, 3, 0, 10, 8, MAUVE_L)
-    rect(d, 2, 10, 12, 2, MAUVE_D)
-    rect(d, 3, 12, 3, 3, MAUVE_XD)
-    rect(d, 10, 12, 3, 3, MAUVE_XD)
+    # armrest tails continue down the sides
+    rect(d, 1, 0, 2, 9, MAUVE_D)
+    rect(d, 13, 0, 2, 9, MAUVE_D)
+    rect(d, 3, 0, 10, 10, MAUVE)
+    rect(d, 4, 0, 8, 8, MAUVE_L)
+    rect(d, 3, 10, 10, 2, MAUVE_D)
+    rect(d, 4, 12, 3, 3, MAUVE_XD)
+    rect(d, 9, 12, 3, 3, MAUVE_XD)
     return im
 
 def mauve_armchair_side():
@@ -777,8 +792,8 @@ def build_office():
     paste_tile(img, 285, F, appliance_panel())
 
     # chairs
-    paste_tile(img, 289, F, chair((122, 90, 64, 255), WOOD, WOOD_HI))
-    paste_tile(img, 305, F, chair(GREY_D, GREY, GREY_L))
+    paste_tile(img, 289, F, office_chair((110, 78, 50, 255), (70, 48, 28, 255), (150, 116, 80, 255)))
+    paste_tile(img, 305, F, office_chair(GREY, GREY_XD, GREY_L))
     paste_tile(img, 297, F, dark_bin(0))
     paste_tile(img, 298, F, dark_bin(1))
     paste_tile(img, 301, F, paper_or_mug())
@@ -836,8 +851,8 @@ def build_a5():
     paste_tile(img, 579, F, wall(baseboard=True))
     paste_tile(img, 581, F, wall(edges=("r",), baseboard=True))
     # columns / pillars
-    paste_tile(img, 611, F, wall(capital=True))
-    paste_tile(img, 643, F, wall())
+    paste_tile(img, 611, F, wall(capital=True, baseboard=True))
+    paste_tile(img, 643, F, wall(edges=("l", "r"), baseboard=True))
     # carpet 2x2 checker
     paste_tile(img, 783, F, carpet(dark=False, seed=0))
     paste_tile(img, 784, F, carpet(dark=True, seed=1))

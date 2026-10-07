@@ -13,10 +13,10 @@ TS = os.path.join(os.path.dirname(__file__), "..", "src", "assets", "tilesets")
 OUT = os.path.join(os.path.dirname(__file__), "..", "office-new.png")
 SCALE = 2  # 16px tiles -> 32px on screen
 
-SHEETS = os.path.join(os.path.dirname(__file__), "..", "src", "assets", "tilesets")
-    (1, Image.open(TS + r"\office-tileset.png").convert("RGBA"), 512),
-    (513, Image.open(TS + r"\a5-office-floors-walls.png").convert("RGBA"), 512),
-    (1025, Image.open(TS + r"\interiors.png").convert("RGBA"), 1424),
+SHEETS = [
+    (1, Image.open(os.path.join(TS, "office-tileset.png")).convert("RGBA"), 512),
+    (513, Image.open(os.path.join(TS, "a5-office-floors-walls.png")).convert("RGBA"), 512),
+    (1025, Image.open(os.path.join(TS, "interiors.png")).convert("RGBA"), 1424),
 ]
 
 def tile_for(gid):
