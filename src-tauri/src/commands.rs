@@ -968,10 +968,36 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 let provider = base_url.as_deref().map(|u| {
                     if u.contains("deepseek.com") { "deepseek" } else { "custom" }.to_string()
                 });
-                let api_key = match provider.as_deref() {
+                let mut api_key = match provider.as_deref() {
                     Some("deepseek") => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK"),
                     _ => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK")
                         .or_else(|| crate::misc::secret_get("PROVIDER_KEY_OPENAI")),
+                };
+                // Fallback — never boot into hermes' first-run setup wizard:
+                // with no provider anywhere the CLI exits before its TUI ever
+                // draws (agent appears hired but dead). Any stored backend key
+                // becomes the seed; the seeder only writes when the home
+                // config lacks a provider, so a configured user is untouched.
+                let (provider, base_url) = if provider.is_some() {
+                    (provider, base_url)
+                } else {
+                    const FALLBACK: &[(&str, &str, Option<&str>)] = &[
+                        ("openrouter", "PROVIDER_KEY_OPENROUTER", None),
+                        ("openai", "PROVIDER_KEY_OPENAI", Some("https://api.openai.com/v1")),
+                        ("deepseek", "PROVIDER_KEY_DEEPSEEK", Some("https://api.deepseek.com")),
+                        ("anthropic", "PROVIDER_KEY_ANTHROPIC", None),
+                    ];
+                    let hit = FALLBACK.iter().find_map(|(p, k, u)| {
+                        crate::misc::secret_get(k)
+                            .map(|key| ((*p, Some(key)), u.map(|s| s.to_string())))
+                    });
+                    match hit {
+                        Some(((p, key), url)) => {
+                            api_key = key;
+                            (Some(p.to_string()), url)
+                        }
+                        None => (None, base_url),
+                    }
                 };
                 crate::hive::HermesSeed {
                     provider,

@@ -1492,10 +1492,14 @@ impl Hive {
         // OpenAI-compatible tooling downstream still keys on OPENAI_API_KEY).
         let env_path = home.join(".env");
         if let Some(key) = &seed.api_key {
-            let vars: &[&str] = if seed.provider.as_deref() == Some("deepseek") {
-                &["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]
-            } else {
-                &["OPENAI_API_KEY"]
+            // Write the env name the seeded provider actually reads — an
+            // openrouter worker handed only OPENAI_API_KEY still dies on
+            // "no API keys or providers found".
+            let vars: &[&str] = match seed.provider.as_deref() {
+                Some("deepseek") => &["DEEPSEEK_API_KEY", "OPENAI_API_KEY"],
+                Some("openrouter") => &["OPENROUTER_API_KEY"],
+                Some("anthropic") => &["ANTHROPIC_API_KEY"],
+                _ => &["OPENAI_API_KEY"],
             };
             let mut s = fs::read_to_string(&env_path).unwrap_or_default();
             let mut dirty = false;
@@ -2914,6 +2918,33 @@ mod tests {
         assert!(cfg.contains("provider: \"deepseek\""), "{cfg}");
         assert!(cfg.contains("base_url: \"https://api.deepseek.com\""), "{cfg}");
         assert!(cfg.contains("hooks:"), "existing hooks block preserved: {cfg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hermes_seed_env_matches_provider_name() {
+        // The .env must carry the variable the seeded provider reads — an
+        // openrouter worker given only OPENAI_API_KEY still dies on
+        // "no API keys or providers found".
+        let dir = std::env::temp_dir().join(format!("oa-hermes-envvars-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let hook_bin = dir.join("hive-hook.exe");
+        let home = hive
+            .install_hermes_hooks_seeded_at(
+                &dir.join("agent"),
+                &hook_bin,
+                &crate::hive::HermesSeed {
+                    provider: Some("openrouter".into()),
+                    api_key: Some("sk-or".into()),
+                    ..Default::default()
+                },
+                &no_user_hermes(&dir),
+            )
+            .unwrap();
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.lines().any(|l| l == "OPENROUTER_API_KEY=sk-or"), "{env}");
+        assert!(!env.contains("OPENAI_API_KEY"), "{env}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
