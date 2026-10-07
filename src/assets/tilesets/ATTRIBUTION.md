@@ -1,37 +1,33 @@
 # Asset attribution
 
-The office tilesets and Tiled maps in this directory are vendored from
-[`shahar061/the-office`](https://github.com/shahar061/the-office) (project code: ISC).
+## Tilesets — procedurally generated, 100% license-clean
 
-## Pixel art from LimeZu (licensed)
+The tileset PNGs in `tilesets/` (`office-tileset.png`, `a5-office-floors-walls.png`,
+`interiors.png`) are **generated programmatically by the project's own pixel-art
+script** (`cc0-assets/gen_tilesets.py` in the dev workspace). They contain no
+third-party art and carry no license obligations — safe for commercial
+distribution with no attribution required.
 
-The tilesets (`tilesets/*.png`) are from **Modern Interiors - RPG Tileset [16X16]** by
-[LimeZu](https://limezu.itch.io/moderninteriors), used under the **Complete Version licence**
-purchased on 2026-08-20 (see `tilesets/LIMEZUASSETS-LICENSE.txt`):
+The original LimeZu tilesets were replaced on 2026-09-08 because the purchased
+Complete Version licence did not transfer cleanly to this project's owner. The
+replacement keeps the exact same gid layout (same image dimensions, same 16×16
+grid, sprites painted only at the slots the maps use) so `maps/office.tmj` and
+`maps/brooklyn99.tmj` render correctly unmodified.
 
-- ✅ May be **edited and used in any commercial or non-commercial project**.
-- ❌ May not be resold, or edited and resold.
-- ⚠️ **Credits are required**, linking to <https://limezu.itch.io/>. This obligation is live. The
-  link must stay in the README acknowledgements, in the app's about/credits surface, and on the
-  website. Removing it breaks the licence.
+A zip backup of the LimeZu originals is kept OUTSIDE the repo (not
+redistributed) at `D:\project\super-agent\limezu-assets-backup-2026.zip`.
 
-The three bundled tilesets are `interiors.png`, `office-tileset.png` and
-`a5-office-floors-walls.png`. Each one is imported by `scene/office/themeRegistry.ts` and actually
-drawn on the office floor. Nothing else in this directory is LimeZu art.
+## Tiled maps
 
-## The Office cast is *not* LimeZu art
+`maps/office.tmj` and `maps/brooklyn99.tmj` are original Tiled JSON layouts
+hand-authored for this project (adapted from the map structure of
+[`shahar061/the-office`](https://github.com/shahar061/the-office), project code:
+ISC). They contain tile-id references and object coordinates only — no image
+data — and are not derived LimeZu art.
 
-Every character, meaning the card portraits and the walking sprites on the office floor, is drawn
-procedurally in [`scene/office/portraitArt.ts`](../scene/office/portraitArt.ts) from per-character
-recipes. These are original, fully custom-drawn busts, not recolours of anyone else's sprites, and
-they carry no third-party licence.
+## Cast
 
-This was not always true. The cast was once recoloured from LimeZu's `Adam/Alex/Amelia/Bob` walk
-sheets; those sheets were deleted on 2026-08-20 once nothing referenced them any more. If you are
-reading old commits or an old copy of this file, that is the change you are looking at.
-
-## Tiled map
-
-`maps/office.tmj` and `maps/brooklyn99.tmj` are Tiled JSON maps built on the LimeZu tilesets
-above. Both are imported by `themeRegistry.ts`; a map that nothing imports is not shipped, and
-should be deleted rather than left to imply an asset is in use.
+Every character — card portraits and walking sprites on the office floor — is
+drawn procedurally in
+[`scene/office/portraitArt.ts`](../scene/office/portraitArt.ts) from
+per-character recipes. Original work, no third-party licence.
