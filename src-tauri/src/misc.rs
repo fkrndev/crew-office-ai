@@ -178,6 +178,15 @@ pub fn provider_install(
             Some("iex (irm https://hermes-agent.nousresearch.com/install.ps1)"),
             None,
         ),
+        "openclaw" => (
+            Some("curl -fsSL https://openclaw.ai/install | bash"),
+            Some("irm https://openclaw.ai/install.ps1 | iex"),
+            None,
+        ),
+        // No known installer: grok/kimi/antigravity(agy)/qwen/custom — these
+        // either ship inside another product (agy comes with the Antigravity
+        // IDE) or have no trusted install spec yet. They spawn and die on
+        // their own missing-binary error, same as upstream.
         _ => (None, None, None),
     }
 }
@@ -915,8 +924,67 @@ mod tests {
         assert!(hp.unwrap().contains("install.sh"));
         assert!(hw.unwrap().contains("install.ps1"));
         assert!(hn.is_none());
+        // openclaw — official install script both platforms.
+        let (op, ow, on) = provider_install("openclaw");
+        assert!(op.unwrap().contains("openclaw.ai/install"));
+        assert!(ow.unwrap().contains("openclaw.ai/install.ps1"));
+        assert!(on.is_none());
         // unknown provider → no rungs at all.
         assert_eq!(provider_install("zzz"), (None, None, None));
+    }
+
+    /// Fresh-install contract: every provider that CAN self-install has a rung
+    /// for the current OS, and every catalog provider id is classified — either
+    /// installable (a rung exists) or known-no-installer (dies on its own
+    /// missing-binary error, upstream-parity). A new provider landing in the
+    /// shared catalog without either arm fails here instead of silently doing
+    /// nothing on a fresh machine.
+    #[test]
+    fn every_provider_is_classified_for_install() {
+        const INSTALLABLE: &[&str] = &[
+            "claude", "codex", "gemini", "opencode", "crush", "pi", "copilot",
+            "cursor", "hermes", "openclaw",
+        ];
+        const NO_INSTALLER: &[&str] = &["grok", "kimi", "antigravity", "qwen", "custom"];
+        for p in INSTALLABLE {
+            let (posix, win32, npm) = provider_install(p);
+            let has_rung = if cfg!(windows) { win32.is_some() } else { posix.is_some() };
+            assert!(
+                has_rung || npm.is_some(),
+                "provider {p} must have an install rung for this OS or npm"
+            );
+        }
+        for p in NO_INSTALLER {
+            assert_eq!(provider_install(p), (None, None, None), "{p} unexpectedly gained a rung — update the matrix");
+        }
+    }
+
+    /// install_script picks npm first when npm exists, native otherwise — and
+    /// never returns a script for a provider with no rungs (spawn must fall
+    /// through to the normal path, not install a phantom).
+    #[test]
+    fn install_script_rung_order_and_missing() {
+        // npm available → npm rung wins (fast, no admin).
+        let (script, _relaunch) = install_script("claude", "claude", true).unwrap();
+        assert!(script.contains("npm install -g"));
+        // Native-only provider (no npm package) → vendor installer regardless
+        // of npm presence — hermes has no npm rung at all.
+        let (script, _) = install_script("hermes", "hermes", true).unwrap();
+        if cfg!(windows) {
+            assert!(script.contains("install.ps1"));
+        } else {
+            assert!(script.contains("install.sh"));
+        }
+        // npm-missing on an npm-capable provider: either the node-then-npm
+        // rung (Node installer resolved) or the native fallback (offline).
+        let (script, _) = install_script("claude", "claude", false).unwrap();
+        assert!(
+            script.contains("node") || script.contains("install.ps1") || script.contains("install.sh"),
+            "expected node-then-npm or native fallback, got: {script}"
+        );
+        // no-installer provider → None (spawn falls through, never loops).
+        assert!(install_script("custom", "custom", false).is_none());
+        assert!(install_script("grok", "grok", true).is_none());
     }
 
     #[test]
