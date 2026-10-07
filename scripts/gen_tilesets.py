@@ -194,22 +194,26 @@ def drawer():
 
 def office_chair(body, shade, hi):
     """Top-down office chair: the agent sits facing UP toward the monitor, so
-    the backrest is the dark band at the BOTTOM of the tile. Seat cushion in
-    the middle, armrests at the sides, gas-cylinder dot in the center."""
+    the backrest is the dark band at the BOTTOM of the tile. Fill the tile —
+    a chair that only uses the middle reads as a floating cushion."""
     im = new_tile(); d = ImageDraw.Draw(im)
-    # backrest (bottom, behind the sitter)
-    rect(d, 3, 11, 10, 4, shade)
-    rect(d, 2, 12, 12, 3, shade)
-    rect(d, 3, 11, 10, 1, hi)
-    # seat cushion
-    rect(d, 3, 4, 10, 7, body)
-    rect(d, 2, 5, 12, 5, body)
-    rect(d, 4, 5, 8, 5, hi)
+    # 5-star base shadow
+    rect(d, 4, 14, 8, 2, shade)
+    px(d, 2, 15, shade); px(d, 13, 15, shade)
+    px(d, 3, 14, shade); px(d, 12, 14, shade)
+    # backrest (bottom, behind the sitter) — full width, chunky
+    rect(d, 1, 10, 14, 4, shade)
+    rect(d, 1, 10, 14, 1, hi)
+    rect(d, 2, 11, 12, 2, body)
     # armrests
-    rect(d, 1, 5, 1, 5, shade)
-    rect(d, 14, 5, 1, 5, shade)
-    # casters hint
-    px(d, 3, 15, shade); px(d, 12, 15, shade)
+    rect(d, 0, 4, 2, 6, shade)
+    rect(d, 14, 4, 2, 6, shade)
+    rect(d, 0, 4, 2, 1, hi)
+    rect(d, 14, 4, 2, 1, hi)
+    # seat cushion — edge-to-edge
+    rect(d, 2, 3, 12, 7, body)
+    rect(d, 3, 4, 10, 5, hi)
+    rect(d, 2, 3, 12, 1, hi)
     return im
 
 def mauve_chair_back():
@@ -224,15 +228,19 @@ def mauve_chair_back():
     return im
 
 def mauve_cushion():
-    """Chair backrest+upper seat, top half of front-facing chair (gid 258)."""
+    """Chair backrest+upper seat, top half of front-facing chair (gid 258).
+    Fills the tile — reads as a lounge chair, not a pillow."""
     im = new_tile(); d = ImageDraw.Draw(im)
-    rect(d, 2, 1, 12, 4, MAUVE_D)
-    rect(d, 2, 1, 12, 1, MAUVE_XD)
+    # rolled backrest top
+    rect(d, 1, 0, 14, 5, MAUVE_D)
+    rect(d, 1, 0, 14, 1, MAUVE_XD)
+    rect(d, 2, 1, 12, 2, MAUVE)          # cushion on the backrest
     # armrests run down the sides
-    rect(d, 1, 4, 2, 11, MAUVE_D)
-    rect(d, 13, 4, 2, 11, MAUVE_D)
-    rect(d, 1, 4, 2, 1, MAUVE_XD)
-    rect(d, 13, 4, 2, 1, MAUVE_XD)
+    rect(d, 0, 4, 3, 12, MAUVE_D)
+    rect(d, 13, 4, 3, 12, MAUVE_D)
+    rect(d, 0, 4, 3, 1, MAUVE_XD)
+    rect(d, 13, 4, 3, 1, MAUVE_XD)
+    # seat
     rect(d, 3, 5, 10, 11, MAUVE)
     rect(d, 4, 6, 8, 9, MAUVE_L)
     return im
@@ -240,14 +248,13 @@ def mauve_cushion():
 def mauve_chair_front():
     """Chair lower half: seat + feet (gid 274)."""
     im = new_tile(); d = ImageDraw.Draw(im)
-    # armrest tails continue down the sides
-    rect(d, 1, 0, 2, 9, MAUVE_D)
-    rect(d, 13, 0, 2, 9, MAUVE_D)
-    rect(d, 3, 0, 10, 10, MAUVE)
-    rect(d, 4, 0, 8, 8, MAUVE_L)
-    rect(d, 3, 10, 10, 2, MAUVE_D)
-    rect(d, 4, 12, 3, 3, MAUVE_XD)
-    rect(d, 9, 12, 3, 3, MAUVE_XD)
+    rect(d, 0, 0, 3, 10, MAUVE_D)         # armrest tails
+    rect(d, 13, 0, 3, 10, MAUVE_D)
+    rect(d, 3, 0, 10, 11, MAUVE)
+    rect(d, 4, 0, 8, 9, MAUVE_L)
+    rect(d, 3, 11, 10, 2, MAUVE_D)        # seat front edge
+    rect(d, 3, 13, 3, 3, MAUVE_XD)        # feet
+    rect(d, 10, 13, 3, 3, MAUVE_XD)
     return im
 
 def mauve_armchair_side():
