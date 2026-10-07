@@ -766,13 +766,22 @@ def antea(name):
     return _ANTEA_CACHE[name]
 
 def antea_tile(name, box=None, size=(T, T)):
-    """Cut a 16x16 tile from an Antea sprite: optional crop box, then a
-    NEAREST resize to the target size (integer up/downscales stay crisp)."""
+    """Cut a tile from an Antea sprite at NATIVE scale — never resized.
+    `box` picks the source region; if the result is larger than `size` the
+    centred window is taken, if smaller it is pasted centred on a
+    transparent canvas."""
     im = antea(name)
     if box is not None:
         im = im.crop(box)
+    tw, th = size
+    if im.width > tw or im.height > th:
+        x0 = max(0, (im.width - tw) // 2)
+        y0 = max(0, (im.height - th) // 2)
+        im = im.crop((x0, y0, x0 + tw, y0 + th))
     if im.size != tuple(size):
-        im = im.resize(size, Image.NEAREST)
+        out = new_tile()
+        out.paste(im, ((tw - im.width) // 2, (th - im.height) // 2), im)
+        im = out
     return im
 
 # Antea palette samples (dark navy desk line, maroon vending line)
@@ -826,9 +835,8 @@ def monitor_pair_antea(on):
             r, g, b, a = p[x, y]
             if a and (r, g, b) in screen:
                 p[x, y] = (*ramp[screen[(r, g, b)]], a)
-    mon = src.resize((28, 22), Image.NEAREST)
     s = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-    s.paste(mon, (2, 3), mon)
+    s.paste(src, ((32 - src.width) // 2, (26 - src.height) // 2), src)
     d = ImageDraw.Draw(s)
     rect(d, 13, 25, 6, 4, A_BAND)          # stand stem
     rect(d, 9, 29, 14, 2, A_LEG)           # base
@@ -1031,11 +1039,12 @@ def build_office():
     paste_tile(img, 266, F, antea_tile("Small-Table.png"))
     paste_tile(img, 276, F, antea_tile("Small-Table.png"))
 
-    # appliances: copier, water dispenser, tall cabinet, printer stand
-    paste_tile(img, 269, F, antea_tile("Big-Office-Printer.png"))
-    paste_tile(img, 281, F, antea_tile("Water-Dispenser.png"))
-    paste_tile(img, 282, F, antea_tile("Filing-Cabinet-Tall.png"))
-    paste_tile(img, 285, F, antea_tile("Printer-Furniture.png"))
+    # appliances: copier, water dispenser, tall cabinet, printer stand —
+    # 32x32 sources are cropped, not resized; box = most readable window
+    paste_tile(img, 269, F, antea_tile("Big-Office-Printer.png", (7, 4, 23, 20)))
+    paste_tile(img, 281, F, antea_tile("Water-Dispenser.png", (3, 1, 19, 17)))
+    paste_tile(img, 282, F, antea_tile("Filing-Cabinet-Tall.png", (8, 8, 24, 24)))
+    paste_tile(img, 285, F, antea_tile("Printer-Furniture.png", (8, 8, 24, 24)))
 
     # worker chairs + bins + desk smalls
     ch = antea_tile("Chair.png")
