@@ -218,6 +218,16 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
 
               {preset.supportsModel && (
                 <Row label="Model">
+                  {modelsForProvider(provider).length === 0 ? (
+                    // Catalog-empty providers (hermes, openclaw, kimi…)
+                    // take a freeform --model string; empty = CLI default.
+                    <input
+                      value={model ?? ''}
+                      onChange={(e) => setModel(e.target.value.trim() || undefined)}
+                      placeholder="CLI default"
+                      style={{ padding: '4px 8px', fontFamily: 'var(--cth-font-mono)', fontSize: 12, border: '1px solid var(--cth-ink-300)', background: 'var(--cth-cream-50)', color: 'var(--cth-ink-900)' }}
+                    />
+                  ) : (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {(() => {
                       const known = modelsForProvider(provider);
@@ -247,6 +257,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                       );
                     })}
                   </div>
+                  )}
                 </Row>
               )}
 

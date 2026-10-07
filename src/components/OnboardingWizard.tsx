@@ -553,15 +553,27 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <div style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('onboarding.orchestrator.model')}</div>
-                  <select
-                    value={godModel ?? ''}
-                    onChange={(e) => setGodModel(e.target.value || undefined)}
-                    style={inputStyle}
-                  >
-                    {modelsForProvider(godProvider).map((m) => (
-                      <option key={m.label} value={m.id ?? ''}>{m.label}</option>
-                    ))}
-                  </select>
+                  {modelsForProvider(godProvider).length > 0 ? (
+                    <select
+                      value={godModel ?? ''}
+                      onChange={(e) => setGodModel(e.target.value || undefined)}
+                      style={inputStyle}
+                    >
+                      {modelsForProvider(godProvider).map((m) => (
+                        <option key={m.label} value={m.id ?? ''}>{m.label}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    // Providers without a fixed catalog (hermes, openclaw,
+                    // kimi, antigravity…) take a freeform --model string —
+                    // empty stays on the CLI's own configured default.
+                    <input
+                      value={godModel ?? ''}
+                      onChange={(e) => setGodModel(e.target.value.trim() || undefined)}
+                      placeholder={t('onboarding.orchestrator.modelFreeform', 'CLI default')}
+                      style={inputStyle}
+                    />
+                  )}
                   <div style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
                     {t('onboarding.orchestrator.modelNote')}
                   </div>

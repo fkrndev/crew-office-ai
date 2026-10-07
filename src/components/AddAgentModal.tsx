@@ -1088,6 +1088,17 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     </Row>
 
                     {preset.supportsModel && <Row label={tr('addAgent.model')}>
+                      {modelsForProvider(provider).length === 0 ? (
+                        // Catalog-empty providers (hermes, openclaw, kimi,
+                        // antigravity…) take a freeform --model string; empty
+                        // stays on the CLI's own configured default.
+                        <input
+                          value={model ?? ''}
+                          onChange={(e) => pickModel(e.target.value.trim() || undefined)}
+                          placeholder={tr('addAgent.cliDefaultModel')}
+                          style={inputStyle}
+                        />
+                      ) : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {(() => {
                           // An imported hire may name a model newer than this picker's
@@ -1120,6 +1131,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           );
                         })}
                       </div>
+                      )}
                     </Row>}
 
                     {/* OSS-model quick-picks (ondev-c) — local + third-party-provider

@@ -915,15 +915,32 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
                     </option>
                   ))}
                 </Select>
-                <Select
-                  value={engineModel ?? ''}
-                  disabled={restarting === a.id}
-                  onChange={(v) => setEngineModel(v || undefined)}
-                >
-                  {modelsForProvider(engineProvider).map((m) => (
-                    <option key={m.label} value={m.id ?? ''}>{m.label}</option>
-                  ))}
-                </Select>
+                {modelsForProvider(engineProvider).length > 0 ? (
+                  <Select
+                    value={engineModel ?? ''}
+                    disabled={restarting === a.id}
+                    onChange={(v) => setEngineModel(v || undefined)}
+                  >
+                    {modelsForProvider(engineProvider).map((m) => (
+                      <option key={m.label} value={m.id ?? ''}>{m.label}</option>
+                    ))}
+                  </Select>
+                ) : (
+                  // Catalog-empty providers take a freeform --model string;
+                  // empty keeps the CLI's configured default.
+                  <input
+                    value={engineModel ?? ''}
+                    disabled={restarting === a.id}
+                    onChange={(e) => setEngineModel(e.target.value.trim() || undefined)}
+                    placeholder="CLI default"
+                    style={{
+                      padding: '3px 6px', background: 'var(--cth-paper-100)',
+                      border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                      fontFamily: 'var(--cth-font-mono)', fontSize: 12, color: 'var(--cth-ink-900)', minWidth: 0,
+                      width: '100%'
+                    }}
+                  />
+                )}
                 <PixelButton
                   variant="secondary"
                   size="sm"

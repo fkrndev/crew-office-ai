@@ -678,6 +678,7 @@
       "workersOnly": "KHUSUS PEKERJA",
       "workersOnlyHint": "Belum bisa mengosongkan surat hive, jadi belum bisa menjalankan klonmu — tetap tersedia saat merekrut pekerja.",
       "model": "Model",
+      "modelFreeform": "Default CLI (mis. provider/model — opsional)",
       "modelNote": "Ini hanya mengatur engine {{godName}}. Kamu bisa menjalankan provider lain per agen nanti."
     },
     "repos": {

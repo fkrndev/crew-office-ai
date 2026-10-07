@@ -678,6 +678,7 @@
       "workersOnly": "WORKERS ONLY",
       "workersOnlyHint": "Can't drain hive mail yet, so it can't run your clone — still available when hiring workers.",
       "model": "Model",
+      "modelFreeform": "CLI default (e.g. provider/model — optional)",
       "modelNote": "This only sets {{godName}}'s engine. You can run other providers per agent later."
     },
     "repos": {
