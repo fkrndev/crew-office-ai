@@ -468,7 +468,9 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         ));
     }
     // Missing-CLI → fail fast; a headless worker has no human to install it.
-    let path_env = std::env::var("PATH").unwrap_or_default();
+    // Fresh registry PATH on Windows — an install that ran seconds ago is
+    // already visible here (the process PATH alone is frozen at app start).
+    let path_env = crate::pty::user_shell_path();
     if crate::pty::resolve_program(&bin, &path_env).is_none() {
         fail!(format!("engine CLI \"{bin}\" is not installed"));
     }

@@ -297,19 +297,36 @@ pub fn pty_list(app: AppHandle) -> Result<Vec<Value>, String> {
     Ok(list)
 }
 
-/// pty:redraw — the buffered scrollback for one id.
-/// pty:redraw — replay the retained tail (TAIL_MAX) into a remounting xterm;
-/// "" for unknown/dead ids, same as upstream's {ok, tail} minus the flag.
+/// pty:redraw — upstream semantics: a SAME-SIZE resize forces the child's TUI
+/// to repaint through the normal output stream, then the retained tail is
+/// replayed over the data channels so output that arrived before this terminal
+/// subscribed still paints. Without both halves a healthy-but-quiet PTY shows
+/// a permanently blank pane (the god-TUI symptom).
+/// The return value stays for compat; the renderer's requestInitialPtyRedraw
+/// discards it — delivery rides the emitted events.
 #[tauri::command(async)]
 pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
     let st = state(&app);
-    let tail = st
-        .ptys
-        .lock()
-        .unwrap()
-        .get(&id)
-        .map(|h| h.tail())
-        .unwrap_or_default();
+    let (tail, size) = {
+        let ptys = st.ptys.lock().unwrap();
+        match ptys.get(&id) {
+            Some(h) => (h.tail(), h.size()),
+            None => return Ok(String::new()),
+        }
+    };
+    if let Some(h) = st.ptys.lock().unwrap().get(&id) {
+        let _ = h.resize(size.0, size.1);
+    }
+    if !tail.is_empty() {
+        let _ = app.emit(&format!("pty:data:{id}"), serde_json::json!(tail));
+        let _ = app.emit(
+            "pty-output",
+            crate::pty::PtyOutputPayload {
+                id: id.clone(),
+                data: tail.clone(),
+            },
+        );
+    }
     Ok(tail)
 }
 

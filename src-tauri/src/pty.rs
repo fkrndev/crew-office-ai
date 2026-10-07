@@ -371,17 +371,96 @@ pub fn is_safe_command_name(command: &str) -> bool {
 /// `claude` installed via nvm/homebrew would ENOENT. We spawn the user's
 /// interactive login shell once, capture its PATH between two fence markers
 /// (rc-file chatter like "Restored session: …" would otherwise poison the
-/// value), and cache the result for the session. Windows has no login-shell
-/// PATH problem — the process PATH is used directly.
+/// value), and cache the result for the session.
+///
+/// Windows is the OPPOSITE of a no-login-shell case: installers write the
+/// registry PATH (HKLM + HKCU Environment) between spawns, and our own
+/// auto-install relaunch must see the directory the installer JUST added.
+/// The process PATH is fixed at process start — a cached PATH would keep
+/// the freshly-installed CLI invisible — so on Windows the merged registry
+/// PATH (machine + user, expanded) is rebuilt on every call.
 static SHELL_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 pub fn user_shell_path() -> String {
+    if cfg!(windows) {
+        return windows_registry_path();
+    }
     if let Some(p) = SHELL_PATH.get() {
         return p.clone();
     }
     let path = capture_shell_path();
     let v = SHELL_PATH.get_or_init(|| path);
     v.clone()
+}
+
+/// Windows: merge the HKLM Session Manager + HKCU Environment PATH values
+/// (the same order Windows composes them) with the process PATH as a tail —
+/// per-spawn, never cached, so a binary installed seconds ago resolves.
+/// REG_EXPAND_SZ entries carry %VAR% refs; they expand against our env map.
+#[cfg(windows)]
+fn windows_registry_path() -> String {
+    use std::collections::HashMap as Map;
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let mut env_map: Map<String, String> = Map::new();
+    for (k, v) in std::env::vars() {
+        env_map.insert(k.to_uppercase(), v);
+    }
+    let expand = |s: &str| -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find('%') {
+            out.push_str(&rest[..i]);
+            let tail = &rest[i + 1..];
+            match tail.find('%') {
+                Some(j) => {
+                    let name = tail[..j].to_uppercase();
+                    match env_map.get(&name) {
+                        Some(v) => out.push_str(v),
+                        None => {
+                            out.push('%');
+                            out.push_str(&tail[..j]);
+                            out.push('%');
+                        }
+                    }
+                    rest = &tail[j + 1..];
+                }
+                None => {
+                    out.push('%');
+                    out.push_str(tail);
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+
+    let read_key = |root: winreg::HKEY, sub: &str| -> Option<String> {
+        RegKey::predef(root)
+            .open_subkey(sub)
+            .ok()
+            .and_then(|k| k.get_value::<String, _>("Path").ok())
+    };
+    let machine = read_key(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    );
+    let user = read_key(HKEY_CURRENT_USER, "Environment");
+
+    // Dedup case-insensitively; machine first, then user, then process extras.
+    let mut seen = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::new();
+    for src in [machine, user, std::env::var("PATH").ok()].into_iter().flatten() {
+        for dir in expand(&src).split(';') {
+            let d = dir.trim();
+            if !d.is_empty() && seen.insert(d.to_lowercase()) {
+                parts.push(d.to_string());
+            }
+        }
+    }
+    parts.join(";")
 }
 
 fn capture_shell_path() -> String {
@@ -492,7 +571,7 @@ pub fn spawn_cmd<R: tauri::Runtime>(
         .spawn_command(cmd)
         .with_context(|| format!("spawn {}", tokens.join(" ")))?;
     drop(pair.slave); // keep only the master; the slave side belongs to the child
-    finish(id, pair.master, child, cwd.to_string(), tokens.join(" "), app)
+    finish(id, pair.master, child, cwd.to_string(), tokens.join(" "), cols, rows, app)
 }
 
 /// Make a value safe inside a double-quoted cmd arg: single line, no double
@@ -527,6 +606,9 @@ pub struct PtyHandle {
     /// Trailing output buffer (TAIL_MAX cap) — pty:redraw replays this into a
     /// freshly-mounted xterm; the exit handler also ships it for diagnostics.
     tail: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Current grid size — pty:redraw's same-size resize (upstream semantics)
+    /// needs it; updated by resize().
+    size: std::sync::Mutex<(u16, u16)>,
 }
 
 #[derive(Clone, Serialize)]
@@ -589,6 +671,8 @@ pub fn spawn<R: tauri::Runtime>(
         child,
         cwd.to_string(),
         command_line.to_string(),
+        cols,
+        rows,
         app,
     )
 }
@@ -625,7 +709,7 @@ pub fn spawn_argv<R: tauri::Runtime>(
         .chain(args.iter().cloned())
         .collect::<Vec<_>>()
         .join(" ");
-    finish(id, pair.master, child, cwd.to_string(), command, app)
+    finish(id, pair.master, child, cwd.to_string(), command, cols, rows, app)
 }
 
 fn finish<R: tauri::Runtime>(
@@ -634,6 +718,8 @@ fn finish<R: tauri::Runtime>(
     mut child: Box<dyn Child + Send + Sync>,
     cwd: String,
     command: String,
+    cols: u16,
+    rows: u16,
     app: AppHandle<R>,
 ) -> Result<PtyHandle> {
     let mut reader = master.try_clone_reader().context("clone reader")?;
@@ -769,6 +855,7 @@ fn finish<R: tauri::Runtime>(
         last_output_at,
         has_output,
         tail,
+        size: std::sync::Mutex::new((cols, rows)),
     })
 }
 
@@ -786,7 +873,13 @@ impl PtyHandle {
             pixel_width: 0,
             pixel_height: 0,
         })?;
+        *self.size.lock().unwrap() = (cols, rows);
         Ok(())
+    }
+
+    /// Current (cols, rows) — for the same-size redraw nudge.
+    pub fn size(&self) -> (u16, u16) {
+        *self.size.lock().unwrap()
     }
 
     /// Trailing output buffer for `pty:redraw` (upstream PtyManager.redraw
@@ -885,5 +978,25 @@ mod shim_tests {
     fn unknown_interpreter_refused() {
         let s = "@rem\npython \"%~dp0\\cli.py\" %*\n";
         assert!(parse_npm_cmd_shim(r"C:\npm\x.cmd", s).is_none());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// Fresh registry merge: an installer that wrote PATH seconds ago must
+    /// resolve -- the frozen process PATH is what hid hermes from the
+    /// install-and-relaunch ladder.
+    #[test]
+    fn windows_registry_path_is_live() {
+        let p = windows_registry_path();
+        assert!(!p.is_empty());
+        let sys = std::env::var("SYSTEMROOT").unwrap_or_else(|_| r"C:\Windows".into());
+        let needle = format!(r"{}\System32", sys).to_lowercase();
+        assert!(
+            p.split(';').map(|d| d.to_lowercase()).any(|d| d == needle),
+            "registry PATH must resolve System32: {p}"
+        );
     }
 }
