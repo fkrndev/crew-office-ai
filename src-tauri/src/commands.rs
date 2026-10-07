@@ -289,6 +289,13 @@ pub struct SpawnArgs {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub no_auto_install: bool,
+    /// Per-agent MCP overrides — catalog ids enabled for THIS spawn on top of
+    /// the global mcpDefaults consent (e.g. `shardx` for a marketplace agent).
+    /// mcp_disable removes a globally-consented id for this spawn.
+    #[serde(default)]
+    pub mcp_enable: Vec<String>,
+    #[serde(default)]
+    pub mcp_disable: Vec<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -349,6 +356,12 @@ pub struct PtySpawnRequest {
     pub seed_prompt: Option<String>,
     #[serde(default)]
     pub no_auto_install: bool,
+    /// Per-agent MCP catalog ids to enable/disable for this spawn — rides on
+    /// top of the global mcpDefaults consent (SpawnArgs.mcp_enable/disable).
+    #[serde(default)]
+    pub mcp_enable: Vec<String>,
+    #[serde(default)]
+    pub mcp_disable: Vec<String>,
 }
 
 /// The upstream AgentMeta block nested under `hive` (index.ts AgentSpawnOptions.hive).
@@ -634,6 +647,8 @@ pub(crate) fn translate_spawn_request(
             is_assistant: hive.map(|h| h.is_assistant).unwrap_or(false),
             capabilities: hive.map(|h| h.capabilities.clone()).unwrap_or_default(),
             no_auto_install: req.no_auto_install,
+            mcp_enable: req.mcp_enable.clone(),
+            mcp_disable: req.mcp_disable.clone(),
             cols: req.cols,
             rows: req.rows,
         },
@@ -702,6 +717,8 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         is_assistant: entry.is_assistant,
         capabilities: entry.capabilities.clone(),
         no_auto_install: false,
+        mcp_enable: Vec::new(),
+        mcp_disable: Vec::new(),
         cols: 120,
         rows: 30,
     };
@@ -1152,7 +1169,28 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     if is_claude {
         if let (Some(_sock), Some(bin)) = (&st.sock_addr, &st.hook_bin) {
             let shim_cmd = format!("\"{}\"", bin.display());
-            let settings = st.hive.hook_settings(&shim_cmd);
+            // W3 MCP merge — catalog ∩ consent (global mcpDefaults + per-spawn
+            // mcp_enable/disable), secrets resolved from the keychain so a
+            // token never lands in settings.json plaintext.
+            let mcp_defaults: std::collections::HashMap<String, bool> = st
+                .config
+                .lock()
+                .unwrap()
+                .mcp_defaults
+                .iter()
+                .map(|(k, v)| (k.clone(), v.enabled))
+                .collect();
+            let mcp_servers = crate::mcp::build_default_mcp_servers(
+                &cwd,
+                &st.hive.root,
+                &mcp_defaults,
+                &args.mcp_enable,
+                &args.mcp_disable,
+                &|key| keyring::Entry::new(KEYRING_SERVICE, key)
+                    .ok()
+                    .and_then(|e| e.get_password().ok()),
+            );
+            let settings = st.hive.hook_settings(&shim_cmd, &mcp_servers);
             let settings_path = agent_dir.join("settings.json");
             let _ = std::fs::write(
                 &settings_path,
@@ -2805,6 +2843,157 @@ pub fn skills_install(url: String, name: String) -> Value {
 #[tauri::command(async)]
 pub fn skills_bundled() -> Vec<crate::skills::BundledSkill> {
     crate::skills::list_bundled_skills()
+}
+
+// ── ShardX browser ops ──────────────────────────────────────────────────────
+/// The launcher listens on 127.0.0.1:40325 (Settings → Automation API). A TCP
+/// connect is enough to prove the app is running — the API itself is Bearer
+/// authed so we never poke it unauthenticated.
+pub const SHARDX_API_DEFAULT: &str = "http://127.0.0.1:40325";
+const SHARDX_API_PORT: u16 = 40325;
+const SHARDX_TOKEN_KEY: &str = "SHARDX_TOKEN";
+
+/// Status of the whole ShardX chain — the UI gates the toggle on these.
+#[tauri::command(async)]
+pub fn shardx_status(app: AppHandle) -> Value {
+    let st = state(&app);
+    let launcher = std::net::TcpStream::connect(("127.0.0.1", SHARDX_API_PORT)).is_ok();
+    let mcp_dir = st.hive.root.join("mcp-servers").join("shardx");
+    let mcp_installed = mcp_dir.join("index.js").exists() && mcp_dir.join("node_modules").is_dir();
+    let token_set = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .is_some_and(|t| !t.is_empty());
+    serde_json::json!({
+        "launcherRunning": launcher,
+        "mcpInstalled": mcp_installed,
+        "tokenSet": token_set,
+        "api": SHARDX_API_DEFAULT,
+        "mcpDir": mcp_dir.display().to_string(),
+    })
+}
+
+/// Store the launcher's Bearer token in the OS keychain — never config.json.
+#[tauri::command(async)]
+pub fn shardx_set_token(app: AppHandle, token: String) -> Result<(), String> {
+    let _ = app;
+    let t = token.trim();
+    if t.is_empty() {
+        return Err("empty token".into());
+    }
+    keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+        .map_err(|e| e.to_string())?
+        .set_password(t)
+        .map_err(|e| e.to_string())
+}
+
+/// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
+/// install it with the browser download skipped (patchright only ever
+/// connectOverCDP to a running ShardX profile — its own chromium is dead
+/// weight, and 300MB+ of it). Windows ships bsdtar as tar.exe, so the GitHub
+/// tarball extracts without new deps.
+#[tauri::command(async)]
+pub fn shardx_setup(app: AppHandle) -> Value {
+    let st = state(&app);
+    let dest = st.hive.root.join("mcp-servers").join("shardx");
+    let tmp = std::env::temp_dir().join(format!("shardx-mcp-{}.tgz", uuid::Uuid::new_v4()));
+    let step = || -> Result<(), String> {
+        let mut resp = ureq::get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
+            .call()
+            .map_err(|e| format!("download failed: {e}"))?;
+        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
+        let out = std::env::temp_dir().join(format!("shardx-src-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        let ok = std::process::Command::new("tar")
+            .args(["-xzf"])
+            .arg(&tmp)
+            .arg("-C")
+            .arg(&out)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err("tar extract failed".into());
+        }
+        // The repo ships mcp/ at root (newer) or rust/shardx-launcher/mcp/.
+        let root = std::fs::read_dir(&out).map_err(|e| e.to_string())?.flatten().next();
+        let Some(root) = root else { return Err("empty archive".into()) };
+        for cand in [root.path().join("mcp"), root.path().join("rust").join("shardx-launcher").join("mcp")] {
+            if cand.join("index.js").exists() {
+                std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+                crate::hive::copy_dir(&cand, &dest).map_err(|e| e.to_string())?;
+                // npm install — browser download flags keep node_modules small.
+                let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+                let ok = std::process::Command::new(npm)
+                    .arg("install")
+                    .current_dir(&dest)
+                    .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+                    .env("PATCHRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err("npm install failed".into());
+                }
+                let _ = std::fs::remove_dir_all(&out);
+                return Ok(());
+            }
+        }
+        Err("mcp/ not found in the archive".into())
+    };
+    let _ = std::fs::remove_file(&tmp);
+    match step() {
+        Ok(()) => serde_json::json!({ "ok": true, "path": dest.display().to_string() }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+/// Pull the OS-appropriate launcher asset from the latest GitHub release into
+/// ~/Downloads — portable exe on Windows (no admin), AppImage on Linux, dmg on
+/// macOS arm64. Returns the path; the user still runs it (first-launch CDN
+/// fetch of the engine is theirs too).
+#[tauri::command(async)]
+pub fn shardx_download_launcher() -> Value {
+    let step = || -> Result<String, String> {
+        let rel: Value = ureq::get("https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest")
+            .header("User-Agent", "agent-office")
+            .call()
+            .map_err(|e| e.to_string())?
+            .body_mut()
+            .read_json()
+            .map_err(|e| e.to_string())?;
+        let want = if cfg!(windows) {
+            "portable-win-x64.exe"
+        } else if cfg!(target_os = "macos") {
+            "aarch64.dmg"
+        } else {
+            "amd64.AppImage"
+        };
+        let assets = rel["assets"].as_array().cloned().unwrap_or_default();
+        let url = assets
+            .iter()
+            .find(|a| a["name"].as_str().unwrap_or("").contains(want))
+            .and_then(|a| a["browser_download_url"].as_str())
+            .ok_or("no asset for this OS")?
+            .to_string();
+        let name = url.rsplit('/').next().unwrap_or("shardx-launcher");
+        let dest = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_default()
+            .join(name);
+        let mut resp = ureq::get(&url)
+            .header("User-Agent", "agent-office")
+            .call()
+            .map_err(|e| e.to_string())?;
+        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        std::fs::write(&dest, &body).map_err(|e| e.to_string())?;
+        Ok(dest.display().to_string())
+    };
+    match step() {
+        Ok(p) => serde_json::json!({ "ok": true, "path": p }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
 }
 
 /// Install one bundled skill into ~/.claude/skills — same {ok,error} envelope.

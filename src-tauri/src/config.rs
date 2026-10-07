@@ -76,6 +76,19 @@ pub struct Config {
     pub provider_base_urls: HashMap<String, String>,
     /// Per-CLI-provider default models (upstream providerDefaultModels).
     pub provider_default_models: HashMap<String, String>,
+    /// MCP default-server consent (shared/mcpCatalog.ts): catalog id → whether
+    /// it is enabled for newly spawned agents. Safe-readonly ids default ON;
+    /// write/secret ids require an explicit true — the merge never lets a
+    /// keyed server ride in on a default.
+    pub mcp_defaults: HashMap<String, McpDefaultCfg>,
+}
+
+/// One mcpDefaults row — `{enabled}` object, same wire shape as the renderer's
+/// config.mcpDefaults.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpDefaultCfg {
+    pub enabled: bool,
 }
 
 /// shared/triggers.ts ContextTriggerConfig — {compact, clear} rules.
@@ -163,6 +176,7 @@ impl Default for Config {
             notifications: false,
             provider_base_urls: HashMap::new(),
             provider_default_models: HashMap::new(),
+            mcp_defaults: HashMap::new(),
         }
     }
 }

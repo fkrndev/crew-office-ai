@@ -237,6 +237,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const preset = providerPreset(provider);
   const [goal, setGoal] = useState(pendingHire?.goal ?? '');
   const [isolate, setIsolate] = useState(pendingHire?.isolate ?? false);
+  // Per-agent opt-in for non-default MCP servers (write/secret catalog ids).
+  // Safe-readonly servers already ship on; this list is the armed extras.
+  const [mcpEnable, setMcpEnable] = useState<Set<string>>(new Set());
   // #2 — optional Claude session id to continue. When set, the spawn seeds that
   // session's transcript into the cwd's project dir and launches `--resume`.
   const [resumeSessionId, setResumeSessionId] = useState('');
@@ -487,6 +490,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       // Forced OFF when resuming a session — `--resume` needs the real cwd's
       // transcript, not a fresh worktree with a different (empty) project dir.
       isolate: resuming ? false : isolate,
+      // Per-agent MCP opt-in: write/secret catalog ids this agent gets even
+      // when the global consent is off (e.g. shardx for a marketplace worker).
+      mcpEnable: mcpEnable.size ? [...mcpEnable] : undefined,
       // #2 — continue an existing Claude session in this agent's cwd.
       resumeSessionId: resuming ? resumeSessionId.trim() : undefined,
       // Provision this agent in the hive (memory + mailbox + identity/protocol).
@@ -996,6 +1002,30 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         {tr('addAgent.gitIsolation')}
                       </span>
                     </label>
+
+                    {/* Per-agent MCP opt-in — only the consent-gated tiers
+                        (safe-readonly servers already ship on globally). Each
+                        agent decides for itself; nothing here affects others. */}
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                        {tr('addAgent.mcpExtras')}
+                      </span>
+                      {MCP_CATALOG.filter((e) => e.tier !== 'safe-readonly').map((e) => (
+                        <label key={e.id} title={e.description} style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={mcpEnable.has(e.id)}
+                            onChange={(ev) => setMcpEnable((s) => {
+                              const n = new Set(s);
+                              if (ev.target.checked) n.add(e.id); else n.delete(e.id);
+                              return n;
+                            })}
+                            style={{ width: 14, height: 14 }}
+                          />
+                          <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)' }}>{e.label}</span>
+                        </label>
+                      ))}
+                    </div>
 
                     <Row label={tr('addAgent.resumeSession')}>
                       <input

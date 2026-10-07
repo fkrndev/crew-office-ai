@@ -149,6 +149,22 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     spec: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], env: { BRAVE_API_KEY: '' } },
     tier: 'secret',
     defaultEnabled: false
+  },
+  {
+    id: 'shardx',
+    label: 'ShardX Browser',
+    description:
+      'Anti-detect browser profiles (multi-account Shopee/TikTok/etc.) via the local ShardX launcher API. ' +
+      'Requires the ShardX launcher running + an Automation API token. Per-agent enable on spawn overrides this toggle.',
+    // The MCP bridge is vendored under <harness>/mcp-servers/shardx by the
+    // backend's shardx_setup command — not an npm package.
+    spec: {
+      command: 'node',
+      args: ['<harness>/mcp-servers/shardx/index.js'],
+      env: { SHARDX_API: 'http://127.0.0.1:40325', SHARDX_TOKEN: '' }
+    },
+    tier: 'secret',
+    defaultEnabled: false
   }
 ];
 

@@ -588,7 +588,8 @@
     "errFolder": "请先选择文件夹",
     "errCommand": "必须填写命令",
     "hireProgress": "hire 第 {{current}} / {{total}} 项",
-    "skipHire": "跳过 hire"
+    "skipHire": "跳过 hire",
+    "mcpExtras": "额外工具："
   },
   "onboarding": {
     "titles": {

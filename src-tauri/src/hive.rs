@@ -1296,10 +1296,15 @@ impl Hive {
     /// the stdin payload, so one command serves all events. `statusLine`
     /// forwards the session's context-window accounting via `--status`.
     ///
-    /// Omitted vs upstream: mcpServers (catalog not ported) and the
-    /// sandbox/permissions block (writableDirs — add when the sandbox story
-    /// is designed for this backend).
-    pub fn hook_settings(&self, shim_command: &str) -> serde_json::Value {
+    /// `mcp_servers` is the consent-filtered catalog merge (mcp.rs
+    /// build_default_mcp_servers) — written verbatim under `mcpServers` when
+    /// non-empty. Omitted vs upstream: the sandbox/permissions block
+    /// (writableDirs — add when the sandbox story is designed for this backend).
+    pub fn hook_settings(
+        &self,
+        shim_command: &str,
+        mcp_servers: &std::collections::BTreeMap<String, crate::mcp::McpServerSpec>,
+    ) -> serde_json::Value {
         let entry = |matcher: Option<&str>| {
             let mut e = serde_json::json!({
                 "hooks": [{ "type": "command", "command": shim_command }]
@@ -1311,7 +1316,7 @@ impl Hive {
         };
         let plain = entry(None);
         let tool = entry(Some("*"));
-        serde_json::json!({
+        let mut out = serde_json::json!({
             // 'auto', not a pinned theme — DEC 2031 notifications let the CLI
             // re-derive the palette when the harness theme flips.
             "theme": "auto",
@@ -1331,7 +1336,11 @@ impl Hive {
                 "PreCompact": [plain],
                 "PostCompact": [plain]
             }
-        })
+        });
+        if !mcp_servers.is_empty() {
+            out["mcpServers"] = serde_json::to_value(mcp_servers).unwrap_or_default();
+        }
+        out
     }
 
     /// Codex lifecycle-hook bridge — the codex counterpart of the claude
@@ -1427,9 +1436,22 @@ impl Hive {
         hook_bin: &Path,
         seed: &HermesSeed,
     ) -> Result<PathBuf> {
+        let user_home = dirs::home_dir().unwrap_or_default().join(".hermes");
+        self.install_hermes_hooks_seeded_at(dir, hook_bin, seed, &user_home)
+    }
+
+    /// The copy-through source (~/.hermes) is a parameter so tests can point it
+    /// at a temp dir — on Windows dirs::home_dir ignores HOME/USERPROFILE and
+    /// reads the real profile via the known-folder API.
+    fn install_hermes_hooks_seeded_at(
+        &self,
+        dir: &Path,
+        hook_bin: &Path,
+        seed: &HermesSeed,
+        user_home: &Path,
+    ) -> Result<PathBuf> {
         let home = dir.join(".hermes");
         fs::create_dir_all(&home)?;
-        let user_home = dirs::home_dir().unwrap_or_default().join(".hermes");
 
         for name in ["config.yaml", ".env"] {
             let (src, dst) = (user_home.join(name), home.join(name));
@@ -2825,6 +2847,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Empty dir standing in for ~/.hermes — the copy-through source is a
+    /// parameter so tests never observe the dev's real home.
+    fn no_user_hermes(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("no-user-home").join(".hermes");
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn hermes_seeded_generates_config_and_env() {
         // No user ~/.hermes files → the seed must fill provider config so the
@@ -2840,15 +2870,15 @@ mod tests {
             api_key: Some("sk-test".into()),
         };
         let home = hive
-            .install_hermes_hooks_seeded(&dir.join("agent"), &hook_bin, &seed)
+            .install_hermes_hooks_seeded_at(&dir.join("agent"), &hook_bin, &seed, &no_user_hermes(&dir))
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(cfg.contains("provider: \"deepseek\""));
         assert!(cfg.contains("base_url: \"https://api.deepseek.com\""));
         assert!(cfg.contains("default: \"deepseek-chat\""));
         assert!(cfg.contains("hooks_auto_accept: true"));
-        // .env may already carry the user's own vars (copied through) — the
-        // seed key must be APPENDED under both names, not the only line.
+        // Isolated source has nothing to copy through — the seed key is the
+        // only line under each name.
         let env = std::fs::read_to_string(home.join(".env")).unwrap();
         assert!(env.lines().any(|l| l == "DEEPSEEK_API_KEY=sk-test"), "{env}");
         assert!(env.lines().any(|l| l == "OPENAI_API_KEY=sk-test"), "{env}");
@@ -2876,7 +2906,7 @@ mod tests {
             api_key: Some("sk-test".into()),
         };
         let home = hive
-            .install_hermes_hooks_seeded(&agent, &dir.join("hive-hook.exe"), &seed)
+            .install_hermes_hooks_seeded_at(&agent, &dir.join("hive-hook.exe"), &seed, &no_user_hermes(&dir))
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(cfg.contains("provider: \"deepseek\""), "{cfg}");
@@ -2894,15 +2924,12 @@ mod tests {
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let hook_bin = dir.join("hive-hook.exe");
         let home = hive
-            .install_hermes_hooks_seeded(&dir.join("agent"), &hook_bin, &crate::hive::HermesSeed::default())
+            .install_hermes_hooks_seeded_at(&dir.join("agent"), &hook_bin, &crate::hive::HermesSeed::default(), &no_user_hermes(&dir))
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(!cfg.contains("provider: \"custom\""));
-        // .env may exist (user's own file copied through) — just must not
-        // carry a key the seed never supplied.
-        if let Ok(env) = std::fs::read_to_string(home.join(".env")) {
-            assert!(!env.contains("OPENAI_API_KEY="));
-        }
+        // The isolated source is empty — no .env should exist at all.
+        assert!(!home.join(".env").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

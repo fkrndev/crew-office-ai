@@ -498,6 +498,8 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             is_assistant: false,
             capabilities: Vec::new(),
             no_auto_install: false,
+            mcp_enable: Vec::new(),
+            mcp_disable: Vec::new(),
             cols: 120,
             rows: 32,
         },

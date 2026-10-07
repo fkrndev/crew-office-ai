@@ -15,6 +15,7 @@ mod cmd_realtime;
 mod cmd_update;
 pub mod commands;
 pub mod config;
+pub mod mcp;
 mod control;
 pub mod cost_lifetime;
 mod db;
@@ -1117,6 +1118,10 @@ pub fn run() {
             commands::skills_install,
             commands::skills_bundled,
             commands::skills_install_bundled,
+            commands::shardx_status,
+            commands::shardx_set_token,
+            commands::shardx_setup,
+            commands::shardx_download_launcher,
             commands::skills_uninstall,
             commands::secret_set,
             commands::secret_delete,

@@ -588,7 +588,8 @@
     "errFolder": "Pilih folder dulu",
     "errCommand": "Command wajib diisi",
     "hireProgress": "rekrutan {{current}} dari {{total}}",
-    "skipHire": "lewati rekrutan"
+    "skipHire": "lewati rekrutan",
+    "mcpExtras": "tool tambahan:"
   },
   "onboarding": {
     "titles": {

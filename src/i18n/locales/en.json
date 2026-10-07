@@ -588,7 +588,8 @@
     "errFolder": "Pick a folder first",
     "errCommand": "Command is required",
     "hireProgress": "hire {{current}} of {{total}}",
-    "skipHire": "skip hire"
+    "skipHire": "skip hire",
+    "mcpExtras": "extra tools:"
   },
   "onboarding": {
     "titles": {
