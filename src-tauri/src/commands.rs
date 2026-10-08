@@ -1270,7 +1270,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         }
         let _ = std::fs::write(
             agent_dir.join("SHARDX.md"),
-            shardx_workspace_note(&shardx_name, shardx_profile.as_deref()),
+            shardx_workspace_note(&shardx_name, shardx_profile.as_deref(), &st.hive.root),
         );
     }
 
@@ -3600,8 +3600,20 @@ pub fn shardx_cleanup(app: AppHandle) -> Value {
 
 /// The workspace note that tells the agent WHICH browser identity it owns —
 /// env vars of the MCP server process are invisible to the agent, so the
-/// contract lives here and in $SHARDX_PROFILE on the agent's own env.
-fn shardx_workspace_note(profile_name: &str, profile_id: Option<&str>) -> String {
+/// contract lives here and in $SHARDX_PROFILE on the agent's own env. The
+/// operating rules are distilled from the vendored bridge README
+/// (<harness>/mcp-servers/shardx/README.md) — the full tool reference the
+/// agent can read on demand; this note only carries what must NEVER be
+/// learned the hard way.
+fn shardx_workspace_note(
+    profile_name: &str,
+    profile_id: Option<&str>,
+    hive_root: &std::path::Path,
+) -> String {
+    let readme = hive_root
+        .join("mcp-servers")
+        .join("shardx")
+        .join("README.md");
     let id_line = match profile_id {
         Some(pid) => format!("Profile `{profile_name}` exists — profile_id `{pid}`."),
         None => format!(
@@ -3612,11 +3624,31 @@ fn shardx_workspace_note(profile_name: &str, profile_id: Option<&str>) -> String
     format!(
         "# ShardX browser\n\n\
          {id_line}\n\n\
-         - Pass this profile (id or name `{profile_name}`) to every shardx profile/browser tool call.\n\
+         - Pass this profile (id or name `{profile_name}`) to every shardx profile/browser call.\n\
          - NEVER use another profile: profiles map 1:1 to accounts and sharing a\n  \
-         fingerprint/cookie jar is how marketplaces issue linked-account bans.\n\
-         - If browser tools fail to connect, the ShardX launcher is not running —\n  \
-         ask the human to start it; the API lives on 127.0.0.1:40325 by default.\n"
+         fingerprint/cookie jar is how marketplaces issue linked-account bans.\n\n\
+         ## Operating rules\n\n\
+         - browser_* tools AUTO-START the profile — do not manage start/stop yourself.\n\
+         - Prefer `human_*` over `browser_*` on login/gated/checkout surfaces:\n  \
+         browser_click is instant and looks it; human_* produces real pointer\n  \
+         trajectories + log-normal keystrokes inside the browser process.\n\
+         - human_* calls take REAL time — budget waits like a person, no click storms.\n\
+         - Phone profiles: human_click taps automatically, human_move refuses\n  \
+         (no cursor on glass); use touch_* for swipes/drags.\n\
+         - Use browser_aria_snapshot to SEE a page before guessing selectors.\n\n\
+         ## Guardrails\n\n\
+         - NEVER export cookies/session data (export_cookies) — sessions live in\n  \
+         the profile and stay there.\n\
+         - NEVER type passwords, OTP, or captcha answers — hand them to the human.\n\
+         - Destructive/financial actions (publish, purchase, refund, campaign\n  \
+         changes) require the human's explicit confirmation FIRST.\n\
+         - If tools fail to connect, the ShardX launcher is not running — ask the\n  \
+         human to start it; the API lives on 127.0.0.1:40325 by default.\n\n\
+         ## Full reference\n\n\
+         Read `{}` for the complete 120-tool\n\
+         documentation: automation projects (no-code workflows that run without\n\
+         you), proxies, extensions, cookies import, network mocking/capture.\n",
+        readme.display()
     )
 }
 
@@ -4129,15 +4161,24 @@ mod tests {
         assert_ne!(shardx_profile_name("a"), shardx_profile_name("b"));
     }
 
-    /// The workspace note names the agent's profile and carries the never-
-    /// share rule — with and without a resolved profile id.
+    /// The workspace note names the agent's profile, carries the never-share
+    /// rule, the human_*-over-browser_* strategy, the guardrails, and a real
+    /// path to the vendored README — with and without a resolved profile id.
     #[test]
     fn shardx_workspace_note_contract() {
-        let n = shardx_workspace_note("office-toko-a", Some("pid-1"));
+        let root = std::path::Path::new("C:/hive");
+        let n = shardx_workspace_note("office-toko-a", Some("pid-1"), root);
         assert!(n.contains("office-toko-a"));
         assert!(n.contains("pid-1"));
         assert!(n.contains("NEVER"));
-        let pending = shardx_workspace_note("office-toko-a", None);
+        // The non-negotiables an agent can't afford to learn by banning an
+        // account: human emulation preference, cookie/OTP guardrails, and a
+        // resolvable pointer to the vendored 120-tool reference.
+        assert!(n.contains("human_"));
+        assert!(n.contains("export_cookies"));
+        assert!(n.contains("OTP"));
+        assert!(n.contains("mcp-servers"));
+        let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
     }
 
