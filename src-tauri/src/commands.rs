@@ -428,6 +428,13 @@ pub struct PtySpawnResult {
     pub resume_not_found: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// The spawn succeeded but the CLI will boot authless — no provider key
+    /// resolved from any source (keychain, env injection, seeded config).
+    /// Carries the provider id so the renderer can point at the fix
+    /// (upstream treats an ok-spawn as healthy; without this the agent card
+    /// shows "starting up" while the TUI is already printing 401s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_key: Option<String>,
 }
 
 impl PtySpawnResult {
@@ -441,6 +448,7 @@ impl PtySpawnResult {
             resumed: false,
             resume_not_found: None,
             worktree_path: None,
+            needs_key: None,
         }
     }
 }
@@ -500,6 +508,9 @@ pub(crate) struct SpawnOutcome {
     pub resume_not_found: bool,
     /// The isolate-worktree path when one was created.
     pub worktree_path: Option<String>,
+    /// Spawned CLI will boot without credentials (no provider key resolved).
+    /// Surfaces as PtySpawnResult.needsKey.
+    pub needs_key: Option<String>,
 }
 
 impl SpawnOutcome {
@@ -513,6 +524,7 @@ impl SpawnOutcome {
             resumed: self.resumed,
             resume_not_found: self.resume_not_found.then_some(true),
             worktree_path: self.worktree_path,
+            needs_key: self.needs_key,
         }
     }
 }
@@ -1044,6 +1056,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // Hermes lifecycle bridge — per-agent HERMES_HOME + config.yaml `hooks:`
     // block on the same shim (--hermes mode). Runtime dir is isolated too so
     // multiplex state never collides with the user's own hermes.
+    let mut needs_key: Option<String> = None;
     if args.provider == "hermes" {
         if let Some(bin) = &st.hook_bin {
             let seed = {
@@ -1100,6 +1113,25 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                     home.join("runtime").display().to_string(),
                 );
                 agent_env.insert("HERMES_ACCEPT_HOOKS".into(), "1".into());
+            }
+            // Authless detection: the seed found no provider key AND no
+            // provider-key env landed via secret_env_keys injection (a user
+            // CAN name a custom secret "OPENROUTER_API_KEY" verbatim). With
+            // neither, hermes falls back to its openrouter default and dies
+            // on 401 — the spawn is ok but the agent is dead on arrival.
+            // Surface it so the card can say "needs an API key" instead of
+            // leaving a silently-broken terminal.
+            if seed.api_key.is_none()
+                && ![
+                    "OPENROUTER_API_KEY",
+                    "DEEPSEEK_API_KEY",
+                    "OPENAI_API_KEY",
+                    "ANTHROPIC_API_KEY",
+                ]
+                .iter()
+                .any(|k| agent_env.contains_key(*k))
+            {
+                needs_key = Some("hermes".to_string());
             }
         }
         // OpenAI-compatible reroute — Settings → Agents & Models → Hermes base
@@ -1465,6 +1497,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 resumed: false,
                 resume_not_found: false,
                 worktree_path: None,
+                needs_key,
             });
         }
     }
@@ -1666,6 +1699,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         resumed,
         resume_not_found,
         worktree_path,
+        needs_key,
     })
 }
 
@@ -3837,6 +3871,7 @@ mod tests {
             resumed: false,
             resume_not_found: true,
             worktree_path: Some("C:/w/.worktrees/a".into()),
+            needs_key: None,
         }
         .into_result();
         let v = serde_json::to_value(&ok).unwrap();
@@ -3848,6 +3883,20 @@ mod tests {
         assert_eq!(v["resumeNotFound"], true);
         assert_eq!(v["worktreePath"], "C:/w/.worktrees/a");
         assert!(v.get("error").is_none());
+        // needsKey rides the same camelCase wire surface when set.
+        assert!(v.get("needsKey").is_none());
+        let authless = SpawnOutcome {
+            pty_id: "pty-b".into(),
+            cwd: "C:/w".into(),
+            seed_prompt: None,
+            resumed: false,
+            resume_not_found: false,
+            worktree_path: None,
+            needs_key: Some("hermes".into()),
+        }
+        .into_result();
+        let v = serde_json::to_value(&authless).unwrap();
+        assert_eq!(v["needsKey"], "hermes");
 
         let bad = PtySpawnResult::err("nope");
         let v = serde_json::to_value(&bad).unwrap();

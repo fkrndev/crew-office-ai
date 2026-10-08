@@ -594,7 +594,8 @@
     "shardxNeedsInstall": "This agent needs the ShardX browser (marketplace profiles). Install and set it up automatically? The launcher, API token, and MCP bridge are all handled — you only confirm this once.",
     "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP.",
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
-    "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account."
+    "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account.",
+    "needsKey": "⚠ {{provider}} needs an API key — set one in Settings → AI Engines"
   },
   "onboarding": {
     "titles": {

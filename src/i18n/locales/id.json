@@ -594,7 +594,8 @@
     "shardxNeedsInstall": "Agen ini butuh browser ShardX (profil marketplace). Install dan setup otomatis sekarang? Launcher, token API, dan bridge MCP semuanya diurus — kamu cukup konfirmasi sekali ini saja.",
     "shardxSetupIncomplete": "Setup ShardX belum selesai — agen dijalankan tanpa tools browser. Ulangi dari Pengaturan → MCP.",
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
-    "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama."
+    "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama.",
+    "needsKey": "⚠ {{provider}} butuh API key — isi di Pengaturan → AI Engines"
   },
   "onboarding": {
     "titles": {

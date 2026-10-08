@@ -572,7 +572,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       cwd: spawnedCwd,
       goal: goal.trim() || undefined,
       status: 'idle',
-      action: resuming && spawnRes.resumeNotFound ? 'session not found — fresh start' : 'starting up',
+      action: spawnRes.needsKey
+        ? tr('addAgent.needsKey', { provider: spawnRes.needsKey })
+        : resuming && spawnRes.resumeNotFound ? 'session not found — fresh start' : 'starting up',
       progress: 0,
       currentStation: 'desk',
       ptyId,

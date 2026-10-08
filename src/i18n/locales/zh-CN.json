@@ -593,7 +593,8 @@
     "shardxNeedsInstall": "此智能体需要 ShardX 浏览器（店铺账号配置）。是否自动安装并完成设置？启动器、API 令牌和 MCP 桥都会自动处理——你只需确认这一次。",
     "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。",
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
-    "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。"
+    "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。",
+    "needsKey": "⚠ {{provider}} 需要 API 密钥——请在 设置 → AI Engines 中配置"
   },
   "onboarding": {
     "titles": {
