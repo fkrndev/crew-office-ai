@@ -74,6 +74,23 @@ pub const CATALOG: &[McpEntry] = &[
     keyed("db", McpTier::Secret, "npx", &["-y", "@modelcontextprotocol/server-postgres"], &[("DATABASE_URL", "")]),
     keyed("email-calendar", McpTier::Secret, "npx", &["-y", "@modelcontextprotocol/server-gsuite"], &[("GOOGLE_OAUTH_TOKEN", "")]),
     keyed("search-with-key", McpTier::Secret, "npx", &["-y", "@modelcontextprotocol/server-brave-search"], &[("BRAVE_API_KEY", "")]),
+    // Trello boards via the free REST API — key+token from trello.com/app-key.
+    keyed(
+        "trello",
+        McpTier::Secret,
+        "npx",
+        &["-y", "@delorenj/mcp-server-trello"],
+        &[("TRELLO_API_KEY", ""), ("TRELLO_TOKEN", "")],
+    ),
+    // Google Sheets via service account — the env value is the key-JSON file
+    // PATH (keychain stores the path string, not the JSON itself).
+    keyed(
+        "google-sheets",
+        McpTier::Secret,
+        "npx",
+        &["-y", "@whizzy/mcp-sheets"],
+        &[("SERVICE_ACCOUNT_PATH", ""), ("DRIVE_FOLDER_ID", "")],
+    ),
     // ShardX anti-detect browser — the multi-account marketplace story. The
     // launcher lives on the user's machine (HTTP API on 127.0.0.1:40325); the
     // MCP bridge is a Node source tree we vendor under <harness>/mcp-servers/

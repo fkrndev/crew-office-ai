@@ -151,6 +151,35 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     defaultEnabled: false
   },
   {
+    id: 'trello',
+    label: 'Trello',
+    description:
+      'Read/write Trello boards, lists, and cards (57 tools, rate-limited). ' +
+      'Free API key + token from trello.com/app-key — store both as secrets.',
+    spec: {
+      command: 'npx',
+      args: ['-y', '@delorenj/mcp-server-trello'],
+      env: { TRELLO_API_KEY: '', TRELLO_TOKEN: '' }
+    },
+    tier: 'secret',
+    defaultEnabled: false
+  },
+  {
+    id: 'google-sheets',
+    label: 'Google Sheets',
+    description:
+      'Read/write Google Sheets through a service account (create one in Google Cloud, ' +
+      'share the sheet to its email). Store the key-JSON file path as SERVICE_ACCOUNT_PATH; ' +
+      'DRIVE_FOLDER_ID is optional (limits which spreadsheets list).',
+    spec: {
+      command: 'npx',
+      args: ['-y', '@whizzy/mcp-sheets'],
+      env: { SERVICE_ACCOUNT_PATH: '', DRIVE_FOLDER_ID: '' }
+    },
+    tier: 'secret',
+    defaultEnabled: false
+  },
+  {
     id: 'shardx',
     label: 'ShardX Browser',
     description:
