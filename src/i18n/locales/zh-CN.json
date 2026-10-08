@@ -862,6 +862,21 @@
       "safeReadonlyNote": "这些服务器只读取数据，不需要密钥，且限定在智能体工作区内。它们对每个新智能体启用。",
       "writeNote": "这些服务器可以修改工作区之外的状态。默认关闭——审核后再启用。",
       "secretNote": "这些服务器需要 API 密钥或凭据。默认关闭——添加凭据并在同意后启用。"
+    },
+    "shardx": {
+      "title": "ShardX 浏览器设置",
+      "desc": "电商店铺自动化（Shopee/TikTok/Lazada 配置）在开关生效前需要三个本地条件：ShardX 启动器正在运行、MCP 桥已安装到 harness、Automation API 令牌已存入系统钥匙串。",
+      "gateLauncher": "启动器运行中",
+      "gateBridge": "MCP 桥已安装",
+      "gateToken": "API 令牌已保存",
+      "downloadLauncher": "下载启动器",
+      "installBridge": "安装桥接",
+      "saveToken": "保存令牌",
+      "tokenPlaceholder": "Automation API 令牌",
+      "refresh": "刷新",
+      "done": "完成",
+      "failed": "失败",
+      "savedTo": "已保存到 {{path}}"
     }
   },
   "devicePicker": {

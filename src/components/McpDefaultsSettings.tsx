@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
@@ -135,9 +135,201 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
         );
       })}
 
+      <ShardXSetup />
+
       {note && (
         <span style={{ fontSize: 12, color: 'var(--cth-mint)' }}>{note}</span>
       )}
+    </div>
+  );
+}
+
+interface ShardXStatus {
+  launcherRunning?: boolean;
+  mcpInstalled?: boolean;
+  tokenSet?: boolean;
+  api?: string;
+  mcpDir?: string;
+}
+
+const shardxBtnStyle: React.CSSProperties = {
+  flexShrink: 0,
+  padding: '3px 10px 1px',
+  background: 'var(--cth-cream-200)',
+  boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
+  border: 'none',
+  fontFamily: 'var(--cth-font-display)',
+  fontSize: 8,
+  lineHeight: '14px',
+  color: 'var(--cth-ink-900)',
+  cursor: 'pointer',
+  textTransform: 'uppercase'
+};
+
+/** The 'shardx' catalog entry needs three local gates the toggle can't provide:
+ *  the launcher app running, the MCP bridge vendored under the harness, and an
+ *  Automation API token in the keychain. Without this card those cth.shardx*
+ *  commands were unreachable — the toggle armed a dead server path. */
+function ShardXSetup() {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState<ShardXStatus | null>(null);
+  const [token, setToken] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      setStatus((await window.cth.shardxStatus()) as ShardXStatus);
+    } catch {
+      /* backend unreachable — keep the last reading */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const flash = (msg: string) => {
+    setNote(msg);
+    setTimeout(() => setNote(''), 3200);
+  };
+
+  const run = async (fn: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = (await fn()) as { ok?: boolean; path?: string; error?: string } | undefined;
+      if (r && typeof r === 'object' && 'ok' in r) {
+        flash(
+          r.ok
+            ? r.path
+              ? t('mcpDefaults.shardx.savedTo', { path: r.path })
+              : t('mcpDefaults.shardx.done')
+            : r.error ?? t('mcpDefaults.shardx.failed')
+        );
+      } else {
+        flash(t('mcpDefaults.shardx.done'));
+      }
+    } catch {
+      flash(t('mcpDefaults.shardx.failed'));
+    } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+
+  const saveToken = async () => {
+    const v = token.trim();
+    if (!v || busy) return;
+    setBusy(true);
+    try {
+      await window.cth.shardxSetToken(v);
+      setToken('');
+      flash(t('mcpDefaults.shardx.done'));
+    } catch {
+      flash(t('mcpDefaults.shardx.failed'));
+    } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+
+  const gates: Array<[string, boolean]> = [
+    [t('mcpDefaults.shardx.gateLauncher'), !!status?.launcherRunning],
+    [t('mcpDefaults.shardx.gateBridge'), !!status?.mcpInstalled],
+    [t('mcpDefaults.shardx.gateToken'), !!status?.tokenSet]
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ ...labelStyle, color: '#6E1423' }}>{t('mcpDefaults.shardx.title')}</span>
+        <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-400, var(--cth-ink-500))' }}>
+          {t('mcpDefaults.shardx.desc')}
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 10px',
+          background: 'var(--cth-paper-100)',
+          boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+        }}
+      >
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {gates.map(([label, ok]) => (
+            <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span
+                style={{
+                  width: 7, height: 7,
+                  background: ok ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
+                  boxShadow: `inset 0 0 0 1px ${ok ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)'}`
+                }}
+              />
+              <span style={{ fontSize: 11, lineHeight: '14px', color: 'var(--cth-ink-700)' }}>{label}</span>
+            </span>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => window.cth.shardxDownloadLauncher())}
+            style={shardxBtnStyle}
+          >
+            {t('mcpDefaults.shardx.downloadLauncher')}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => window.cth.shardxSetup())}
+            style={shardxBtnStyle}
+          >
+            {t('mcpDefaults.shardx.installBridge')}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void refresh()}
+            style={shardxBtnStyle}
+          >
+            {t('mcpDefaults.shardx.refresh')}
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            type="password"
+            value={token}
+            placeholder={t('mcpDefaults.shardx.tokenPlaceholder')}
+            onChange={(e) => setToken(e.target.value)}
+            style={{
+              flex: 1, minWidth: 0, padding: '4px 8px',
+              background: 'var(--cth-cream-100, var(--cth-paper-100))',
+              border: 'none',
+              boxShadow: 'inset 0 0 0 1px var(--cth-ink-500)',
+              fontFamily: 'var(--cth-font-mono)',
+              fontSize: 11,
+              color: 'var(--cth-ink-900)'
+            }}
+          />
+          <button
+            type="button"
+            disabled={busy || !token.trim()}
+            onClick={() => void saveToken()}
+            style={shardxBtnStyle}
+          >
+            {t('mcpDefaults.shardx.saveToken')}
+          </button>
+        </div>
+
+        {note && (
+          <span style={{ fontSize: 11, lineHeight: '14px', color: 'var(--cth-ink-700)', wordBreak: 'break-all' }}>
+            {note}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

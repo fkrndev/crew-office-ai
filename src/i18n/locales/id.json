@@ -864,6 +864,21 @@
       "safeReadonlyNote": "Server ini hanya membaca data, tidak butuh secret, dan dibatasi ke workspace agen. Mereka diaktifkan untuk setiap agen baru.",
       "writeNote": "Server ini bisa mengubah state di luar workspace. Nonaktif secara default — aktifkan hanya setelah ditinjau.",
       "secretNote": "Server ini memerlukan kunci API atau kredensial. Nonaktif secara default — tambahkan kredensialmu dan aktifkan setelah menyetujui."
+    },
+    "shardx": {
+      "title": "Setup browser ShardX",
+      "desc": "Otomasi marketplace (profil Shopee/TikTok/Lazada) butuh tiga hal lokal sebelum toggle berfungsi: launcher ShardX berjalan, bridge MCP terpasang di harness, dan token Automation API tersimpan di keychain.",
+      "gateLauncher": "Launcher berjalan",
+      "gateBridge": "Bridge MCP terpasang",
+      "gateToken": "Token API tersimpan",
+      "downloadLauncher": "Unduh launcher",
+      "installBridge": "Pasang bridge",
+      "saveToken": "Simpan token",
+      "tokenPlaceholder": "Token Automation API",
+      "refresh": "Muat ulang",
+      "done": "selesai",
+      "failed": "gagal",
+      "savedTo": "tersimpan di {{path}}"
     }
   },
   "devicePicker": {

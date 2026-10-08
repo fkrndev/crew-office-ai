@@ -864,6 +864,21 @@
       "safeReadonlyNote": "These servers read data only, need no secrets, and are scoped to the agent workspace. They are enabled for every new agent.",
       "writeNote": "These servers can mutate state beyond the workspace. Off by default — enable only after reviewing.",
       "secretNote": "These servers require an API key or credentials. Off by default — add your credentials and enable after consent."
+    },
+    "shardx": {
+      "title": "ShardX browser setup",
+      "desc": "Marketplace ops (Shopee/TikTok/Lazada profiles) needs three local pieces before the toggle does anything: the ShardX launcher running, the MCP bridge installed under the harness, and an Automation API token saved to the keychain.",
+      "gateLauncher": "Launcher running",
+      "gateBridge": "MCP bridge installed",
+      "gateToken": "API token saved",
+      "downloadLauncher": "Download launcher",
+      "installBridge": "Install bridge",
+      "saveToken": "Save token",
+      "tokenPlaceholder": "Automation API token",
+      "refresh": "Refresh",
+      "done": "done",
+      "failed": "failed",
+      "savedTo": "saved to {{path}}"
     }
   },
   "devicePicker": {
