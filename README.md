@@ -193,9 +193,10 @@ auto-created on spawn) — passed to it via `$SHARDX_PROFILE`, `SHARDX.md` in
 its agent dir, and the injected prompt. Profiles are never shared: one
 profile is one account identity, and overlapping fingerprints/cookies are
 how marketplaces issue linked-account bans. The same applies to social
-media accounts — posting/scheduling APIs are covered by the bundled
-`socialclaw` skill; browser-only actions (DMs, comment replies, stories)
-ride the same per-agent ShardX profile.
+media accounts — posting/scheduling is covered by the bundled `postiz`
+skill (self-hosted Postiz is free; 28+ channels incl. IG/TikTok/FB);
+browser-only actions (DMs, comment replies, stories) ride the same
+per-agent ShardX profile.
 
 ## Stack
 
