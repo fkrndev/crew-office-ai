@@ -198,13 +198,17 @@ function ShardXSetup() {
     if (busy) return;
     setBusy(true);
     try {
-      const r = (await fn()) as { ok?: boolean; path?: string; error?: string } | undefined;
+      const r = (await fn()) as
+        | { ok?: boolean; path?: string; error?: string; removed?: number; kept?: number }
+        | undefined;
       if (r && typeof r === 'object' && 'ok' in r) {
         flash(
           r.ok
-            ? r.path
-              ? t('mcpDefaults.shardx.savedTo', { path: r.path })
-              : t('mcpDefaults.shardx.done')
+            ? r.removed !== undefined
+              ? t('mcpDefaults.shardx.cleaned', { removed: r.removed, kept: r.kept ?? 0 })
+              : r.path
+                ? t('mcpDefaults.shardx.savedTo', { path: r.path })
+                : t('mcpDefaults.shardx.done')
             : (() => {
                 const steps = (r as { steps?: Record<string, { ok?: boolean }> }).steps;
                 const bad = steps
@@ -317,6 +321,20 @@ function ShardXSetup() {
             style={shardxBtnStyle}
           >
             {t('mcpDefaults.shardx.refresh')}
+          </button>
+          {/* Orphan sweep — deletes ONLY auto-created office-* profiles no
+              registry entry still owns; user-named profiles never touched.
+              Destructive → explicit confirm. */}
+          <button
+            type="button"
+            disabled={busy || !status?.launcherRunning || !status?.tokenSet}
+            onClick={() => {
+              if (!window.confirm(t('mcpDefaults.shardx.cleanConfirm'))) return;
+              void run(() => window.cth.shardxCleanup());
+            }}
+            style={shardxBtnStyle}
+          >
+            {t('mcpDefaults.shardx.cleanProfiles')}
           </button>
         </div>
 

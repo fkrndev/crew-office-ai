@@ -200,6 +200,7 @@ export function installCth(): void {
     shardxSetToken: (...args: unknown[]) => invoke('shardx_set_token', pack(args, ["token"])),
     shardxSetup: () => invoke('shardx_setup'),
     shardxBootstrap: () => invoke('shardx_bootstrap'),
+    shardxCleanup: () => invoke('shardx_cleanup'),
     shardxDownloadLauncher: () => invoke('shardx_download_launcher'),
     skillsReveal: (...args: unknown[]) => invoke('skills_reveal', pack(args, ["id"])),
     searchMemory: (...args: unknown[]) => invoke('search_memory', pack(args, ["query","wing","limit"])),

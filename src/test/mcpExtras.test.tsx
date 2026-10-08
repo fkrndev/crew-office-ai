@@ -25,13 +25,19 @@ function renderModal() {
   render(<AddAgentModal onClose={() => {}} config={baseConfig} onConfigChange={() => {}} />);
 }
 
-async function spawnWith(opts: { checkShardx?: boolean }) {
+async function spawnWith(opts: { checkShardx?: boolean; shardxProfile?: string }) {
   // Name lives on Identity (the default section); Workspace has the project
   // path AND the mcpExtras checkboxes.
   fireEvent.change(screen.getByPlaceholderText('Ada'), { target: { value: 'toko-bot' } });
   fireEvent.click(screen.getByText('Workspace'));
   if (opts.checkShardx) {
     fireEvent.click(screen.getByText('ShardX Browser'));
+  }
+  if (opts.shardxProfile !== undefined) {
+    fireEvent.change(
+      screen.getByPlaceholderText(/browser profile/i),
+      { target: { value: opts.shardxProfile } }
+    );
   }
   fireEvent.change(screen.getByPlaceholderText('/path/to/your/project'), {
     target: { value: 'C:/repo-a' }
@@ -113,6 +119,30 @@ describe('AddAgentModal MCP extras', () => {
       expect(cth.calls.some((c) => c.method === 'shardxBootstrap')).toBe(false);
     });
     confirm.mockRestore();
+  });
+
+  it('account binding — a typed profile name rides the spawn as shardxProfile', async () => {
+    cth.shardxStatus = async () => ({
+      launcherRunning: true, mcpInstalled: true, tokenSet: true
+    });
+    renderModal();
+    await spawnWith({ checkShardx: true, shardxProfile: 'shopee-toko-a' });
+    await waitFor(() => {
+      const call = cth.calls.find((c) => c.method === 'spawnPty');
+      expect((call!.args[0] as { shardxProfile?: string }).shardxProfile).toBe('shopee-toko-a');
+    });
+  });
+
+  it('blank profile field → shardxProfile stays off the payload (auto office-<id>)', async () => {
+    cth.shardxStatus = async () => ({
+      launcherRunning: true, mcpInstalled: true, tokenSet: true
+    });
+    renderModal();
+    await spawnWith({ checkShardx: true });
+    await waitFor(() => {
+      const call = cth.calls.find((c) => c.method === 'spawnPty');
+      expect((call!.args[0] as { shardxProfile?: string }).shardxProfile).toBeUndefined();
+    });
   });
 
   it('gates already green → no consent prompt, spawn arms shardx directly', async () => {

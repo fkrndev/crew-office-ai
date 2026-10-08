@@ -240,6 +240,10 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   // Per-agent opt-in for non-default MCP servers (write/secret catalog ids).
   // Safe-readonly servers already ship on; this list is the armed extras.
   const [mcpEnable, setMcpEnable] = useState<Set<string>>(new Set());
+  // ShardX account binding — blank = auto-dedicated `office-<id>` profile;
+  // a name binds this agent to that account's existing launcher profile so
+  // sibling agents on one shop share ONE logged-in identity.
+  const [shardxProfile, setShardxProfile] = useState('');
   // #2 — optional Claude session id to continue. When set, the spawn seeds that
   // session's transcript into the cwd's project dir and launches `--resume`.
   const [resumeSessionId, setResumeSessionId] = useState('');
@@ -520,6 +524,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       // Per-agent MCP opt-in: write/secret catalog ids this agent gets even
       // when the global consent is off (e.g. shardx for a marketplace worker).
       mcpEnable: mcpIds.length ? mcpIds : undefined,
+      shardxProfile:
+        mcpIds.includes('shardx') && shardxProfile.trim() ? shardxProfile.trim() : undefined,
       // #2 — continue an existing Claude session in this agent's cwd.
       resumeSessionId: resuming ? resumeSessionId.trim() : undefined,
       // Provision this agent in the hive (memory + mailbox + identity/protocol).
@@ -1053,6 +1059,18 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         </label>
                       ))}
                     </div>
+                    {/* ShardX account binding — blank keeps the auto-dedicated
+                        office-<id> profile; a name binds this agent to that
+                        account's profile so sibling agents share ONE login. */}
+                    {mcpEnable.has('shardx') && (
+                      <input
+                        value={shardxProfile}
+                        onChange={(e) => setShardxProfile(e.target.value)}
+                        placeholder={tr('addAgent.shardxProfilePh')}
+                        title={tr('addAgent.shardxProfileHint')}
+                        style={{ ...inputStyle, marginTop: 6, fontFamily: 'var(--cth-font-mono)', fontSize: 12 }}
+                      />
+                    )}
 
                     <Row label={tr('addAgent.resumeSession')}>
                       <input

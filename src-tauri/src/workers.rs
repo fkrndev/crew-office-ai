@@ -500,10 +500,20 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             is_assistant: false,
             capabilities: Vec::new(),
             no_auto_install: false,
-            mcp_enable: Vec::new(),
-            mcp_disable: Vec::new(),
+            // Per-worker MCP consent/binding can ride the spawn JSON too —
+            // a marketplace mission's worker needs its shardx tools armed.
+            mcp_enable: raw["mcpEnable"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            mcp_disable: raw["mcpDisable"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
             // Spawn-request JSON may pin a model — flag-less providers seed it.
             model: raw["model"].as_str().map(|s| s.to_string()),
+            // Worker spawn JSON may bind a named ShardX profile too.
+            shardx_profile: raw["shardxProfile"].as_str().map(|s| s.to_string()),
             cols: 120,
             rows: 32,
         },

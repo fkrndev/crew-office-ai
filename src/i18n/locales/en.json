@@ -592,7 +592,9 @@
     "skipHire": "skip hire",
     "mcpExtras": "extra tools:",
     "shardxNeedsInstall": "This agent needs the ShardX browser (marketplace profiles). Install and set it up automatically? The launcher, API token, and MCP bridge are all handled — you only confirm this once.",
-    "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP."
+    "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP.",
+    "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
+    "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account."
   },
   "onboarding": {
     "titles": {
@@ -870,6 +872,9 @@
     "shardx": {
       "title": "ShardX browser setup",
       "autoSetup": "Auto setup",
+      "cleanProfiles": "Clean up profiles",
+      "cleanConfirm": "Delete auto-created ShardX profiles that no agent in this workspace still owns? (office-* only — profiles you named yourself are never touched.)",
+      "cleaned": "Cleaned {{removed}} orphaned profile(s), kept {{kept}}",
       "desc": "Marketplace ops (Shopee/TikTok/Lazada profiles) needs three local pieces before the toggle does anything: the ShardX launcher running, the MCP bridge installed under the harness, and an Automation API token saved to the keychain.",
       "gateLauncher": "Launcher running",
       "gateBridge": "MCP bridge installed",

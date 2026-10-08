@@ -591,7 +591,9 @@
     "skipHire": "跳过 hire",
     "mcpExtras": "额外工具：",
     "shardxNeedsInstall": "此智能体需要 ShardX 浏览器（店铺账号配置）。是否自动安装并完成设置？启动器、API 令牌和 MCP 桥都会自动处理——你只需确认这一次。",
-    "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。"
+    "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。",
+    "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
+    "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。"
   },
   "onboarding": {
     "titles": {
@@ -868,6 +870,9 @@
     "shardx": {
       "title": "ShardX 浏览器设置",
       "autoSetup": "自动设置",
+      "cleanProfiles": "清理配置",
+      "cleanConfirm": "删除此工作区中已无智能体持有的自动创建 ShardX 配置？（仅 office-* —— 你自己命名的配置永远不会被动。）",
+      "cleaned": "已清理 {{removed}} 个孤立配置，保留 {{kept}} 个",
       "desc": "电商店铺自动化（Shopee/TikTok/Lazada 配置）在开关生效前需要三个本地条件：ShardX 启动器正在运行、MCP 桥已安装到 harness、Automation API 令牌已存入系统钥匙串。",
       "gateLauncher": "启动器运行中",
       "gateBridge": "MCP 桥已安装",

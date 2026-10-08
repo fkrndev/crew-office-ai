@@ -300,6 +300,12 @@ pub struct SpawnArgs {
     /// model flag (openclaw `tui`); consumed by the per-provider seeders.
     #[serde(default)]
     pub model: Option<String>,
+    /// Optional ShardX profile binding — the ACCOUNT's launcher profile this
+    /// agent drives. Empty = auto `office-<agentId>` (one agent, one identity).
+    /// Set = bind to a named profile so sibling agents on the same shop can
+    /// share ONE login instead of each needing its own fingerprint+OTP.
+    #[serde(default)]
+    pub shardx_profile: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -370,6 +376,9 @@ pub struct PtySpawnRequest {
     pub mcp_enable: Vec<String>,
     #[serde(default)]
     pub mcp_disable: Vec<String>,
+    /// Optional ShardX profile name to bind (SpawnArgs.shardx_profile).
+    #[serde(default)]
+    pub shardx_profile: Option<String>,
 }
 
 /// The upstream AgentMeta block nested under `hive` (index.ts AgentSpawnOptions.hive).
@@ -658,6 +667,12 @@ pub(crate) fn translate_spawn_request(
             no_auto_install: req.no_auto_install,
             mcp_enable: req.mcp_enable.clone(),
             mcp_disable: req.mcp_disable.clone(),
+            shardx_profile: req
+                .shardx_profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             cols: req.cols,
             rows: req.rows,
         },
@@ -726,8 +741,33 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         is_assistant: entry.is_assistant,
         capabilities: entry.capabilities.clone(),
         no_auto_install: false,
-        mcp_enable: Vec::new(),
-        mcp_disable: Vec::new(),
+        // Per-agent consent + browser binding survive respawn via `extra` —
+        // otherwise a restarted marketplace agent silently loses its tools.
+        mcp_enable: entry
+            .extra
+            .get("mcpEnable")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        mcp_disable: entry
+            .extra
+            .get("mcpDisable")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        shardx_profile: entry
+            .extra
+            .get("shardxProfile")
+            .and_then(|v| v["name"].as_str())
+            .map(String::from),
         // The registry's recorded model (in `extra`) — respawns re-seed it
         // for flag-less providers (openclaw).
         model: entry
@@ -843,6 +883,37 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         }
     }
 
+    // Per-agent ShardX browser identity — armed by global consent or this
+    // spawn's mcp_enable (disable wins), never silently. The PROFILE NAME is
+    // the account contract: an unset spawn field auto-derives office-<id>
+    // (one agent, one identity); a bound name shares ONE account profile
+    // across sibling agents on purpose — the right isolation unit is the
+    // account, not the agent. Runs BEFORE register so the binding lands in
+    // `extra` and respawns/cleanup can find it.
+    let agent_dir = st.hive.agent_dir(&agent_id);
+    let is_claude = args.provider == "claude";
+    let shardx_armed = is_claude && {
+        let consented = st
+            .config
+            .lock()
+            .unwrap()
+            .mcp_defaults
+            .get("shardx")
+            .map(|m| m.enabled)
+            .unwrap_or(false);
+        (consented || args.mcp_enable.iter().any(|i| i == "shardx"))
+            && !args.mcp_disable.iter().any(|i| i == "shardx")
+    };
+    let shardx_name = args
+        .shardx_profile
+        .clone()
+        .unwrap_or_else(|| shardx_profile_name(&agent_id));
+    let shardx_profile = if shardx_armed {
+        shardx_ensure_profile(&agent_id, &shardx_name, &st.hive.root)
+    } else {
+        None
+    };
+
     let entry = RegistryEntry {
         id: agent_id.clone(),
         name: args.name.clone(),
@@ -855,13 +926,31 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         status: "idle".into(),
         session_id: None,
         command: args.command.clone(),
-        // The picked model rides `extra` (RegistryEntry has no typed field) so
-        // respawns — which rebuild SpawnArgs from this record — re-seed it for
-        // flag-less providers like openclaw.
+        // Port-only bookkeeping rides `extra` (RegistryEntry has no typed
+        // fields): the picked model re-seeds flag-less providers (openclaw),
+        // mcpEnable/Disable keep a respawn's per-agent consent, and
+        // shardxProfile binds this agent to its browser identity (`auto`
+        // marks the ones WE created — only those are cleanup-eligible).
         extra: {
             let mut e = serde_json::Map::new();
             if let Some(m) = &args.model {
                 e.insert("model".into(), serde_json::json!(m));
+            }
+            if !args.mcp_enable.is_empty() {
+                e.insert("mcpEnable".into(), serde_json::json!(args.mcp_enable));
+            }
+            if !args.mcp_disable.is_empty() {
+                e.insert("mcpDisable".into(), serde_json::json!(args.mcp_disable));
+            }
+            if shardx_armed {
+                e.insert(
+                    "shardxProfile".into(),
+                    serde_json::json!({
+                        "name": shardx_name,
+                        "id": shardx_profile,
+                        "auto": args.shardx_profile.is_none(),
+                    }),
+                );
             }
             e
         },
@@ -877,8 +966,6 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // Per-agent hive identity env (hive.ts:803) layered over the inherited env
     // minus parent-session markers (ptyEnv.ts).
     let auto = st.config.lock().unwrap().auto_mode;
-    let agent_dir = st.hive.agent_dir(&agent_id);
-    let is_claude = args.provider == "claude";
     let mut agent_env = HashMap::from([
         ("AGENT_ID".to_string(), agent_id.clone()),
         ("AGENT_NAME".to_string(), args.name.clone()),
@@ -1174,35 +1261,16 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         }
     }
 
-    // Per-agent ShardX browser identity — armed by global consent or this
-    // spawn's mcp_enable (disable wins), never silently. Each agent gets its
-    // OWN launcher profile: two agents sharing one fingerprint+cookie jar is
-    // a marketplace linked-account ban, not a shortcut. The profile rides the
-    // agent's own env as $SHARDX_PROFILE plus a SHARDX.md note in its dir.
-    let shardx_armed = is_claude && {
-        let consented = st
-            .config
-            .lock()
-            .unwrap()
-            .mcp_defaults
-            .get("shardx")
-            .map(|m| m.enabled)
-            .unwrap_or(false);
-        (consented || args.mcp_enable.iter().any(|i| i == "shardx"))
-            && !args.mcp_disable.iter().any(|i| i == "shardx")
-    };
-    let shardx_profile = if shardx_armed {
-        shardx_ensure_profile(&agent_id)
-    } else {
-        None
-    };
+    // The ensured ShardX profile rides the agent's own env as $SHARDX_PROFILE
+    // plus a SHARDX.md note in its dir — the agent-visible contract for WHICH
+    // browser identity it owns.
     if shardx_armed {
         if let Some(pid) = &shardx_profile {
             agent_env.insert("SHARDX_PROFILE".into(), pid.clone());
         }
         let _ = std::fs::write(
             agent_dir.join("SHARDX.md"),
-            shardx_workspace_note(&agent_id, shardx_profile.as_deref()),
+            shardx_workspace_note(&shardx_name, shardx_profile.as_deref()),
         );
     }
 
@@ -1277,9 +1345,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     };
     let mut injected = st.hive.injected_prompt(&entry, &prompt_opts);
     if shardx_armed {
-        let pname = shardx_profile_name(&agent_id);
         injected.push_str(&format!(
-            "\n\nShardX browser (armed): your dedicated launcher profile is `{pname}`{}\
+            "\n\nShardX browser (armed): your dedicated launcher profile is `{shardx_name}`{}\
              — pass it to every shardx profile/browser tool call and never start or reuse \
              another profile (linked-account bans). Details: SHARDX.md in your agent dir, \
              or $SHARDX_PROFILE on your env.",
@@ -3363,11 +3430,26 @@ fn shardx_profile_name(agent_id: &str) -> String {
     format!("office-{slug}")
 }
 
-/// GET-or-CREATE the agent's own launcher profile. Two agents must NEVER
-/// share one — marketplaces link accounts by fingerprint + cookie overlap,
-/// so a shared profile is a ban vector, not a shortcut. None on any failure:
-/// the spawn proceeds, the shardx tools just can't reach the launcher yet.
-fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
+/// Which hive a profile belongs to — first 8 hex of sha256(hive root). The
+/// launcher's profiles are GLOBAL across workspaces; without this tag a
+/// cleanup pass on workspace A could nuke auto-profiles belonging to B.
+fn hive_tag(root: &std::path::Path) -> String {
+    use sha2::Digest;
+    let h = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
+    h.iter().take(4).map(|b| format!("{b:02x}")).collect()
+}
+
+/// GET-or-CREATE a launcher profile by name. `profile_name` is the identity
+/// contract: auto-spawns pass `office-<agentId>` (one agent, one identity);
+/// a user-bound name binds the agent to an ACCOUNT's existing profile so
+/// sibling agents on the same shop share one login instead of multiplying
+/// fingerprints. None on any failure: the spawn proceeds, the shardx tools
+/// just can't reach the launcher yet.
+fn shardx_ensure_profile(
+    agent_id: &str,
+    profile_name: &str,
+    hive_root: &std::path::Path,
+) -> Option<String> {
     let port = shardx_launcher_secret()
         .map(|(_, p)| p)
         .unwrap_or(SHARDX_API_PORT);
@@ -3384,7 +3466,6 @@ fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
         .timeout_global(Some(std::time::Duration::from_secs(8)))
         .build()
         .new_agent();
-    let want = shardx_profile_name(agent_id);
     let mut resp = http
         .get(&format!("{api}/profiles"))
         .header("Authorization", &auth)
@@ -3395,7 +3476,7 @@ fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .find(|p| p["name"].as_str() == Some(want.as_str()))
+        .find(|p| p["name"].as_str() == Some(profile_name))
     {
         return hit["id"].as_str().map(String::from);
     }
@@ -3409,8 +3490,11 @@ fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
         .post(&format!("{api}/profiles"))
         .header("Authorization", &auth)
         .send_json(serde_json::json!({
-            "name": want,
-            "notes": format!("office agent {agent_id} — auto-created, do not reuse"),
+            "name": profile_name,
+            "notes": format!(
+                "office agent {agent_id} | hive:{} | auto-created, do not reuse",
+                hive_tag(hive_root)
+            ),
             "fingerprint": fp["fingerprint"].clone(),
         }))
         .ok()?;
@@ -3421,22 +3505,114 @@ fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// Which `office-*` profiles are safe to delete: tagged to THIS hive (a
+/// sibling workspace's profiles are invisible-but-real — never touch them)
+/// AND bound to no registry entry. `bound` carries both derived auto names
+/// (`office-<id>`) and any user-bound profile names from registry extras.
+fn shardx_cleanup_plan(profiles: &[Value], bound: &std::collections::HashSet<String>, tag: &str) -> Vec<String> {
+    profiles
+        .iter()
+        .filter(|p| {
+            let name = p["name"].as_str().unwrap_or("");
+            let notes = p["notes"].as_str().unwrap_or("");
+            name.starts_with("office-")
+                && notes.contains(&format!("hive:{tag}"))
+                && !bound.contains(name)
+        })
+        .filter_map(|p| p["id"].as_str().map(String::from))
+        .collect()
+}
+
+/// Remove auto-created `office-*` profiles that no longer belong to any agent
+/// in THIS hive's registry (deleted agents, retired workspaces). User-named
+/// profiles and anything another hive created are left alone.
+#[tauri::command(async)]
+pub fn shardx_cleanup(app: AppHandle) -> Value {
+    let st = state(&app);
+    let port = shardx_launcher_secret()
+        .map(|(_, p)| p)
+        .unwrap_or(SHARDX_API_PORT);
+    if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        return serde_json::json!({ "ok": false, "error": "launcher not running" });
+    }
+    let Some(token) = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+    else {
+        return serde_json::json!({ "ok": false, "error": "no token" });
+    };
+    let api = format!("http://127.0.0.1:{port}");
+    let auth = format!("Bearer {token}");
+    let http = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .new_agent();
+    let Ok(mut resp) = http
+        .get(&format!("{api}/profiles"))
+        .header("Authorization", &auth)
+        .call()
+    else {
+        return serde_json::json!({ "ok": false, "error": "profiles list failed" });
+    };
+    let list: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
+    let Some(profiles) = list.as_array() else {
+        return serde_json::json!({ "ok": false, "error": "unexpected profiles payload" });
+    };
+
+    // Bound names: every registry agent's auto name + any explicit binding.
+    let bound: std::collections::HashSet<String> = st
+        .hive
+        .registry()
+        .iter()
+        .flat_map(|e| {
+            [
+                Some(shardx_profile_name(&e.id)),
+                e.extra
+                    .get("shardxProfile")
+                    .and_then(|v| v["name"].as_str())
+                    .map(String::from),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect();
+    let doomed = shardx_cleanup_plan(profiles, &bound, &hive_tag(&st.hive.root));
+
+    let mut removed = 0usize;
+    let mut failed = 0usize;
+    for id in &doomed {
+        match http
+            .delete(&format!("{api}/profiles/{id}"))
+            .header("Authorization", &auth)
+            .call()
+        {
+            Ok(_) => removed += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    serde_json::json!({
+        "ok": failed == 0,
+        "removed": removed,
+        "kept": profiles.len() - removed - failed,
+        "failed": failed,
+    })
+}
+
 /// The workspace note that tells the agent WHICH browser identity it owns —
 /// env vars of the MCP server process are invisible to the agent, so the
 /// contract lives here and in $SHARDX_PROFILE on the agent's own env.
-fn shardx_workspace_note(agent_id: &str, profile_id: Option<&str>) -> String {
-    let name = shardx_profile_name(agent_id);
+fn shardx_workspace_note(profile_name: &str, profile_id: Option<&str>) -> String {
     let id_line = match profile_id {
-        Some(pid) => format!("Profile `{name}` exists — profile_id `{pid}`."),
+        Some(pid) => format!("Profile `{profile_name}` exists — profile_id `{pid}`."),
         None => format!(
-            "Profile `{name}` is yours but not created yet — create it once with \
-             create_profile {{name:\"{name}\"}} and use the returned id."
+            "Profile `{profile_name}` is yours but not created yet — create it once with \
+             create_profile {{name:\"{profile_name}\"}} and use the returned id."
         ),
     };
     format!(
         "# ShardX browser\n\n\
          {id_line}\n\n\
-         - Pass this profile (id or name `{name}`) to every shardx profile/browser tool call.\n\
+         - Pass this profile (id or name `{profile_name}`) to every shardx profile/browser tool call.\n\
          - NEVER use another profile: profiles map 1:1 to accounts and sharing a\n  \
          fingerprint/cookie jar is how marketplaces issue linked-account bans.\n\
          - If browser tools fail to connect, the ShardX launcher is not running —\n  \
@@ -3957,12 +4133,51 @@ mod tests {
     /// share rule — with and without a resolved profile id.
     #[test]
     fn shardx_workspace_note_contract() {
-        let n = shardx_workspace_note("toko-a", Some("pid-1"));
+        let n = shardx_workspace_note("office-toko-a", Some("pid-1"));
         assert!(n.contains("office-toko-a"));
         assert!(n.contains("pid-1"));
         assert!(n.contains("NEVER"));
-        let pending = shardx_workspace_note("toko-a", None);
+        let pending = shardx_workspace_note("office-toko-a", None);
         assert!(pending.contains("create_profile"));
+    }
+
+    /// Cleanup deletes ONLY this hive's own auto-profiles that nothing binds:
+    /// bound names survive, other hives' office-* survive (the tag check),
+    /// user-named profiles are never candidates regardless.
+    #[test]
+    fn shardx_cleanup_plan_only_drops_own_orphans() {
+        let tag = hive_tag(std::path::Path::new("C:/hive/a"));
+        let other = hive_tag(std::path::Path::new("C:/hive/b"));
+        assert_ne!(tag, other, "different roots must tag differently");
+        let profiles = vec![
+            serde_json::json!({"id":"p1","name":"office-alive","notes":format!("office agent alive | hive:{tag}")}),
+            serde_json::json!({"id":"p2","name":"office-gone","notes":format!("office agent gone | hive:{tag}")}),
+            serde_json::json!({"id":"p3","name":"office-foreign","notes":format!("office agent x | hive:{other}")}),
+            serde_json::json!({"id":"p4","name":"shopee-toko-a","notes":"user's account"}),
+            serde_json::json!({"id":"p5","name":"office-notag","notes":"legacy"}),
+        ];
+        let bound = std::collections::HashSet::from([
+            "office-alive".to_string(),
+            "shopee-toko-a".to_string(),
+        ]);
+        let doomed = shardx_cleanup_plan(&profiles, &bound, &tag);
+        assert_eq!(doomed, vec!["p2".to_string()], "only own-hive orphans die");
+    }
+
+    /// spawn args carry the optional profile binding through the wire struct.
+    #[test]
+    fn shardx_profile_field_translates() {
+        let mut r = req(serde_json::json!({
+            "id": "pty-x", "cwd": "C:/w", "command": "claude",
+            "hive": { "id": "x" },
+            "shardxProfile": "shopee-toko-a"
+        }));
+        let (args, _) = translate_spawn_request(&r).unwrap();
+        assert_eq!(args.shardx_profile.as_deref(), Some("shopee-toko-a"));
+        // Blank/whitespace collapses to None → auto office-<id>.
+        r.shardx_profile = Some("   ".into());
+        let (args, _) = translate_spawn_request(&r).unwrap();
+        assert!(args.shardx_profile.is_none());
     }
 
     /// Bootstrap reports each gate independently: bridge pre-seeded → ok,

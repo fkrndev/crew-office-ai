@@ -1676,6 +1676,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                 mcp_enable: Vec::new(),
                 mcp_disable: Vec::new(),
                 model: None,
+                shardx_profile: None,
                 cols: 120,
                 rows: 30,
             };
