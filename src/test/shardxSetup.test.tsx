@@ -64,6 +64,15 @@ describe('McpDefaultsSettings ShardX setup card', () => {
     });
   });
 
+  it('Auto setup calls shardxBootstrap — the one-consent full chain', async () => {
+    renderSettings(cth);
+    await waitFor(() => screen.getByText('Auto setup'));
+    fireEvent.click(screen.getByText('Auto setup'));
+    await waitFor(() => {
+      expect(cth.calls.some((c) => c.method === 'shardxBootstrap')).toBe(true);
+    });
+  });
+
   it('Download launcher calls shardxDownloadLauncher', async () => {
     renderSettings(cth);
     await waitFor(() => screen.getByText('Download launcher'));

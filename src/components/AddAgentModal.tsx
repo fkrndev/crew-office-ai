@@ -474,6 +474,30 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     setBusy(true);
     const id = uniqueId(name);
     const ptyId = `pty-${id}`;
+    // ShardX consent: an agent asking for the browser needs the local chain
+    // (launcher + token + MCP bridge). One yes/no is the only user step — the
+    // backend bootstrap does the download, token mint, and vendor itself.
+    // "No" spawns the agent anyway, just without the browser tools.
+    let mcpIds = [...mcpEnable];
+    if (mcpIds.includes('shardx')) {
+      try {
+        const st = (await window.cth.shardxStatus()) as {
+          launcherRunning?: boolean;
+          mcpInstalled?: boolean;
+          tokenSet?: boolean;
+        } | null;
+        if (!(st?.launcherRunning && st?.mcpInstalled && st?.tokenSet)) {
+          if (window.confirm(tr('addAgent.shardxNeedsInstall'))) {
+            const r = (await window.cth.shardxBootstrap()) as { ok?: boolean } | null;
+            if (!r?.ok) setError(tr('addAgent.shardxSetupIncomplete'));
+          } else {
+            mcpIds = mcpIds.filter((x) => x !== 'shardx');
+          }
+        }
+      } catch {
+        /* status probe failed — let the spawn attempt continue */
+      }
+    }
     // Split the editable command field into argv-style pieces for node-pty.
     // Quote-aware so an agy model label like "Gemini 3.1 Pro (High)" — or any
     // auto-mode flags appended to the command — stays one argument.
@@ -495,7 +519,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       isolate: resuming ? false : isolate,
       // Per-agent MCP opt-in: write/secret catalog ids this agent gets even
       // when the global consent is off (e.g. shardx for a marketplace worker).
-      mcpEnable: mcpEnable.size ? [...mcpEnable] : undefined,
+      mcpEnable: mcpIds.length ? mcpIds : undefined,
       // #2 — continue an existing Claude session in this agent's cwd.
       resumeSessionId: resuming ? resumeSessionId.trim() : undefined,
       // Provision this agent in the hive (memory + mailbox + identity/protocol).

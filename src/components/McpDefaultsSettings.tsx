@@ -205,7 +205,17 @@ function ShardXSetup() {
             ? r.path
               ? t('mcpDefaults.shardx.savedTo', { path: r.path })
               : t('mcpDefaults.shardx.done')
-            : r.error ?? t('mcpDefaults.shardx.failed')
+            : (() => {
+                const steps = (r as { steps?: Record<string, { ok?: boolean }> }).steps;
+                const bad = steps
+                  ? Object.entries(steps)
+                      .filter(([, v]) => v && v.ok === false)
+                      .map(([k]) => k)
+                      .join(', ')
+                  : '';
+                const base = r.error ?? t('mcpDefaults.shardx.failed');
+                return bad ? `${base}: ${bad}` : base;
+              })()
         );
       } else {
         flash(t('mcpDefaults.shardx.done'));
@@ -272,6 +282,18 @@ function ShardXSetup() {
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => window.cth.shardxBootstrap())}
+            style={{
+              ...shardxBtnStyle,
+              background: 'var(--cth-lemon)',
+              boxShadow: 'inset 0 0 0 1px var(--cth-ink-900)'
+            }}
+          >
+            {t('mcpDefaults.shardx.autoSetup')}
+          </button>
           <button
             type="button"
             disabled={busy}

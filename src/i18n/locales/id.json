@@ -590,7 +590,9 @@
     "errCommand": "Command wajib diisi",
     "hireProgress": "rekrutan {{current}} dari {{total}}",
     "skipHire": "lewati rekrutan",
-    "mcpExtras": "tool tambahan:"
+    "mcpExtras": "tool tambahan:",
+    "shardxNeedsInstall": "Agen ini butuh browser ShardX (profil marketplace). Install dan setup otomatis sekarang? Launcher, token API, dan bridge MCP semuanya diurus — kamu cukup konfirmasi sekali ini saja.",
+    "shardxSetupIncomplete": "Setup ShardX belum selesai — agen dijalankan tanpa tools browser. Ulangi dari Pengaturan → MCP."
   },
   "onboarding": {
     "titles": {
@@ -867,6 +869,7 @@
     },
     "shardx": {
       "title": "Setup browser ShardX",
+      "autoSetup": "Setup otomatis",
       "desc": "Otomasi marketplace (profil Shopee/TikTok/Lazada) butuh tiga hal lokal sebelum toggle berfungsi: launcher ShardX berjalan, bridge MCP terpasang di harness, dan token Automation API tersimpan di keychain.",
       "gateLauncher": "Launcher berjalan",
       "gateBridge": "Bridge MCP terpasang",

@@ -589,7 +589,9 @@
     "errCommand": "الأمر مطلوب",
     "hireProgress": "التعيين {{current}} من {{total}}",
     "skipHire": "تخطَّ التعيين",
-    "mcpExtras": "أدوات إضافية:"
+    "mcpExtras": "أدوات إضافية:",
+    "shardxNeedsInstall": "يحتاج هذا الوكيل إلى متصفح ShardX (ملفات المتاجر). هل أثبّته وأجهّزه تلقائيًا؟ المشغّل ورمز API وجسر MCP كلها تُدار تلقائيًا — عليك فقط التأكيد مرة واحدة.",
+    "shardxSetupIncomplete": "لم يكتمل إعداد ShardX — بدأ الوكيل دون أدوات المتصفح. أعد المحاولة من الإعدادات ← MCP."
   },
   "onboarding": {
     "titles": {
@@ -865,6 +867,7 @@
     },
     "shardx": {
       "title": "إعداد متصفح ShardX",
+      "autoSetup": "إعداد تلقائي",
       "desc": "تحتاج أتمتة المتاجر (ملفات Shopee/TikTok/Lazada) إلى ثلاثة عناصر محلية قبل أن يعمل المفتاح: مشغّل ShardX يعمل، وجسر MCP مثبّت داخل harness، ورمز Automation API محفوظ في سلسلة المفاتيح.",
       "gateLauncher": "المشغّل يعمل",
       "gateBridge": "جسر MCP مثبّت",

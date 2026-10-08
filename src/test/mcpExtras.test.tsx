@@ -52,6 +52,10 @@ describe('AddAgentModal MCP extras', () => {
   });
 
   it('checking ShardX Browser arms mcpEnable on the spawn payload', async () => {
+    // Gates green → the consent prompt is skipped and shardx rides through.
+    cth.shardxStatus = async () => ({
+      launcherRunning: true, mcpInstalled: true, tokenSet: true
+    });
     renderModal();
     await spawnWith({ checkShardx: true });
     await waitFor(() => {
@@ -69,5 +73,61 @@ describe('AddAgentModal MCP extras', () => {
       expect(call).toBeTruthy();
       expect((call!.args[0] as { mcpEnable?: string[] }).mcpEnable).toBeUndefined();
     });
+  });
+
+  // Consent flow: shardx armed + the local chain incomplete → one yes/no is
+  // the only user step; yes runs the zero-touch bootstrap then spawns armed.
+  it('shardx armed + gates red + consent YES → bootstrap runs, spawn keeps shardx', async () => {
+    cth.shardxStatus = async () => {
+      cth.calls.push({ method: 'shardxStatus', args: [] });
+      return { launcherRunning: false, mcpInstalled: false, tokenSet: false };
+    };
+    cth.shardxBootstrap = async () => {
+      cth.calls.push({ method: 'shardxBootstrap', args: [] });
+      return { ok: true, steps: {} };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderModal();
+    await spawnWith({ checkShardx: true });
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalled();
+      expect(cth.calls.some((c) => c.method === 'shardxBootstrap')).toBe(true);
+      const call = cth.calls.find((c) => c.method === 'spawnPty');
+      expect((call!.args[0] as { mcpEnable?: string[] }).mcpEnable).toEqual(['shardx']);
+    });
+    confirm.mockRestore();
+  });
+
+  it('consent NO → agent still spawns, shardx stripped from mcpEnable', async () => {
+    cth.shardxStatus = async () => {
+      cth.calls.push({ method: 'shardxStatus', args: [] });
+      return { launcherRunning: false, mcpInstalled: false, tokenSet: false };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderModal();
+    await spawnWith({ checkShardx: true });
+    await waitFor(() => {
+      const call = cth.calls.find((c) => c.method === 'spawnPty');
+      expect(call).toBeTruthy();
+      expect((call!.args[0] as { mcpEnable?: string[] }).mcpEnable).toBeUndefined();
+      expect(cth.calls.some((c) => c.method === 'shardxBootstrap')).toBe(false);
+    });
+    confirm.mockRestore();
+  });
+
+  it('gates already green → no consent prompt, spawn arms shardx directly', async () => {
+    cth.shardxStatus = async () => {
+      cth.calls.push({ method: 'shardxStatus', args: [] });
+      return { launcherRunning: true, mcpInstalled: true, tokenSet: true };
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderModal();
+    await spawnWith({ checkShardx: true });
+    await waitFor(() => {
+      const call = cth.calls.find((c) => c.method === 'spawnPty');
+      expect((call!.args[0] as { mcpEnable?: string[] }).mcpEnable).toEqual(['shardx']);
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });

@@ -590,7 +590,9 @@
     "errCommand": "Command is required",
     "hireProgress": "hire {{current}} of {{total}}",
     "skipHire": "skip hire",
-    "mcpExtras": "extra tools:"
+    "mcpExtras": "extra tools:",
+    "shardxNeedsInstall": "This agent needs the ShardX browser (marketplace profiles). Install and set it up automatically? The launcher, API token, and MCP bridge are all handled — you only confirm this once.",
+    "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP."
   },
   "onboarding": {
     "titles": {
@@ -867,6 +869,7 @@
     },
     "shardx": {
       "title": "ShardX browser setup",
+      "autoSetup": "Auto setup",
       "desc": "Marketplace ops (Shopee/TikTok/Lazada profiles) needs three local pieces before the toggle does anything: the ShardX launcher running, the MCP bridge installed under the harness, and an Automation API token saved to the keychain.",
       "gateLauncher": "Launcher running",
       "gateBridge": "MCP bridge installed",

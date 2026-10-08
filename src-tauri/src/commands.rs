@@ -1174,6 +1174,38 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         }
     }
 
+    // Per-agent ShardX browser identity — armed by global consent or this
+    // spawn's mcp_enable (disable wins), never silently. Each agent gets its
+    // OWN launcher profile: two agents sharing one fingerprint+cookie jar is
+    // a marketplace linked-account ban, not a shortcut. The profile rides the
+    // agent's own env as $SHARDX_PROFILE plus a SHARDX.md note in its dir.
+    let shardx_armed = is_claude && {
+        let consented = st
+            .config
+            .lock()
+            .unwrap()
+            .mcp_defaults
+            .get("shardx")
+            .map(|m| m.enabled)
+            .unwrap_or(false);
+        (consented || args.mcp_enable.iter().any(|i| i == "shardx"))
+            && !args.mcp_disable.iter().any(|i| i == "shardx")
+    };
+    let shardx_profile = if shardx_armed {
+        shardx_ensure_profile(&agent_id)
+    } else {
+        None
+    };
+    if shardx_armed {
+        if let Some(pid) = &shardx_profile {
+            agent_env.insert("SHARDX_PROFILE".into(), pid.clone());
+        }
+        let _ = std::fs::write(
+            agent_dir.join("SHARDX.md"),
+            shardx_workspace_note(&agent_id, shardx_profile.as_deref()),
+        );
+    }
+
     let parent: HashMap<String, String> = std::env::vars().collect();
     // withHiveRuntimeFallback: the hive's bundled-runtime dir (if any) is
     // APPENDED to the child PATH so provider subprocesses that shell out to
@@ -1243,7 +1275,20 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 .map(|p| p.display().to_string()),
         }),
     };
-    let injected = st.hive.injected_prompt(&entry, &prompt_opts);
+    let mut injected = st.hive.injected_prompt(&entry, &prompt_opts);
+    if shardx_armed {
+        let pname = shardx_profile_name(&agent_id);
+        injected.push_str(&format!(
+            "\n\nShardX browser (armed): your dedicated launcher profile is `{pname}`{}\
+             — pass it to every shardx profile/browser tool call and never start or reuse \
+             another profile (linked-account bans). Details: SHARDX.md in your agent dir, \
+             or $SHARDX_PROFILE on your env.",
+            shardx_profile
+                .as_ref()
+                .map(|pid| format!(" (id `{pid}`)"))
+                .unwrap_or_default()
+        ));
+    }
     let mut command_line = args.command.clone();
     let mut seed = args.seed_prompt.clone();
 
@@ -1261,7 +1306,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 .iter()
                 .map(|(k, v)| (k.clone(), v.enabled))
                 .collect();
-            let mcp_servers = crate::mcp::build_default_mcp_servers(
+            let mut mcp_servers = crate::mcp::build_default_mcp_servers(
                 &cwd,
                 &st.hive.root,
                 &mcp_defaults,
@@ -1271,6 +1316,14 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                     .ok()
                     .and_then(|e| e.get_password().ok()),
             );
+            // The agent's own launcher profile id rides the MCP server's env
+            // too — the server ignores it today, but a future default-profile
+            // flag picks it up for free.
+            if let (Some(spec), Some(pid)) =
+                (mcp_servers.get_mut("munder-shardx"), shardx_profile.clone())
+            {
+                spec.env.insert("SHARDX_PROFILE".into(), pid);
+            }
             let settings = st.hive.hook_settings(&shim_cmd, &mcp_servers);
             let settings_path = agent_dir.join("settings.json");
             let _ = std::fs::write(
@@ -2981,10 +3034,7 @@ fn shardx_set_token_inner(token: &str) -> Result<(), String> {
 /// connectOverCDP to a running ShardX profile — its own chromium is dead
 /// weight, and 300MB+ of it). Windows ships bsdtar as tar.exe, so the GitHub
 /// tarball extracts without new deps.
-#[tauri::command(async)]
-pub fn shardx_setup(app: AppHandle) -> Value {
-    let st = state(&app);
-    let dest = st.hive.root.join("mcp-servers").join("shardx");
+fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
     let tmp = std::env::temp_dir().join(format!("shardx-mcp-{}.tgz", uuid::Uuid::new_v4()));
     let step = || -> Result<(), String> {
         let mut resp = ureq::get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
@@ -3032,7 +3082,14 @@ pub fn shardx_setup(app: AppHandle) -> Value {
         Err("mcp/ not found in the archive".into())
     };
     let _ = std::fs::remove_file(&tmp);
-    match step() {
+    step()
+}
+
+#[tauri::command(async)]
+pub fn shardx_setup(app: AppHandle) -> Value {
+    let st = state(&app);
+    let dest = st.hive.root.join("mcp-servers").join("shardx");
+    match vendor_shardx_mcp(&dest) {
         Ok(()) => serde_json::json!({ "ok": true, "path": dest.display().to_string() }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
@@ -3083,6 +3140,308 @@ pub fn shardx_download_launcher() -> Value {
         Ok(p) => serde_json::json!({ "ok": true, "path": p }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+}
+
+// ── ShardX bootstrap: one consent → the whole chain ─────────────────────────
+
+/// The launcher's own settings — `$CONFIG/shardx-launcher/settings.json`
+/// (upstream store.rs config_root). `ensure_secret` persists `api_secret`
+/// (the HS256 signing key) + `api_port` on first launch; reading them lets us
+/// mint a valid Bearer token ourselves, so the user never copies anything.
+fn shardx_launcher_settings_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("shardx-launcher").join("settings.json"))
+}
+
+fn shardx_launcher_secret() -> Option<(String, u16)> {
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(shardx_launcher_settings_path()?).ok()?)
+            .ok()?;
+    let secret = v["api_secret"].as_str()?.trim().to_string();
+    if secret.is_empty() {
+        return None;
+    }
+    let port = v["api_port"]
+        .as_u64()
+        .filter(|p| *p > 0 && *p <= u16::MAX as u64)
+        .unwrap_or(SHARDX_API_PORT as u64) as u16;
+    Some((secret, port))
+}
+
+fn b64url(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// The exact JWT the launcher verifies — HS256, sub "shardx-api", iat+exp —
+/// the same claims shape api.rs mint()/long_lived_token() produces for the
+/// Settings UI. 10-year default, matching upstream.
+fn shardx_mint_token(secret: &str, ttl_secs: u64) -> Result<String, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let header = b64url(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = b64url(
+        serde_json::json!({
+            "sub": "shardx-api", "iat": now, "exp": now.saturating_add(ttl_secs)
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let input = format!("{header}.{payload}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|e| e.to_string())?;
+    mac.update(input.as_bytes());
+    Ok(format!("{input}.{}", b64url(&mac.finalize().into_bytes())))
+}
+
+/// settings.json → minted token. Pure file read + sign — no keychain — so a
+/// fixture exercises the whole derivation in a unit test.
+fn shardx_token_from_settings(path: &std::path::Path) -> Result<String, String> {
+    let v: Value = serde_json::from_str(
+        &std::fs::read_to_string(path).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let secret = v["api_secret"].as_str().unwrap_or("").trim().to_string();
+    if secret.is_empty() {
+        return Err("api_secret missing or empty".into());
+    }
+    shardx_mint_token(&secret, 60 * 60 * 24 * 365 * 10)
+}
+
+/// Read the launcher's secret, mint the long-lived token, keychain it.
+/// Returns the configured api_port so callers can sanity-check SHARDX_API.
+fn shardx_auto_token() -> Result<u16, String> {
+    let path = shardx_launcher_settings_path().ok_or_else(|| {
+        "launcher settings.json not found — run the ShardX launcher once".to_string()
+    })?;
+    let token = shardx_token_from_settings(&path)?;
+    shardx_set_token_inner(&token)?;
+    Ok(shardx_launcher_secret()
+        .map(|(_, p)| p)
+        .unwrap_or(SHARDX_API_PORT))
+}
+
+/// Where the launcher exe can be: `shardx_download_launcher` drops the
+/// portable exe in ~/Downloads; an installer lands under
+/// %LOCALAPPDATA%\Programs\<shardx*>\. Shallow scan, name-match "shardx",
+/// newest wins.
+fn shardx_find_launcher_exe() -> Option<PathBuf> {
+    let mut dirs_to_scan = Vec::new();
+    if let Some(d) = dirs::download_dir() {
+        dirs_to_scan.push(d);
+    }
+    if let Some(d) = dirs::home_dir().map(|h| h.join("Downloads")) {
+        dirs_to_scan.push(d);
+    }
+    if let Some(d) = dirs::data_local_dir().map(|d| d.join("Programs")) {
+        dirs_to_scan.push(d);
+    }
+    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    let consider = |p: PathBuf, m: std::time::SystemTime, best: &mut Option<(PathBuf, std::time::SystemTime)>| {
+        if best.as_ref().map(|(_, bm)| m > *bm).unwrap_or(true) {
+            *best = Some((p, m));
+        }
+    };
+    for dir in dirs_to_scan {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if p.is_dir() && name.contains("shardx") {
+                if let Ok(sub) = std::fs::read_dir(&p) {
+                    for e in sub.flatten() {
+                        let q = e.path();
+                        let qn = q
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if qn.ends_with(".exe") {
+                            let m = e
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            consider(q, m, &mut best);
+                        }
+                    }
+                }
+                continue;
+            }
+            if !name.ends_with(".exe") || !name.contains("shardx") {
+                continue;
+            }
+            let m = ent
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            consider(p, m, &mut best);
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// One consent → the whole chain: launcher up (auto-start the downloaded exe
+/// when it isn't), token minted + keychained from the launcher's own
+/// settings.json, MCP bridge vendored. Steps report independently so a
+/// partial run stays retryable — `ok` only when all three gates are green.
+/// `try_launch` exists so tests never spawn a real exe. Blocking (network +
+/// npm), same posture as shardx_setup.
+fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Value {
+    let mut steps = serde_json::json!({});
+
+    let port = shardx_launcher_secret()
+        .map(|(_, p)| p)
+        .unwrap_or(SHARDX_API_PORT);
+    let mut launcher_up = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    if !launcher_up && try_launch {
+        if let Some(exe) = shardx_find_launcher_exe() {
+            steps["launchSpawned"] = serde_json::json!(std::process::Command::new(&exe).spawn().is_ok());
+            // First run persists api_secret early and binds the API after the
+            // engine check — poll briefly; a cold start simply reports down.
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    launcher_up = true;
+                    break;
+                }
+            }
+        }
+    }
+    steps["launcher"] = serde_json::json!({ "ok": launcher_up });
+
+    match shardx_auto_token() {
+        Ok(api_port) => steps["token"] = serde_json::json!({ "ok": true, "apiPort": api_port }),
+        Err(e) => steps["token"] = serde_json::json!({ "ok": false, "error": e }),
+    }
+
+    let dest = hive_root.join("mcp-servers").join("shardx");
+    if dest.join("index.js").exists() && dest.join("node_modules").is_dir() {
+        steps["bridge"] = serde_json::json!({ "ok": true, "already": true });
+    } else {
+        match vendor_shardx_mcp(&dest) {
+            Ok(()) => steps["bridge"] = serde_json::json!({ "ok": true }),
+            Err(e) => steps["bridge"] = serde_json::json!({ "ok": false, "error": e }),
+        }
+    }
+
+    let ok = ["launcher", "token", "bridge"]
+        .iter()
+        .all(|k| steps[k]["ok"].as_bool().unwrap_or(false));
+    serde_json::json!({ "ok": ok, "steps": steps })
+}
+
+/// "Install ShardX? yes" → bootstrap. The renderer's consent dialog is the
+/// only prompt; everything else — launcher start, token, MCP vendor — is
+/// automatic.
+#[tauri::command(async)]
+pub fn shardx_bootstrap(app: AppHandle) -> Value {
+    let root = state(&app).hive.root.clone();
+    shardx_bootstrap_inner(&root, true)
+}
+
+// ── Per-agent ShardX profiles ───────────────────────────────────────────────
+
+/// Deterministic per-agent profile name. Agent ids are slugged already;
+/// sanitize anyway so a weird id can't collide two profiles into one.
+fn shardx_profile_name(agent_id: &str) -> String {
+    let slug: String = agent_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("office-{slug}")
+}
+
+/// GET-or-CREATE the agent's own launcher profile. Two agents must NEVER
+/// share one — marketplaces link accounts by fingerprint + cookie overlap,
+/// so a shared profile is a ban vector, not a shortcut. None on any failure:
+/// the spawn proceeds, the shardx tools just can't reach the launcher yet.
+fn shardx_ensure_profile(agent_id: &str) -> Option<String> {
+    let port = shardx_launcher_secret()
+        .map(|(_, p)| p)
+        .unwrap_or(SHARDX_API_PORT);
+    if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        return None;
+    }
+    let token = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+        .ok()?
+        .get_password()
+        .ok()?;
+    let api = format!("http://127.0.0.1:{port}");
+    let auth = format!("Bearer {token}");
+    let http = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .new_agent();
+    let want = shardx_profile_name(agent_id);
+    let mut resp = http
+        .get(&format!("{api}/profiles"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()?;
+    let list: Value = resp.body_mut().read_json().ok()?;
+    if let Some(hit) = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"].as_str() == Some(want.as_str()))
+    {
+        return hit["id"].as_str().map(String::from);
+    }
+    let mut resp = http
+        .get(&format!("{api}/fingerprint/new"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()?;
+    let fp: Value = resp.body_mut().read_json().ok()?;
+    let mut resp = http
+        .post(&format!("{api}/profiles"))
+        .header("Authorization", &auth)
+        .send_json(serde_json::json!({
+            "name": want,
+            "notes": format!("office agent {agent_id} — auto-created, do not reuse"),
+            "fingerprint": fp["fingerprint"].clone(),
+        }))
+        .ok()?;
+    let created: Value = resp.body_mut().read_json().ok()?;
+    created["id"]
+        .as_str()
+        .or_else(|| created["_meta"]["id"].as_str())
+        .map(String::from)
+}
+
+/// The workspace note that tells the agent WHICH browser identity it owns —
+/// env vars of the MCP server process are invisible to the agent, so the
+/// contract lives here and in $SHARDX_PROFILE on the agent's own env.
+fn shardx_workspace_note(agent_id: &str, profile_id: Option<&str>) -> String {
+    let name = shardx_profile_name(agent_id);
+    let id_line = match profile_id {
+        Some(pid) => format!("Profile `{name}` exists — profile_id `{pid}`."),
+        None => format!(
+            "Profile `{name}` is yours but not created yet — create it once with \
+             create_profile {{name:\"{name}\"}} and use the returned id."
+        ),
+    };
+    format!(
+        "# ShardX browser\n\n\
+         {id_line}\n\n\
+         - Pass this profile (id or name `{name}`) to every shardx profile/browser tool call.\n\
+         - NEVER use another profile: profiles map 1:1 to accounts and sharing a\n  \
+         fingerprint/cookie jar is how marketplaces issue linked-account bans.\n\
+         - If browser tools fail to connect, the ShardX launcher is not running —\n  \
+         ask the human to start it; the API lives on 127.0.0.1:40325 by default.\n"
+    )
 }
 
 /// Install one bundled skill into ~/.claude/skills — same {ok,error} envelope.
@@ -3542,6 +3901,104 @@ mod tests {
             std::path::Path::new(&m["munder-shardx"].args[0]),
             expected.join("index.js")
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The auto-token path must mint exactly the JWT shape the launcher's
+    /// auth middleware verifies: three base64url segments, sub "shardx-api",
+    /// exp>iat, and signature = HS256(secret, "header.payload").
+    #[test]
+    fn shardx_mint_token_is_a_valid_hs256_jwt() {
+        use base64::Engine;
+        let tok = shardx_mint_token("s3cr3t", 3600).unwrap();
+        let parts: Vec<&str> = tok.split('.').collect();
+        assert_eq!(parts.len(), 3, "a JWT is header.payload.signature");
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let v: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(v["sub"], "shardx-api");
+        assert!(v["exp"].as_u64().unwrap() > v["iat"].as_u64().unwrap());
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"s3cr3t").unwrap();
+        mac.update(format!("{}.{}", parts[0], parts[1]).as_bytes());
+        let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(mac.finalize().into_bytes());
+        assert_eq!(parts[2], expect, "signature must verify against the secret");
+    }
+
+    /// settings.json → token: the launcher's persisted api_secret mints a
+    /// Bearer token without any user copy-paste. Empty secret = not yet
+    /// initialized = clean error.
+    #[test]
+    fn shardx_token_from_settings_file() {
+        let dir = std::env::temp_dir().join(format!("sx-set-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("settings.json");
+        std::fs::write(&f, r#"{"api_secret":"abc123","api_port":40325}"#).unwrap();
+        let tok = shardx_token_from_settings(&f).unwrap();
+        assert_eq!(tok.split('.').count(), 3);
+        std::fs::write(&f, r#"{"api_secret":""}"#).unwrap();
+        assert!(shardx_token_from_settings(&f).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Profile names are per-agent and deterministic — the slug can't collide
+    /// two agents into one browser identity.
+    #[test]
+    fn shardx_profile_name_slugifies_per_agent() {
+        assert_eq!(shardx_profile_name("toko bot"), "office-toko-bot");
+        assert_eq!(shardx_profile_name("a/b.c"), "office-a-b-c");
+        assert_ne!(shardx_profile_name("a"), shardx_profile_name("b"));
+    }
+
+    /// The workspace note names the agent's profile and carries the never-
+    /// share rule — with and without a resolved profile id.
+    #[test]
+    fn shardx_workspace_note_contract() {
+        let n = shardx_workspace_note("toko-a", Some("pid-1"));
+        assert!(n.contains("office-toko-a"));
+        assert!(n.contains("pid-1"));
+        assert!(n.contains("NEVER"));
+        let pending = shardx_workspace_note("toko-a", None);
+        assert!(pending.contains("create_profile"));
+    }
+
+    /// Bootstrap reports each gate independently: bridge pre-seeded → ok,
+    /// launcher down + try_launch=false → not ok, token without a launcher
+    /// settings file → not ok. Whole result is the AND of the three.
+    #[test]
+    fn shardx_bootstrap_reports_each_gate() {
+        let home = tmp_home("shardx-boot");
+        let dest = home.join("mcp-servers").join("shardx");
+        std::fs::create_dir_all(dest.join("node_modules")).unwrap();
+        std::fs::write(dest.join("index.js"), "// stub").unwrap();
+        let v = shardx_bootstrap_inner(&home, false);
+        assert_eq!(v["steps"]["bridge"]["ok"], true);
+        assert_eq!(v["steps"]["launcher"]["ok"], false);
+        assert!(v["steps"]["token"]["ok"].is_boolean());
+        assert_eq!(v["ok"], false);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The real download chain — the same tarball + npm install the consent
+    /// button runs. Network + npm required; run manually:
+    ///   cargo test shardx_bootstrap_live_download -- --ignored
+    #[test]
+    #[ignore = "live network: real GitHub tarball + npm install"]
+    fn shardx_bootstrap_live_download() {
+        let home = tmp_home("shardx-live");
+        let v = shardx_bootstrap_inner(&home, false);
+        assert_eq!(
+            v["steps"]["bridge"]["ok"], true,
+            "bridge vendor failed: {v}"
+        );
+        assert!(home
+            .join("mcp-servers")
+            .join("shardx")
+            .join("index.js")
+            .exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 

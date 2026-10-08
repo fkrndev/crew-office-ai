@@ -589,7 +589,9 @@
     "errCommand": "必须填写命令",
     "hireProgress": "hire 第 {{current}} / {{total}} 项",
     "skipHire": "跳过 hire",
-    "mcpExtras": "额外工具："
+    "mcpExtras": "额外工具：",
+    "shardxNeedsInstall": "此智能体需要 ShardX 浏览器（店铺账号配置）。是否自动安装并完成设置？启动器、API 令牌和 MCP 桥都会自动处理——你只需确认这一次。",
+    "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。"
   },
   "onboarding": {
     "titles": {
@@ -865,6 +867,7 @@
     },
     "shardx": {
       "title": "ShardX 浏览器设置",
+      "autoSetup": "自动设置",
       "desc": "电商店铺自动化（Shopee/TikTok/Lazada 配置）在开关生效前需要三个本地条件：ShardX 启动器正在运行、MCP 桥已安装到 harness、Automation API 令牌已存入系统钥匙串。",
       "gateLauncher": "启动器运行中",
       "gateBridge": "MCP 桥已安装",

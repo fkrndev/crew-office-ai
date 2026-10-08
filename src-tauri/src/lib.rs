@@ -1133,6 +1133,7 @@ pub fn run() {
             commands::shardx_status,
             commands::shardx_set_token,
             commands::shardx_setup,
+            commands::shardx_bootstrap,
             commands::shardx_download_launcher,
             commands::skills_uninstall,
             commands::secret_set,
