@@ -179,17 +179,23 @@ Setup once per machine:
    then **Settings → MCP server → Download MCP server**.
 3. Create one **profile per account** and log in manually once (OTP/captcha
    need a human; sessions persist after that).
-4. In Agent Office: store the token via `shardx_set_token`, vendor the MCP
-   source via `shardx_setup`, and enable **ShardX Browser** either globally in
-   MCP defaults or per-agent in the Add Agent modal ("extra tools").
+4. In Agent Office, enabling **ShardX Browser** (Settings → MCP, or the
+   "extra tools" check in Add Agent) asks for one yes/no consent — the
+   bootstrap then starts the launcher, mints the API token from the
+   launcher's own settings, and vendors the MCP bridge. No token copying.
 
 Docs: [launcher + Automation API](https://docs.proxyshard.com/eng/tools/shardx-launcher) ·
 [MCP server](https://docs.proxyshard.com/eng/shardx-launcher-api/mcp-server) ·
 [HTTP API reference](https://github.com/ProxyShard/ShardBrowser/blob/main/openapi.yaml)
 
-The bundled `marketplace-browser-ops` skill teaches agents the profile → CDP
-workflow and its guardrails (one profile per account, no credential typing,
-hand captchas to a human).
+Each spawned agent gets its own launcher profile (`office-<agentId>`,
+auto-created on spawn) — passed to it via `$SHARDX_PROFILE`, `SHARDX.md` in
+its agent dir, and the injected prompt. Profiles are never shared: one
+profile is one account identity, and overlapping fingerprints/cookies are
+how marketplaces issue linked-account bans. The same applies to social
+media accounts — posting/scheduling APIs are covered by the bundled
+`socialclaw` skill; browser-only actions (DMs, comment replies, stories)
+ride the same per-agent ShardX profile.
 
 ## Stack
 
