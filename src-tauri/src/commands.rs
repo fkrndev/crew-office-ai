@@ -1069,7 +1069,31 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
             let seed = {
                 let cfg = st.config.lock().unwrap();
                 let root = st.config_store.dir().to_path_buf();
-                hermes_seed_plan(&cfg, &|k| crate::misc::secret_get_persist(k, &root))
+                let mut seed =
+                    hermes_seed_plan(&cfg, &|k| crate::misc::secret_get_persist(k, &root));
+                // Hermes reads mcp_servers from its own config.yaml — same
+                // consent merge as claude's --settings (catalog ∩ defaults ∩
+                // per-spawn lists), secrets resolved through the same store.
+                let mcp_defaults: std::collections::HashMap<String, bool> = cfg
+                    .mcp_defaults
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.enabled))
+                    .collect();
+                seed.mcp_servers = crate::mcp::build_default_mcp_servers(
+                    &effective_cwd,
+                    &st.hive.root,
+                    &mcp_defaults,
+                    &args.mcp_enable,
+                    &args.mcp_disable,
+                    &|key| crate::misc::secret_get_persist(key, &root),
+                );
+                // Same SHARDX_PROFILE env pin the claude path adds.
+                if let (Some(spec), Some(pid)) =
+                    (seed.mcp_servers.get_mut("munder-shardx"), shardx_profile.clone())
+                {
+                    spec.env.insert("SHARDX_PROFILE".into(), pid);
+                }
+                seed
             };
             if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
                 agent_env.insert("HERMES_HOME".into(), home.display().to_string());
@@ -3720,6 +3744,7 @@ fn hermes_seed_plan(
         base_url,
         model: cfg.provider_default_models.get("hermes").cloned(),
         api_key,
+        ..Default::default()
     }
 }
 

@@ -765,6 +765,11 @@ pub struct HermesSeed {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// Consent-filtered MCP catalog (mcp.rs build_default_mcp_servers) — hermes
+    /// reads `mcp_servers:` in its config.yaml with the same
+    /// {command,args,env} stdio shape claude's --settings mcpServers uses, so
+    /// the merged map ports verbatim under a snake_case key.
+    pub mcp_servers: std::collections::BTreeMap<String, crate::mcp::McpServerSpec>,
 }
 
 impl Hive {
@@ -1519,6 +1524,51 @@ impl Hive {
 
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
+        // Consent-filtered MCP catalog → `mcp_servers:` — hermes reads the
+        // same {command,args,env} stdio shape as claude's mcpServers. Merge by
+        // NAME: missing servers are appended into an existing mcp_servers
+        // block, a user's own entries are never touched.
+        if !seed.mcp_servers.is_empty() {
+            let q = |v: &str| format!("'{}'", v.replace('\'', "''"));
+            let entry = |name: &str, s: &crate::mcp::McpServerSpec| {
+                let mut e = format!("  {name}:\n    command: {}\n", q(&s.command));
+                e.push_str("    args:\n");
+                for a in &s.args {
+                    e.push_str(&format!("      - {}\n", q(a)));
+                }
+                if !s.env.is_empty() {
+                    e.push_str("    env:\n");
+                    for (k, v) in &s.env {
+                        e.push_str(&format!("      {k}: {}\n", q(v)));
+                    }
+                }
+                e
+            };
+            if !cfg.lines().any(|l| l.starts_with("mcp_servers:")) {
+                cfg.push_str("\nmcp_servers:\n");
+                for (name, spec) in &seed.mcp_servers {
+                    cfg.push_str(&entry(name, spec));
+                }
+            } else {
+                // Insert missing names right after the mcp_servers: line —
+                // entries are uniformly 2-space indented, so prepend-order is
+                // cosmetic.
+                let mut merged = String::with_capacity(cfg.len());
+                for line in cfg.lines() {
+                    merged.push_str(line);
+                    merged.push('\n');
+                    if line.starts_with("mcp_servers:") {
+                        for (name, spec) in &seed.mcp_servers {
+                            let named = format!("  {name}:");
+                            if !cfg.lines().any(|l| l == named) {
+                                merged.push_str(&entry(name, spec));
+                            }
+                        }
+                    }
+                }
+                cfg = merged;
+            }
+        }
         if !cfg.lines().any(|l| l.starts_with("hooks_auto_accept:")) {
             cfg.push_str(
                 "\n# --- agent-office hive bridge (auto-generated) ---\nhooks_auto_accept: true\n",
@@ -2853,6 +2903,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Consent-armed MCP servers land under hermes' own `mcp_servers:` key —
+    /// the same {command,args,env} stdio shape as claude's mcpServers map.
+    #[test]
+    fn hermes_seed_writes_mcp_servers_block() {
+        let dir = std::env::temp_dir().join(format!("oa-hermes-mcp-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user_home = no_user_hermes(&dir);
+        let seed = HermesSeed {
+            mcp_servers: std::collections::BTreeMap::from([(
+                "munder-shardx".to_string(),
+                crate::mcp::McpServerSpec {
+                    command: "node".into(),
+                    args: vec!["C:\\harness\\mcp-servers\\shardx\\index.js".into()],
+                    env: [("SHARDX_API".to_string(), "http://127.0.0.1:40325".to_string())]
+                        .into_iter()
+                        .collect(),
+                },
+            )]),
+            ..Default::default()
+        };
+        let home = hive
+            .install_hermes_hooks_seeded_at(
+                &dir.join("agent"),
+                &dir.join("hive-hook.exe"),
+                &seed,
+                &user_home,
+            )
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("mcp_servers:"));
+        assert!(cfg.contains("  munder-shardx:"));
+        assert!(cfg.contains("command: 'node'"));
+        assert!(cfg.contains("SHARDX_API: 'http://127.0.0.1:40325'"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Empty dir standing in for ~/.hermes — the copy-through source is a
     /// parameter so tests never observe the dev's real home.
     fn no_user_hermes(dir: &std::path::Path) -> std::path::PathBuf {
@@ -2874,6 +2960,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com".into()),
             model: Some("deepseek-chat".into()),
             api_key: Some("sk-test".into()),
+            ..Default::default()
         };
         let home = hive
             .install_hermes_hooks_seeded_at(&dir.join("agent"), &hook_bin, &seed, &no_user_hermes(&dir))
@@ -2910,6 +2997,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com".into()),
             model: Some("deepseek-chat".into()),
             api_key: Some("sk-test".into()),
+            ..Default::default()
         };
         let home = hive
             .install_hermes_hooks_seeded_at(&agent, &dir.join("hive-hook.exe"), &seed, &no_user_hermes(&dir))
