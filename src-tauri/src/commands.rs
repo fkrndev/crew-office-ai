@@ -3411,11 +3411,23 @@ fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Valu
 
 /// "Install ShardX? yes" → bootstrap. The renderer's consent dialog is the
 /// only prompt; everything else — launcher start, token, MCP vendor — is
-/// automatic.
+/// automatic. A SUCCESSFUL setup also flips the shardx consent: clicking Set
+/// up IS the operator opting this keyed MCP on — agents should never need a
+/// second trip into Settings just to arm it.
 #[tauri::command(async)]
 pub fn shardx_bootstrap(app: AppHandle) -> Value {
-    let root = state(&app).hive.root.clone();
-    shardx_bootstrap_inner(&root, true)
+    let st = state(&app);
+    let root = st.hive.root.clone();
+    let out = shardx_bootstrap_inner(&root, true);
+    if out["ok"].as_bool() == Some(true) {
+        let mut cfg = st.config.lock().unwrap();
+        let entry = cfg.mcp_defaults.entry("shardx".into()).or_default();
+        if !entry.enabled {
+            entry.enabled = true;
+            let _ = st.config_store.save(&cfg);
+        }
+    }
+    out
 }
 
 // ── Per-agent ShardX profiles ───────────────────────────────────────────────
