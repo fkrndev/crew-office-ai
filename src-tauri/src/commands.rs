@@ -3811,9 +3811,20 @@ fn shardx_workspace_note(
          the profile and stay there.\n\
          - NEVER type passwords, OTP, or captcha answers — hand them to the human.\n\
          - Destructive/financial actions (publish, purchase, refund, campaign\n  \
-         changes) require the human's explicit confirmation FIRST.\n\
-         - If tools fail to connect, the ShardX launcher is not running — ask the\n  \
-         human to start it; the API lives on 127.0.0.1:40325 by default.\n\n\
+         changes) require the human's explicit confirmation FIRST.\n\n\
+         ## Launcher down? Start it yourself\n\n\
+         If tools fail to connect, the ShardX launcher probably isn't running.\n  \
+         You can open it yourself — the exe is a portable app:\n\
+         - Check `~/Downloads/*shardx*.exe` first, then\n  \
+         `%LOCALAPPDATA%/Programs/*shardx*/` for an installed copy.\n\
+         - Start it detached (Windows): `cmd /c start \"\" \"<path-to-exe>\"` —\n  \
+         it must keep RUNNING while you use profiles; do not block on it.\n\
+         - Wait ~3-5s, then verify `profiles_list` answers.\n\
+         - Only escalate to the human if no exe exists in either spot — that\n  \
+         means the launcher was never installed, which is a settings-card job\n  \
+         (Settings → MCP → ShardX → Set up), not something you can fix.\n\
+         - The automation API lives on 127.0.0.1:40325 by default; the\n  \
+         launcher's settings.json may define a different api_port.\n\n\
          ## Full reference\n\n\
          Read `{}` for the complete 120-tool\n\
          documentation: automation projects (no-code workflows that run without\n\
@@ -4356,6 +4367,11 @@ mod tests {
         assert!(n.contains("export_cookies"));
         assert!(n.contains("OTP"));
         assert!(n.contains("mcp-servers"));
+        // And it can recover a dead launcher itself — exe locations + detached
+        // start are IN the note, "ask the human" is the last resort.
+        assert!(n.contains("Downloads"));
+        assert!(n.contains("LOCALAPPDATA"));
+        assert!(n.contains("40325"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
     }
