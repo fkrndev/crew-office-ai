@@ -42,7 +42,15 @@ export function FileTree({ root, activeRel, onOpenFile, onCopyPath }: FileTreePr
   });
 
   const loadDir = useCallback(async (rel: string) => {
-    const res = await window.cth.listDir(root, rel);
+    // listDir REJECTS when the root itself can't be resolved (deleted
+    // worktree, unregistered cwd) — a thrown Err never reaches the {ok:false}
+    // shape, so catch it into the same error node.
+    let res;
+    try {
+      res = await window.cth.listDir(root, rel);
+    } catch (e) {
+      return { error: String(e) };
+    }
     if (!res.ok) return { error: res.error };
     const filtered = res.entries.filter(e => !HIDE_PATTERNS.some(re => re.test(e.name)));
     return { children: filtered.map((e: DirEntry): NodeState => ({

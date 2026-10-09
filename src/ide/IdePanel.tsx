@@ -289,7 +289,16 @@ export function IdePanel() {
     const repo = await window.cth.gitIsRepo(root);
     setIsRepo(repo);
     if (!repo) { setStatus(null); return; }
-    const s = await window.cth.gitStatus(root);
+    // gitStatus can still reject between the isRepo check and the call — a
+    // worktree the GC sweep just removed is "repo" then "not a git repository"
+    // one poll later. A rejected invoke must not escape as an unhandled
+    // rejection from this interval.
+    let s;
+    try {
+      s = await window.cth.gitStatus(root);
+    } catch {
+      return;
+    }
     if (!('error' in s)) setStatus(s as GitStatusT);
   }, [root]);
 

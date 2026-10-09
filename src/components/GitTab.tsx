@@ -74,6 +74,10 @@ export function GitTab({ cwd }: GitTabProps) {
       if (Array.isArray(l)) setLog(l); else if ('error' in l) setError(prev => prev ?? l.error);
       if ('error' in br) setError(prev => prev ?? br.error); else setBranches({ local: br.local, remote: br.remote });
       if ('error' in ab) { /* keep defaults */ } else { setAhead(ab.ahead); setBehind(ab.behind); setUpstream(ab.upstream); }
+    } catch (e) {
+      // A rejected invoke (repo swept mid-poll, path deleted) would otherwise
+      // surface as an unhandled promise rejection in the console.
+      setError(String(e));
     } finally {
       setLoading(false);
     }

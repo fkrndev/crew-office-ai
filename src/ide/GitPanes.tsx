@@ -72,13 +72,18 @@ export function HistoryPane({ gitRoot, onOpenRevDiff }: {
 
   const load = useCallback(async (pages: number) => {
     setLoading(true);
-    const [log, br] = await Promise.all([
-      window.cth.gitLogGraph(gitRoot, pages * 200),
-      window.cth.gitBranch(gitRoot)
-    ]);
-    if (Array.isArray(log)) setCommits(log);
-    if (!('error' in br)) setBranch(br.current);
-    setLoading(false);
+    try {
+      const [log, br] = await Promise.all([
+        window.cth.gitLogGraph(gitRoot, pages * 200),
+        window.cth.gitBranch(gitRoot)
+      ]);
+      if (Array.isArray(log)) setCommits(log);
+      if (!('error' in br)) setBranch(br.current);
+    } catch {
+      // Root vanished mid-poll (worktree GC) — keep whatever was loaded.
+    } finally {
+      setLoading(false);
+    }
   }, [gitRoot]);
 
   useEffect(() => { void load(page); }, [load, page]);
@@ -175,7 +180,7 @@ export function ComparePane({ gitRoot, onOpenRevDiff }: {
       if (res.current) setHead((h) => h || res.current!);
       const guess = res.local.find((b) => b === 'main' || b === 'master') ?? res.local[0];
       if (guess) setBase((b) => b || guess);
-    });
+    }).catch(() => { /* root gone mid-load — leave the empty state */ });
   }, [gitRoot]);
 
   useEffect(() => {
