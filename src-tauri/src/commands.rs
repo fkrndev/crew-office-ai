@@ -1058,6 +1058,13 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // multiplex state never collides with the user's own hermes.
     let mut needs_key: Option<String> = None;
     if args.provider == "hermes" {
+        // Python UTF-8 mode — hermes writes tool/MCP/hook stdin through
+        // subprocess text pipes that default to the Windows ANSI codepage
+        // (cp1252). Any non-ASCII in the payload (our workspace notes use →)
+        // crashes its writer thread with UnicodeEncodeError. PYTHONUTF8=1
+        // forces utf-8 on every pipe regardless of the machine's locale.
+        agent_env.insert("PYTHONUTF8".into(), "1".into());
+        agent_env.insert("PYTHONIOENCODING".into(), "utf-8".into());
         if let Some(bin) = &st.hook_bin {
             let seed = {
                 let cfg = st.config.lock().unwrap();
