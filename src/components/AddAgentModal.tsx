@@ -244,6 +244,18 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   // a name binds this agent to that account's existing launcher profile so
   // sibling agents on one shop share ONE logged-in identity.
   const [shardxProfile, setShardxProfile] = useState('');
+  // Existing launcher profiles for the datalist — fetched once the user arms
+  // shardx so "bind to an account" can pick from real names.
+  const [shardxProfileOpts, setShardxProfileOpts] = useState<Array<{ name?: string }>>([]);
+  useEffect(() => {
+    if (!mcpEnable.has('shardx') || shardxProfileOpts.length > 0) return;
+    window.cth.shardxProfiles?.()
+      .then((r: unknown) => {
+        const res = r as { ok?: boolean; profiles?: Array<{ name?: string }> } | undefined;
+        if (res?.ok && res.profiles) setShardxProfileOpts(res.profiles);
+      })
+      .catch(() => { /* launcher off — free-text input still works */ });
+  }, [mcpEnable, shardxProfileOpts.length]);
   // #2 — optional Claude session id to continue. When set, the spawn seeds that
   // session's transcript into the cwd's project dir and launches `--resume`.
   const [resumeSessionId, setResumeSessionId] = useState('');
@@ -1065,13 +1077,21 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         office-<id> profile; a name binds this agent to that
                         account's profile so sibling agents share ONE login. */}
                     {mcpEnable.has('shardx') && (
-                      <input
-                        value={shardxProfile}
-                        onChange={(e) => setShardxProfile(e.target.value)}
-                        placeholder={tr('addAgent.shardxProfilePh')}
-                        title={tr('addAgent.shardxProfileHint')}
-                        style={{ ...inputStyle, marginTop: 6, fontFamily: 'var(--cth-font-mono)', fontSize: 12 }}
-                      />
+                      <>
+                        <input
+                          value={shardxProfile}
+                          onChange={(e) => setShardxProfile(e.target.value)}
+                          placeholder={tr('addAgent.shardxProfilePh')}
+                          title={tr('addAgent.shardxProfileHint')}
+                          list="shardx-profile-opts"
+                          style={{ ...inputStyle, marginTop: 6, fontFamily: 'var(--cth-font-mono)', fontSize: 12 }}
+                        />
+                        <datalist id="shardx-profile-opts">
+                          {shardxProfileOpts.map((p) => (
+                            <option key={p.name} value={p.name} />
+                          ))}
+                        </datalist>
+                      </>
                     )}
 
                     <Row label={tr('addAgent.resumeSession')}>

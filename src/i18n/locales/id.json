@@ -876,6 +876,8 @@
       "cleanProfiles": "Bersihkan profil",
       "cleanConfirm": "Hapus profil ShardX auto-buat yang tidak lagi dimiliki agen di workspace ini? (hanya office-* — profil yang kamu namai sendiri tidak disentuh.)",
       "cleaned": "{{removed}} profil orphan dibersihkan, {{kept}} dipertahankan",
+      "noProfiles": "Belum ada profil — agen yang di-spawn membuatnya otomatis.",
+      "ownedBy": "→ {{agent}}",
       "desc": "Otomasi marketplace (profil Shopee/TikTok/Lazada) butuh tiga hal lokal sebelum toggle berfungsi: launcher ShardX berjalan, bridge MCP terpasang di harness, dan token Automation API tersimpan di keychain.",
       "gateLauncher": "Launcher berjalan",
       "gateBridge": "Bridge MCP terpasang",

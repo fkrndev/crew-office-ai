@@ -152,6 +152,15 @@ interface ShardXStatus {
   mcpDir?: string;
 }
 
+interface ShardXProfileInfo {
+  id?: string;
+  name?: string;
+  folder?: string;
+  running?: boolean;
+  owner?: string;
+  auto?: boolean;
+}
+
 const shardxBtnStyle: React.CSSProperties = {
   flexShrink: 0,
   padding: '3px 10px 1px',
@@ -173,6 +182,7 @@ const shardxBtnStyle: React.CSSProperties = {
 function ShardXSetup() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ShardXStatus | null>(null);
+  const [profiles, setProfiles] = useState<ShardXProfileInfo[] | null>(null);
   const [token, setToken] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -182,6 +192,14 @@ function ShardXSetup() {
       setStatus((await window.cth.shardxStatus()) as ShardXStatus);
     } catch {
       /* backend unreachable — keep the last reading */
+    }
+    try {
+      const r = (await window.cth.shardxProfiles()) as
+        | { ok?: boolean; profiles?: ShardXProfileInfo[] }
+        | undefined;
+      setProfiles(r?.ok ? (r.profiles ?? []) : null);
+    } catch {
+      setProfiles(null);
     }
   }, []);
 
@@ -337,6 +355,42 @@ function ShardXSetup() {
             {t('mcpDefaults.shardx.cleanProfiles')}
           </button>
         </div>
+
+        {/* Profile inventory — name, live state, owning agent. `office-*` =
+            auto-created (cleanup candidates); anything else is user-named
+            and never auto-deleted. */}
+        {profiles !== null && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {profiles.length === 0 && (
+              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                {t('mcpDefaults.shardx.noProfiles')}
+              </span>
+            )}
+            {profiles.map((p) => (
+              <span key={p.id ?? p.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                <span
+                  style={{
+                    width: 7, height: 7, flexShrink: 0,
+                    background: p.running ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
+                    boxShadow: `inset 0 0 0 1px ${p.running ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)'}`
+                  }}
+                />
+                <span style={{ fontFamily: 'var(--cth-font-mono)', color: 'var(--cth-ink-900)' }}>
+                  {p.name}
+                </span>
+                {p.auto && (
+                  <span style={{ fontSize: 10, color: 'var(--cth-ink-400, var(--cth-ink-500))' }}>auto</span>
+                )}
+                <span style={{ flex: 1 }} />
+                {p.owner && (
+                  <span style={{ fontSize: 10, color: 'var(--cth-ink-500)' }}>
+                    {t('mcpDefaults.shardx.ownedBy', { agent: p.owner })}
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 6 }}>
           <input

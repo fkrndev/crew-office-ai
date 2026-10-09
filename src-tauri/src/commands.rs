@@ -3557,6 +3557,109 @@ fn shardx_cleanup_plan(profiles: &[Value], bound: &std::collections::HashSet<Str
         .collect()
 }
 
+/// Shared launcher-API plumbing: resolves the port, mint-token keychain read,
+/// and an authorized ureq agent. None when the launcher or token is missing —
+/// callers map that to a short "not running"/"no token" reason.
+fn shardx_api() -> Option<(String, String, ureq::Agent)> {
+    let port = shardx_launcher_secret()
+        .map(|(_, p)| p)
+        .unwrap_or(SHARDX_API_PORT);
+    std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let token = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
+        .ok()?
+        .get_password()
+        .ok()?;
+    let http = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .new_agent();
+    Some((
+        format!("http://127.0.0.1:{port}"),
+        format!("Bearer {token}"),
+        http,
+    ))
+}
+
+/// Profile inventory for the renderer: every launcher profile annotated with
+/// running state and which hive agent owns it (registry `shardxProfile` match
+/// or the `office-<agentId>` naming convention). Read-only — this is the list
+/// a user sees instead of opening the launcher GUI.
+#[tauri::command(async)]
+pub fn shardx_profiles(app: AppHandle) -> Value {
+    let st = state(&app);
+    let Some((api, auth, http)) = shardx_api() else {
+        return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
+    };
+    let Ok(mut resp) = http
+        .get(&format!("{api}/profiles"))
+        .header("Authorization", &auth)
+        .call()
+    else {
+        return serde_json::json!({ "ok": false, "error": "profiles list failed" });
+    };
+    let Ok(list) = resp.body_mut().read_json::<Value>() else {
+        return serde_json::json!({ "ok": false, "error": "unexpected profiles payload" });
+    };
+    let running: std::collections::HashSet<String> = http
+        .get(&format!("{api}/running"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+        .map(|v| {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["profile_id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Profile name → owning agent label, from the registry: explicit bindings
+    // plus the auto `office-<id>` convention.
+    let owners = shardx_owner_map(&st.hive.registry());
+    let profiles: Vec<Value> = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            let name = p["name"].as_str().unwrap_or("");
+            serde_json::json!({
+                "id": p["id"],
+                "name": name,
+                "folder": p["folder"],
+                "running": running.contains(p["id"].as_str().unwrap_or("")),
+                "owner": owners.get(name),
+                "auto": name.starts_with("office-")
+                    && p["notes"].as_str().unwrap_or("").contains("hive:"),
+            })
+        })
+        .collect();
+    serde_json::json!({ "ok": true, "profiles": profiles })
+}
+
+/// Profile name → owning agent label: explicit `extra.shardxProfile` bindings
+/// plus the `office-<agentId>` auto-name convention. Display-only — the
+/// renderer shows "→ <agent>" next to each profile.
+fn shardx_owner_map(
+    registry: &[crate::hive::RegistryEntry],
+) -> std::collections::HashMap<String, String> {
+    registry
+        .iter()
+        .flat_map(|e| {
+            let label = if e.name.is_empty() { e.id.clone() } else { e.name.clone() };
+            [
+                Some((shardx_profile_name(&e.id), label.clone())),
+                e.extra
+                    .get("shardxProfile")
+                    .and_then(|v| v["name"].as_str())
+                    .map(|n| (n.to_string(), label)),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect()
+}
+
 /// Remove auto-created `office-*` profiles that no longer belong to any agent
 /// in THIS hive's registry (deleted agents, retired workspaces). User-named
 /// profiles and anything another hive created are left alone.
@@ -4229,6 +4332,28 @@ mod tests {
         assert!(n.contains("mcp-servers"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
+    }
+
+    /// The owner map labels both naming paths: `office-<id>` by convention and
+    /// a user-bound account profile via extra.shardxProfile.
+    #[test]
+    fn shardx_owner_map_labels_auto_and_bound() {
+        let auto = crate::hive::RegistryEntry {
+            id: "toko".into(),
+            name: "Toko".into(),
+            ..Default::default()
+        };
+        let mut bound = crate::hive::RegistryEntry {
+            id: "cs".into(),
+            name: "CS".into(),
+            ..Default::default()
+        };
+        bound
+            .extra
+            .insert("shardxProfile".into(), serde_json::json!({"name": "shopee-a"}));
+        let m = shardx_owner_map(&[auto, bound]);
+        assert_eq!(m.get("office-toko").map(String::as_str), Some("Toko"));
+        assert_eq!(m.get("shopee-a").map(String::as_str), Some("CS"));
     }
 
     /// Cleanup deletes ONLY this hive's own auto-profiles that nothing binds:

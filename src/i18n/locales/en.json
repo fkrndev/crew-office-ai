@@ -876,6 +876,8 @@
       "cleanProfiles": "Clean up profiles",
       "cleanConfirm": "Delete auto-created ShardX profiles that no agent in this workspace still owns? (office-* only — profiles you named yourself are never touched.)",
       "cleaned": "Cleaned {{removed}} orphaned profile(s), kept {{kept}}",
+      "noProfiles": "No profiles yet — spawned agents create one automatically.",
+      "ownedBy": "→ {{agent}}",
       "desc": "Marketplace ops (Shopee/TikTok/Lazada profiles) needs three local pieces before the toggle does anything: the ShardX launcher running, the MCP bridge installed under the harness, and an Automation API token saved to the keychain.",
       "gateLauncher": "Launcher running",
       "gateBridge": "MCP bridge installed",

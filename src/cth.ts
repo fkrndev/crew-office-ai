@@ -201,6 +201,7 @@ export function installCth(): void {
     shardxSetup: () => invoke('shardx_setup'),
     shardxBootstrap: () => invoke('shardx_bootstrap'),
     shardxCleanup: () => invoke('shardx_cleanup'),
+  shardxProfiles: () => invoke('shardx_profiles'),
     shardxDownloadLauncher: () => invoke('shardx_download_launcher'),
     skillsReveal: (...args: unknown[]) => invoke('skills_reveal', pack(args, ["id"])),
     searchMemory: (...args: unknown[]) => invoke('search_memory', pack(args, ["query","wing","limit"])),
