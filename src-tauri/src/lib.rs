@@ -1137,6 +1137,7 @@ pub fn run() {
             commands::shardx_cleanup,
             commands::shardx_profiles,
             commands::shardx_download_launcher,
+commands::shardx_token_preview,
             commands::skills_uninstall,
             commands::secret_set,
             commands::secret_delete,

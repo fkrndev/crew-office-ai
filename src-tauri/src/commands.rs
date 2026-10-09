@@ -3329,6 +3329,21 @@ fn shardx_token_from_settings(path: &std::path::Path) -> Result<String, String> 
     shardx_mint_token(&secret, 60 * 60 * 24 * 365 * 10)
 }
 
+/// Mint the automation token WITHOUT storing it — the settings card prefills
+/// a copyable field with it (the operator may want the token for their own
+/// scripts). Read-only; the store path stays shardx_set_token / auto_token.
+#[tauri::command(async)]
+pub fn shardx_token_preview(app: AppHandle) -> Value {
+    let _ = app;
+    match shardx_launcher_settings_path() {
+        Some(p) => match shardx_token_from_settings(&p) {
+            Ok(token) => serde_json::json!({ "ok": true, "token": token }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        },
+        None => serde_json::json!({ "ok": false, "error": "launcher settings.json not found" }),
+    }
+}
+
 /// Read the launcher's secret, mint the long-lived token, keychain it.
 /// Returns the configured api_port so callers can sanity-check SHARDX_API.
 fn shardx_auto_token(store_dir: &std::path::Path) -> Result<u16, String> {

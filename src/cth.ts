@@ -203,6 +203,7 @@ export function installCth(): void {
     shardxCleanup: () => invoke('shardx_cleanup'),
   shardxProfiles: () => invoke('shardx_profiles'),
     shardxDownloadLauncher: () => invoke('shardx_download_launcher'),
+    shardxTokenPreview: () => invoke('shardx_token_preview'),
     skillsReveal: (...args: unknown[]) => invoke('skills_reveal', pack(args, ["id"])),
     searchMemory: (...args: unknown[]) => invoke('search_memory', pack(args, ["query","wing","limit"])),
     memoryWakeUp: (...args: unknown[]) => invoke('memory_wake_up', pack(args, ["wing"])),

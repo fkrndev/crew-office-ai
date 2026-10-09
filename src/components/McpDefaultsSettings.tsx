@@ -222,6 +222,15 @@ function ShardXSetup() {
     } catch {
       setProfiles(null);
     }
+    // Prefill the token field with a freshly-minted JWT when the launcher
+    // secret exists — the operator may want it copyable for their own tools.
+    // Never clobbers what they're typing.
+    try {
+      const pv = (await window.cth.shardxTokenPreview()) as
+        | { ok?: boolean; token?: string }
+        | undefined;
+      if (pv?.ok && pv.token) setToken((cur) => (cur === '' ? pv.token! : cur));
+    } catch { /* no launcher settings yet — field stays manual */ }
   }, []);
 
   useEffect(() => {
@@ -418,7 +427,10 @@ function ShardXSetup() {
 
         <div style={{ display: 'flex', gap: 6 }}>
           <input
-            type="password"
+            // Plain text on purpose: this is the local automation token the
+            // operator may want to copy into their own tooling — masking it
+            // made that impossible.
+            type="text"
             value={token}
             placeholder={t('mcpDefaults.shardx.tokenPlaceholder')}
             onChange={(e) => setToken(e.target.value)}
