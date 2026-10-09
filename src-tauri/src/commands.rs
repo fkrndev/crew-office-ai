@@ -2,7 +2,7 @@
 //! Frontend calls these via `invoke()`; async work emits events back.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
@@ -939,20 +939,10 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         None
     };
     // Consent said yes but the local gates aren't met — vendored bridge or
-    // stored token missing. The launcher itself is NOT a gate: the agent can
-    // start it (SHARDX.md teaches the exe paths) and bootstrap does too.
-    // needsShardx tells the renderer to offer the one-click setup instead of
-    // fielding an agent that can't find its tools.
+    // stored token missing. needsShardx tells the renderer to offer the
+    // one-click setup instead of fielding an agent that can't find its tools.
     let needs_shardx = shardx_armed
-        && !(st
-            .hive
-            .root
-            .join("mcp-servers")
-            .join("shardx")
-            .join("index.js")
-            .exists()
-            && crate::misc::secret_get_persist("SHARDX_TOKEN", st.config_store.dir())
-                .is_some());
+        && !shardx_setup_ready(&st.hive.root, st.config_store.dir());
 
     let entry = RegistryEntry {
         id: agent_id.clone(),
@@ -3462,6 +3452,19 @@ pub fn shardx_bootstrap(app: AppHandle) -> Value {
 
 // ── Per-agent ShardX profiles ───────────────────────────────────────────────
 
+/// The setup gates a shardx-armed spawn actually needs: vendored MCP bridge +
+/// a stored automation token. The launcher is NOT a gate — the agent can
+/// start it itself (SHARDX.md teaches the exe paths) and bootstrap does too.
+/// Extracted so the needsShardx flag is testable without a spawn.
+fn shardx_setup_ready(hive_root: &Path, secrets_dir: &Path) -> bool {
+    hive_root
+        .join("mcp-servers")
+        .join("shardx")
+        .join("index.js")
+        .exists()
+        && crate::misc::secret_get_persist("SHARDX_TOKEN", secrets_dir).is_some()
+}
+
 /// Deterministic per-agent profile name. Agent ids are slugged already;
 /// sanitize anyway so a weird id can't collide two profiles into one.
 fn shardx_profile_name(agent_id: &str) -> String {
@@ -4088,6 +4091,21 @@ mod tests {
         .into_result();
         let v = serde_json::to_value(&authless).unwrap();
         assert_eq!(v["needsKey"], "hermes");
+        // needsShardx rides the same wire surface — absent when false.
+        assert!(v.get("needsShardx").is_none());
+        let unmet = SpawnOutcome {
+            pty_id: "pty-c".into(),
+            cwd: "C:/w".into(),
+            seed_prompt: None,
+            resumed: false,
+            resume_not_found: false,
+            worktree_path: None,
+            needs_key: None,
+            needs_shardx: true,
+        }
+        .into_result();
+        let v = serde_json::to_value(&unmet).unwrap();
+        assert_eq!(v["needsShardx"], true);
 
         let bad = PtySpawnResult::err("nope");
         let v = serde_json::to_value(&bad).unwrap();
@@ -4418,6 +4436,28 @@ mod tests {
         assert!(n.contains("40325"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
+    }
+
+    /// needsShardx gates: vendored bridge file + stored token — the launcher
+    /// itself is deliberately NOT a gate (the agent self-starts it).
+    #[test]
+    fn shardx_setup_ready_requires_bridge_and_token() {
+        let home = tmp_home("shardx-ready");
+        let hive = home.join("hive");
+        // Neither piece → not ready.
+        assert!(!shardx_setup_ready(&hive, &home));
+        // Bridge only → still not ready (no token).
+        std::fs::create_dir_all(hive.join("mcp-servers").join("shardx")).unwrap();
+        std::fs::write(
+            hive.join("mcp-servers").join("shardx").join("index.js"),
+            "// bridge",
+        )
+        .unwrap();
+        assert!(!shardx_setup_ready(&hive, &home));
+        // Token lands (keychain or DPAPI fallback) → ready.
+        crate::misc::secret_set_persist("SHARDX_TOKEN", "tok", &home).unwrap();
+        assert!(shardx_setup_ready(&hive, &home));
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// Persist-tier write: keychain OR the DPAPI file — a secret must read
