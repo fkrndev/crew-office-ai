@@ -145,6 +145,24 @@ describe('AddAgentModal MCP extras', () => {
     });
   });
 
+  it('needsKey on the spawn result turns the card action into a warning', async () => {
+    // An authless spawn (no provider key anywhere) is ok:true but carries
+    // needsKey — the card must say so instead of "starting up" on a dead TUI.
+    // Sibling tests already spawned 'toko-bot' — addAgent is idempotent by id,
+    // so clear the roster or the stale record (old action text) wins.
+    useStore.setState({ agents: [] } as never);
+    cth.spawnPty = async (req: unknown) => {
+      cth.calls.push({ method: 'spawnPty', args: [req] });
+      return { ok: true, cwd: 'C:/repo-a', needsKey: 'hermes' };
+    };
+    renderModal();
+    await spawnWith({});
+    await waitFor(() => {
+      const agent = useStore.getState().agents.find((a) => a.name === 'toko-bot');
+      expect(agent?.action).toContain('API key');
+    });
+  });
+
   it('gates already green → no consent prompt, spawn arms shardx directly', async () => {
     cth.shardxStatus = async () => {
       cth.calls.push({ method: 'shardxStatus', args: [] });

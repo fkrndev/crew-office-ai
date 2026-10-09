@@ -1061,50 +1061,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         if let Some(bin) = &st.hook_bin {
             let seed = {
                 let cfg = st.config.lock().unwrap();
-                let base_url = cfg.provider_base_urls.get("hermes").cloned();
-                // First-class hermes provider when the URL says DeepSeek —
-                // hermes reads DEEPSEEK_API_KEY natively; anything else is the
-                // generic "custom" OpenAI-compatible route.
-                let provider = base_url.as_deref().map(|u| {
-                    if u.contains("deepseek.com") { "deepseek" } else { "custom" }.to_string()
-                });
-                let mut api_key = match provider.as_deref() {
-                    Some("deepseek") => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK"),
-                    _ => crate::misc::secret_get("PROVIDER_KEY_DEEPSEEK")
-                        .or_else(|| crate::misc::secret_get("PROVIDER_KEY_OPENAI")),
-                };
-                // Fallback — never boot into hermes' first-run setup wizard:
-                // with no provider anywhere the CLI exits before its TUI ever
-                // draws (agent appears hired but dead). Any stored backend key
-                // becomes the seed; the seeder only writes when the home
-                // config lacks a provider, so a configured user is untouched.
-                let (provider, base_url) = if provider.is_some() {
-                    (provider, base_url)
-                } else {
-                    const FALLBACK: &[(&str, &str, Option<&str>)] = &[
-                        ("openrouter", "PROVIDER_KEY_OPENROUTER", None),
-                        ("openai", "PROVIDER_KEY_OPENAI", Some("https://api.openai.com/v1")),
-                        ("deepseek", "PROVIDER_KEY_DEEPSEEK", Some("https://api.deepseek.com")),
-                        ("anthropic", "PROVIDER_KEY_ANTHROPIC", None),
-                    ];
-                    let hit = FALLBACK.iter().find_map(|(p, k, u)| {
-                        crate::misc::secret_get(k)
-                            .map(|key| ((*p, Some(key)), u.map(|s| s.to_string())))
-                    });
-                    match hit {
-                        Some(((p, key), url)) => {
-                            api_key = key;
-                            (Some(p.to_string()), url)
-                        }
-                        None => (None, base_url),
-                    }
-                };
-                crate::hive::HermesSeed {
-                    provider,
-                    base_url,
-                    model: cfg.provider_default_models.get("hermes").cloned(),
-                    api_key,
-                }
+                hermes_seed_plan(&cfg, &crate::misc::secret_get)
             };
             if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
                 agent_env.insert("HERMES_HOME".into(), home.display().to_string());
@@ -1114,23 +1071,9 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 );
                 agent_env.insert("HERMES_ACCEPT_HOOKS".into(), "1".into());
             }
-            // Authless detection: the seed found no provider key AND no
-            // provider-key env landed via secret_env_keys injection (a user
-            // CAN name a custom secret "OPENROUTER_API_KEY" verbatim). With
-            // neither, hermes falls back to its openrouter default and dies
-            // on 401 — the spawn is ok but the agent is dead on arrival.
-            // Surface it so the card can say "needs an API key" instead of
-            // leaving a silently-broken terminal.
-            if seed.api_key.is_none()
-                && ![
-                    "OPENROUTER_API_KEY",
-                    "DEEPSEEK_API_KEY",
-                    "OPENAI_API_KEY",
-                    "ANTHROPIC_API_KEY",
-                ]
-                .iter()
-                .any(|k| agent_env.contains_key(*k))
-            {
+            // Authless detection — extracted so the 401 surface is pinned by
+            // tests (see hermes_needs_key).
+            if hermes_needs_key(&seed, &agent_env) {
                 needs_key = Some("hermes".to_string());
             }
         }
@@ -3735,6 +3678,72 @@ pub fn shardx_cleanup(app: AppHandle) -> Value {
     })
 }
 
+/// Pure seed resolution for the hermes lifecycle bridge: the configured base
+/// URL decides the provider (api.deepseek.com → first-class "deepseek", any
+/// other URL → the generic "custom" OpenAI-compatible route), the key lookup
+/// supplies the credential, and a provider-less config falls back to ANY
+/// stored backend key so the CLI never boots into its first-run wizard
+/// (agent appears hired but dead). `lookup` is the credential source — the OS
+/// keychain in prod, canned maps in tests.
+fn hermes_seed_plan(
+    cfg: &crate::config::Config,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> crate::hive::HermesSeed {
+    let base_url = cfg.provider_base_urls.get("hermes").cloned();
+    let provider = base_url.as_deref().map(|u| {
+        if u.contains("deepseek.com") { "deepseek" } else { "custom" }.to_string()
+    });
+    let mut api_key = match provider.as_deref() {
+        Some("deepseek") => lookup("PROVIDER_KEY_DEEPSEEK"),
+        _ => lookup("PROVIDER_KEY_DEEPSEEK").or_else(|| lookup("PROVIDER_KEY_OPENAI")),
+    };
+    let (provider, base_url) = if provider.is_some() {
+        (provider, base_url)
+    } else {
+        const FALLBACK: &[(&str, &str, Option<&str>)] = &[
+            ("openrouter", "PROVIDER_KEY_OPENROUTER", None),
+            ("openai", "PROVIDER_KEY_OPENAI", Some("https://api.openai.com/v1")),
+            ("deepseek", "PROVIDER_KEY_DEEPSEEK", Some("https://api.deepseek.com")),
+            ("anthropic", "PROVIDER_KEY_ANTHROPIC", None),
+        ];
+        match FALLBACK.iter().find_map(|(p, k, u)| {
+            lookup(k).map(|key| ((*p, Some(key)), u.map(|s| s.to_string())))
+        }) {
+            Some(((p, key), url)) => {
+                api_key = key;
+                (Some(p.to_string()), url)
+            }
+            None => (None, base_url),
+        }
+    };
+    crate::hive::HermesSeed {
+        provider,
+        base_url,
+        model: cfg.provider_default_models.get("hermes").cloned(),
+        api_key,
+    }
+}
+
+/// True when the spawned hermes will reach NO credential from any source: the
+/// seed carried no api_key AND no provider-key env landed via secret_env_keys
+/// injection (a user CAN name a custom secret "OPENROUTER_API_KEY" verbatim,
+/// which bypasses the PROVIDER_KEY_ translation — env is checked too). An
+/// authless hermes falls back to its openrouter default and dies on 401s.
+fn hermes_needs_key(
+    seed: &crate::hive::HermesSeed,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    seed.api_key.is_none()
+        && ![
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ]
+        .iter()
+        .any(|k| env.contains_key(*k))
+}
+
 /// The workspace note that tells the agent WHICH browser identity it owns —
 /// env vars of the MCP server process are invisible to the agent, so the
 /// contract lives here and in $SHARDX_PROFILE on the agent's own env. The
@@ -4332,6 +4341,87 @@ mod tests {
         assert!(n.contains("mcp-servers"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
+    }
+
+    /// The exact failure the user hit: a fresh harness with no provider base
+    /// URL and zero stored keys resolves an EMPTY seed — hermes boots its
+    /// openrouter default authless and dies on 401 (observed live).
+    #[test]
+    fn hermes_seed_empty_everything_is_authless() {
+        let cfg = crate::config::Config::default();
+        let seed = hermes_seed_plan(&cfg, &|_| None);
+        assert!(seed.provider.is_none());
+        assert!(seed.api_key.is_none());
+        assert!(seed.base_url.is_none());
+        assert!(hermes_needs_key(&seed, &std::collections::HashMap::new()));
+    }
+
+    /// The configured-and-happy path: deepseek base URL + key → first-class
+    /// deepseek seed with credential, no needsKey flag.
+    #[test]
+    fn hermes_seed_configured_deepseek_resolves() {
+        let mut cfg = crate::config::Config::default();
+        cfg.provider_base_urls
+            .insert("hermes".into(), "https://api.deepseek.com".into());
+        cfg.provider_default_models
+            .insert("hermes".into(), "deepseek-chat".into());
+        let seed = hermes_seed_plan(&cfg, &|k| {
+            (k == "PROVIDER_KEY_DEEPSEEK").then(|| "sk-real".to_string())
+        });
+        assert_eq!(seed.provider.as_deref(), Some("deepseek"));
+        assert_eq!(seed.api_key.as_deref(), Some("sk-real"));
+        assert_eq!(seed.model.as_deref(), Some("deepseek-chat"));
+        assert!(!hermes_needs_key(&seed, &std::collections::HashMap::new()));
+    }
+
+    /// URL configured but the keychain lost its entry (the VM CredMan drop)
+    /// still resolves a provider — but authless. needsKey must flag it: the
+    /// spawned hermes 401s at api.deepseek.com instead of openrouter, same
+    /// dead agent either way.
+    #[test]
+    fn hermes_seed_url_without_key_is_authless() {
+        let mut cfg = crate::config::Config::default();
+        cfg.provider_base_urls
+            .insert("hermes".into(), "https://api.deepseek.com".into());
+        let seed = hermes_seed_plan(&cfg, &|_| None);
+        assert_eq!(seed.provider.as_deref(), Some("deepseek"));
+        assert!(seed.api_key.is_none());
+        assert!(hermes_needs_key(&seed, &std::collections::HashMap::new()));
+    }
+
+    /// Fallback ladder: no configured URL + only an openrouter key → the seed
+    /// picks openrouter with its credential; same for a lone deepseek key
+    /// which also brings its well-known endpoint.
+    #[test]
+    fn hermes_seed_fallback_picks_any_stored_key() {
+        let cfg = crate::config::Config::default();
+        let openrouter_only = |k: &str| {
+            (k == "PROVIDER_KEY_OPENROUTER").then(|| "sk-or".to_string())
+        };
+        let seed = hermes_seed_plan(&cfg, &openrouter_only);
+        assert_eq!(seed.provider.as_deref(), Some("openrouter"));
+        assert_eq!(seed.api_key.as_deref(), Some("sk-or"));
+
+        let deepseek_only = |k: &str| {
+            (k == "PROVIDER_KEY_DEEPSEEK").then(|| "sk-ds".to_string())
+        };
+        let seed = hermes_seed_plan(&cfg, &deepseek_only);
+        assert_eq!(seed.provider.as_deref(), Some("deepseek"));
+        assert_eq!(seed.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert!(!hermes_needs_key(&seed, &std::collections::HashMap::new()));
+    }
+
+    /// A verbatim-named custom secret ("OPENROUTER_API_KEY", no PROVIDER_KEY_
+    /// prefix) injects as an env var straight into the CLI — auth works even
+    /// though the seed has no api_key, so needsKey must NOT flag it.
+    #[test]
+    fn hermes_needs_key_respects_env_injected_credential() {
+        let cfg = crate::config::Config::default();
+        let seed = hermes_seed_plan(&cfg, &|_| None);
+        let env = std::collections::HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "sk-or".to_string()),
+        ]);
+        assert!(!hermes_needs_key(&seed, &env));
     }
 
     /// The owner map labels both naming paths: `office-<id>` by convention and
