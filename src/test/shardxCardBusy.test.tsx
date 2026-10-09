@@ -76,3 +76,37 @@ describe('ShardX card busy lifecycle', () => {
     );
   });
 });
+
+describe('MCP consent toggles', () => {
+  /** The shardx row's switch — the label `shardx` sits next to it. */
+  const shardxSwitch = () => screen.getByText('shardx').closest('div')!
+    .parentElement!.querySelector('button')!;
+
+  it('toggle stays ON after the write — no snap-back off a stale prop', async () => {
+    cth.updateConfig = vi.fn(async (p: unknown) => {
+      cth.calls.push({ method: 'updateConfig', args: [p] });
+      return p;
+    });
+    render(<McpDefaultsSettings config={config} />);
+    const sw = shardxSwitch();
+    expect(sw.textContent?.toLowerCase()).toBe('off');
+    fireEvent.click(sw);
+    // The persisted patch arms shardx.
+    await waitFor(() => expect(cth.updateConfig).toHaveBeenCalled());
+    const patch = (cth.updateConfig as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as { mcpDefaults: Record<string, { enabled: boolean }> };
+    expect(patch.mcpDefaults.shardx.enabled).toBe(true);
+    // And the switch must SHOW on — config prop never reflows in this modal.
+    await waitFor(() => expect(sw.textContent?.toLowerCase()).toBe('on'));
+  });
+
+  it('a failed write rolls the switch back to OFF', async () => {
+    cth.updateConfig = vi.fn(async () => {
+      throw new Error('disk full');
+    });
+    render(<McpDefaultsSettings config={config} />);
+    const sw = shardxSwitch();
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw.textContent?.toLowerCase()).toBe('off'));
+  });
+});

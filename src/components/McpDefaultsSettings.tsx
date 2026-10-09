@@ -30,19 +30,40 @@ const labelStyle: React.CSSProperties = {
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const { t } = useTranslation();
   const [note, setNote] = useState('');
+  // Consent switches are LIVE — they persist on click like the Slack
+  // integrations beside them, not via the modal's staged Save. The config
+  // prop doesn't reflow after a write, so the switch reads an optimistic
+  // local override — without it the toggle visibly snapped back and looked
+  // like a dead button.
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
 
   const enabledFor = (id: string): boolean =>
-    config.mcpDefaults?.[id]?.enabled ?? MCP_CATALOG.find((e) => e.id === id)?.defaultEnabled ?? false;
+    overrides[id]
+      ?? config.mcpDefaults?.[id]?.enabled
+      ?? MCP_CATALOG.find((e) => e.id === id)?.defaultEnabled
+      ?? false;
 
   const toggle = async (id: string) => {
     const next = !enabledFor(id);
+    // Flip first — the switch is the user's answer, not a save probe.
+    setOverrides((prev) => ({ ...prev, [id]: next }));
     try {
       await window.cth.updateConfig({
-        mcpDefaults: { ...(config.mcpDefaults ?? {}), [id]: { enabled: next } }
+        mcpDefaults: {
+          ...(config.mcpDefaults ?? {}),
+          // Fold earlier optimistic flips in — the prop still shows pre-toggle
+          // values, so a second toggle would otherwise drop the first write.
+          ...Object.fromEntries(
+            Object.entries(overrides).map(([k, v]) => [k, { enabled: v }])
+          ),
+          [id]: { enabled: next }
+        }
       });
       setNote(t('mcpDefaults.toggleNote', { id, state: next ? t('common.on') : t('common.off') }));
       setTimeout(() => setNote(''), 1800);
     } catch {
+      // Roll the optimistic flip back — the switch must not lie about consent.
+      setOverrides((prev) => ({ ...prev, [id]: !next }));
       setNote(t('mcpDefaults.couldNotSave'));
       setTimeout(() => setNote(''), 2000);
     }
