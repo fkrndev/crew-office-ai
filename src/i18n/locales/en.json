@@ -595,7 +595,8 @@
     "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP.",
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
     "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account.",
-    "needsKey": "⚠ {{provider}} needs an API key — set one in Settings → AI Engines"
+    "needsKey": "⚠ {{provider}} needs an API key — set one in Settings → AI Engines",
+    "needsShardx": "⚠ shardx setup needed — run Settings → MCP → Set up"
   },
   "onboarding": {
     "titles": {
@@ -873,6 +874,7 @@
     "shardx": {
       "title": "ShardX browser setup",
       "autoSetup": "Auto setup",
+      "autoSetupConfirm": "This agent is set to use the ShardX browser, but it isn't set up yet. Run the one-time setup now (downloads the launcher, mints the token, installs the bridge) and respawn it armed?",
       "cleanProfiles": "Clean up profiles",
       "cleanConfirm": "Delete auto-created ShardX profiles that no agent in this workspace still owns? (office-* only — profiles you named yourself are never touched.)",
       "cleaned": "Cleaned {{removed}} orphaned profile(s), kept {{kept}}",

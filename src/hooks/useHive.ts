@@ -21,6 +21,7 @@ import { isDurableRole, preferredAgentRole, roleForHiveSpawn } from '@shared/age
 import { inboxNudgeText } from '@shared/hiveNudge';
 import { resolveGodName } from '@shared/godIdentity';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
+import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
@@ -411,7 +412,7 @@ export function useHive(config: HarnessConfig | null): void {
       const godModel = config.godModel;
       const command = buildSpawnCommand(config, godModel, godProvider);
       const [exe, ...args] = tokenizeCommand(command.trim());
-      const res = await window.cth.spawnPty({
+      const res = await spawnWithShardxSetup({
         id: GOD_PTY,
         cwd: config.harnessHome!,
         command: exe,
@@ -1238,7 +1239,7 @@ export function useHive(config: HarnessConfig | null): void {
         const entry = acquireTerminal(deadId);
         let cols = 100, rows = 30;
         try { entry.fit.fit(); cols = entry.term.cols; rows = entry.term.rows; } catch { /* host not sized yet */ }
-        const res = await window.cth.spawnPty({
+        const res = await spawnWithShardxSetup({
           id: deadId,
           cwd,
           command: exe,

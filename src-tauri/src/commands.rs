@@ -435,6 +435,12 @@ pub struct PtySpawnResult {
     /// shows "starting up" while the TUI is already printing 401s).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_key: Option<String>,
+    /// ShardX was armed for this spawn (consent granted) but the local setup
+    /// gates aren't met — vendored bridge or stored token missing. The
+    /// renderer turns this into a one-click bootstrap + respawn instead of
+    /// silently fielding an agent that can't find its browser tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_shardx: Option<bool>,
 }
 
 impl PtySpawnResult {
@@ -449,6 +455,7 @@ impl PtySpawnResult {
             resume_not_found: None,
             worktree_path: None,
             needs_key: None,
+            needs_shardx: None,
         }
     }
 }
@@ -511,6 +518,8 @@ pub(crate) struct SpawnOutcome {
     /// Spawned CLI will boot without credentials (no provider key resolved).
     /// Surfaces as PtySpawnResult.needsKey.
     pub needs_key: Option<String>,
+    /// ShardX armed but its setup gates weren't met — PtySpawnResult.needsShardx.
+    pub needs_shardx: bool,
 }
 
 impl SpawnOutcome {
@@ -525,6 +534,7 @@ impl SpawnOutcome {
             resume_not_found: self.resume_not_found.then_some(true),
             worktree_path: self.worktree_path,
             needs_key: self.needs_key,
+            needs_shardx: self.needs_shardx.then_some(true),
         }
     }
 }
@@ -904,7 +914,10 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // `extra` and respawns/cleanup can find it.
     let agent_dir = st.hive.agent_dir(&agent_id);
     let is_claude = args.provider == "claude";
-    let shardx_armed = is_claude && {
+    // ShardX can arm only providers whose config we write mcp servers into —
+    // claude's --settings and hermes' config.yaml today.
+    let shardx_capable = matches!(args.provider.as_str(), "claude" | "hermes");
+    let shardx_armed = shardx_capable && {
         let consented = st
             .config
             .lock()
@@ -925,6 +938,21 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     } else {
         None
     };
+    // Consent said yes but the local gates aren't met — vendored bridge or
+    // stored token missing. The launcher itself is NOT a gate: the agent can
+    // start it (SHARDX.md teaches the exe paths) and bootstrap does too.
+    // needsShardx tells the renderer to offer the one-click setup instead of
+    // fielding an agent that can't find its tools.
+    let needs_shardx = shardx_armed
+        && !(st
+            .hive
+            .root
+            .join("mcp-servers")
+            .join("shardx")
+            .join("index.js")
+            .exists()
+            && crate::misc::secret_get_persist("SHARDX_TOKEN", st.config_store.dir())
+                .is_some());
 
     let entry = RegistryEntry {
         id: agent_id.clone(),
@@ -1473,6 +1501,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 resume_not_found: false,
                 worktree_path: None,
                 needs_key,
+                needs_shardx,
             });
         }
     }
@@ -1675,6 +1704,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         resume_not_found,
         worktree_path,
         needs_key,
+        needs_shardx,
     })
 }
 
@@ -4031,6 +4061,7 @@ mod tests {
             resume_not_found: true,
             worktree_path: Some("C:/w/.worktrees/a".into()),
             needs_key: None,
+            needs_shardx: false,
         }
         .into_result();
         let v = serde_json::to_value(&ok).unwrap();
@@ -4052,6 +4083,7 @@ mod tests {
             resume_not_found: false,
             worktree_path: None,
             needs_key: Some("hermes".into()),
+            needs_shardx: false,
         }
         .into_result();
         let v = serde_json::to_value(&authless).unwrap();

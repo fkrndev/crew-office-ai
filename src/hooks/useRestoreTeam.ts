@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { buildSpawnCommand, inferAgentProvider, tokenizeCommand, type HarnessConfig } from '@/store/config';
 import { roleForHiveSpawn } from '@shared/agentRole';
+import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 
 /** "Restore team" — respawn every worker from the previous session.
  *
@@ -129,7 +130,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
               console.warn(`[restore] worktree gone for ${a.id} (${a.worktreePath}); falling back to base repo ${a.cwd}`);
             }
           }
-          const res = await window.cth.spawnPty({
+          const res = await spawnWithShardxSetup({
             id: ptyId,
             cwd,
             command: exe,

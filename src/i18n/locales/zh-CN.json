@@ -594,7 +594,8 @@
     "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。",
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
     "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。",
-    "needsKey": "⚠ {{provider}} 需要 API 密钥——请在 设置 → AI Engines 中配置"
+    "needsKey": "⚠ {{provider}} 需要 API 密钥——请在 设置 → AI Engines 中配置",
+    "needsShardx": "⚠ 需要 ShardX 设置——请在 设置 → MCP → Set up 运行"
   },
   "onboarding": {
     "titles": {
@@ -871,6 +872,7 @@
     "shardx": {
       "title": "ShardX 浏览器设置",
       "autoSetup": "自动设置",
+      "autoSetupConfirm": "此智能体已配置使用 ShardX 浏览器，但尚未完成设置。现在运行一次性设置（下载启动器、获取令牌、安装桥接）并重新启动它吗？",
       "cleanProfiles": "清理配置",
       "cleanConfirm": "删除此工作区中已无智能体持有的自动创建 ShardX 配置？（仅 office-* —— 你自己命名的配置永远不会被动。）",
       "cleaned": "已清理 {{removed}} 个孤立配置，保留 {{kept}} 个",

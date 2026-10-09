@@ -31,6 +31,7 @@ import {
   isClaudeProvider
 } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
+import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 
 const ACCENTS: AccentColorName[] = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'];
 
@@ -518,7 +519,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     // Quote-aware so an agy model label like "Gemini 3.1 Pro (High)" — or any
     // auto-mode flags appended to the command — stays one argument.
     const [exe, ...args] = tokenizeCommand(command.trim());
-    const spawnRes = await window.cth.spawnPty({
+    const spawnRes = await spawnWithShardxSetup({
       id: ptyId,
       cwd,
       command: exe,
@@ -586,7 +587,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       status: 'idle',
       action: spawnRes.needsKey
         ? tr('addAgent.needsKey', { provider: spawnRes.needsKey })
-        : resuming && spawnRes.resumeNotFound ? 'session not found — fresh start' : 'starting up',
+        : spawnRes.needsShardx
+          ? tr('addAgent.needsShardx')
+          : resuming && spawnRes.resumeNotFound ? 'session not found — fresh start' : 'starting up',
       progress: 0,
       currentStation: 'desk',
       ptyId,

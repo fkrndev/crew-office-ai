@@ -10,6 +10,7 @@ import { TasksKanban } from './TasksKanban';
 import { AskMeTab } from './AskMeTab';
 import { TriggersTab } from './triggers/TriggersTab';
 import { TriggerHistoryTab } from './triggers/TriggerHistoryTab';
+import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 import { WorkersTab } from './WorkersTab';
 import { SkillsTab } from './SkillsTab';
 import { acquireTerminal, disposeTerminal, resetTerminal } from './terminalPool';
@@ -486,7 +487,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         isAssistant: a.isAssistant,
         role: roleForHiveSpawn(a)
       };
-      const res = await window.cth.spawnPty({
+      const res = await spawnWithShardxSetup({
         id: a.ptyId,
         cwd: a.cwd,
         command: exe,

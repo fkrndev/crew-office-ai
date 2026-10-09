@@ -595,7 +595,8 @@
     "shardxSetupIncomplete": "Setup ShardX belum selesai — agen dijalankan tanpa tools browser. Ulangi dari Pengaturan → MCP.",
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
     "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama.",
-    "needsKey": "⚠ {{provider}} butuh API key — isi di Pengaturan → AI Engines"
+    "needsKey": "⚠ {{provider}} butuh API key — isi di Pengaturan → AI Engines",
+    "needsShardx": "⚠ butuh setup shardx — jalankan Pengaturan → MCP → Set up"
   },
   "onboarding": {
     "titles": {
@@ -873,6 +874,7 @@
     "shardx": {
       "title": "Setup browser ShardX",
       "autoSetup": "Setup otomatis",
+      "autoSetupConfirm": "Agen ini diset pakai browser ShardX tapi setup-nya belum jalan. Jalankan setup sekali ini sekarang (download launcher, mint token, pasang bridge) lalu respawn agennya?",
       "cleanProfiles": "Bersihkan profil",
       "cleanConfirm": "Hapus profil ShardX auto-buat yang tidak lagi dimiliki agen di workspace ini? (hanya office-* — profil yang kamu namai sendiri tidak disentuh.)",
       "cleaned": "{{removed}} profil orphan dibersihkan, {{kept}} dipertahankan",
