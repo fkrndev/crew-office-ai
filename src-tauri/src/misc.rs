@@ -573,6 +573,187 @@ pub fn secret_get(key: &str) -> Option<String> {
         .and_then(|e| e.get_password().ok())
 }
 
+/// Write a credential and VERIFY it landed — Windows Credential Manager is
+/// documented to drop or race writes (keyring-rs #163: a set followed by an
+/// immediate read on another thread can return NoEntry), and on some VM
+/// hosts the whole store silently loses entries between processes. The
+/// contract becomes "stored AND retrievable": a lost write errors so the UI
+/// says so, instead of registering the key name in secret_env_keys and
+/// spawning authless agents that 401 forever.
+pub fn secret_set_verified(key: &str, value: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, key)
+        .map_err(|e| format!("keychain: {e}"))?;
+    entry
+        .set_password(value)
+        .map_err(|e| format!("keychain: {e}"))?;
+    // Read-back MUST go through a FRESH Entry — on VM hosts where CredMan
+    // drops generic credentials the writing Entry still returns the value it
+    // just set (it answers from the in-flight write), while every other
+    // process/Entry sees nothing. Verifying on the same Entry is the
+    // half-measure that produced this bug in the first place.
+    for _ in 0..5 {
+        let back = keyring::Entry::new(KEYRING_SERVICE, key)
+            .ok()
+            .and_then(|e| e.get_password().ok());
+        match back {
+            Some(v) if v == value => return Ok(()),
+            _ => std::thread::sleep(std::time::Duration::from_millis(120)),
+        }
+    }
+    Err("keychain accepted the write but the key does not read back — the OS \
+         credential store is not persisting (Windows Credential Manager on \
+         this host). Re-enter the key or report this machine."
+        .into())
+}
+
+// ─── DPAPI file fallback (upstream's Electron safeStorage) ──────────────────
+//
+// Windows Credential Manager on some VM hosts drops generic credentials
+// between processes — the write "succeeds", the next spawn's read finds
+// nothing, and every agent boots authless. When keychain verify fails we
+// fall back to a per-user DPAPI-encrypted file at <harness>/secrets/<name> —
+// the same protection Electron's safeStorage uses on Windows (user+machine
+// bound, survives process restarts, unreadable off this account).
+
+/// `CryptProtectData` — returns the encrypted blob, None when the OS call
+/// fails. Caller writes the blob to disk; only this Windows account on this
+/// machine can reverse it.
+#[cfg(windows)]
+fn dpapi_protect(data: &[u8]) -> Option<Vec<u8>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+    unsafe {
+        let desc: Vec<u16> = std::ffi::OsStr::new("agent-office secret")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        let ok = CryptProtectData(
+            &mut input,
+            desc.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut output,
+        );
+        if ok == 0 || output.pbData.is_null() {
+            return None;
+        }
+        let blob = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let _ = LocalFree(output.pbData as *mut core::ffi::c_void);
+        Some(blob)
+    }
+}
+
+/// `CryptUnprotectData` on a blob produced by `dpapi_protect`.
+#[cfg(windows)]
+fn dpapi_unprotect(blob: &[u8]) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    unsafe {
+        let mut input = CRYPT_INTEGER_BLOB {
+            cbData: blob.len() as u32,
+            pbData: blob.as_ptr() as *mut u8,
+        };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        let ok = CryptUnprotectData(
+            &mut input,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut output,
+        );
+        if ok == 0 || output.pbData.is_null() {
+            return None;
+        }
+        let plain = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let _ = LocalFree(output.pbData as *mut core::ffi::c_void);
+        Some(plain)
+    }
+}
+
+/// The fallback file for one secret name (names are already env-var-safe).
+fn dpapi_secret_path(dir: &std::path::Path, key: &str) -> std::path::PathBuf {
+    let safe: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        .collect();
+    dir.join("secrets").join(format!("{safe}.dpapi"))
+}
+
+/// Keychain-first read with the DPAPI-file fallback — a key the CredMan lost
+/// between processes is still found when it was persisted to the file store.
+pub fn secret_get_persist(key: &str, store_dir: &std::path::Path) -> Option<String> {
+    if let Some(v) = secret_get(key) {
+        return Some(v);
+    }
+    #[cfg(windows)]
+    {
+        let blob = std::fs::read(dpapi_secret_path(store_dir, key)).ok()?;
+        let plain = dpapi_unprotect(&blob)?;
+        String::from_utf8(plain).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = store_dir;
+        None
+    }
+}
+
+/// Persist a secret: keychain with read-back verification first; on a host
+/// where CredMan drops the write, fall back to the DPAPI file — which is
+/// what Electron safeStorage did for the same data upstream. Returns which
+/// store landed it so callers can report honestly.
+pub fn secret_set_persist(
+    key: &str,
+    value: &str,
+    store_dir: &std::path::Path,
+) -> Result<&'static str, String> {
+    if secret_set_verified(key, value).is_ok() {
+        let _ = std::fs::remove_file(dpapi_secret_path(store_dir, key));
+        return Ok("keychain");
+    }
+    #[cfg(windows)]
+    {
+        let blob = dpapi_protect(value.as_bytes())
+            .ok_or_else(|| "DPAPI encrypt failed".to_string())?;
+        let path = dpapi_secret_path(store_dir, key);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, blob).map_err(|e| e.to_string())?;
+        log::warn!("[secrets] keychain unpersisted — {key} stored via DPAPI file");
+        return Ok("dpapi-file");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = store_dir;
+        Err("credential store did not persist the key".into())
+    }
+}
+
+/// Remove a secret from BOTH stores.
+pub fn secret_delete_persist(key: &str, store_dir: &std::path::Path) {
+    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, key) {
+        let _ = e.delete_credential();
+    }
+    let _ = std::fs::remove_file(dpapi_secret_path(store_dir, key));
+}
+
 /// Last-resort OS opener — `cmd /c start` on Windows, `open` on macOS,
 /// `xdg-open` elsewhere. Used when the shell plugin's `open` fails, and as the
 /// directory opener for `fs_reveal_path`.

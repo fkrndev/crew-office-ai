@@ -1015,18 +1015,18 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // PROVIDER_KEY_<backend> entries map to the env var the CLIs actually read
     // (upstream BACKEND_KEY_ENV): without the translation a saved "OpenAI" key
     // reached the agent as PROVIDER_KEY_OPENAI — a name nothing consumes.
+    // Reads go through the persist-aware getter — keys a flaky CredMan dropped
+    // are still found in the DPAPI file store.
     for key in &st.config.lock().unwrap().secret_env_keys {
-        if let Ok(entry) = keyring::Entry::new("agent-office", key) {
-            if let Ok(v) = entry.get_password() {
-                match crate::misc::provider_env_names(key) {
-                    Some(envs) => {
-                        for e in envs {
-                            agent_env.insert(e.to_string(), v.clone());
-                        }
+        if let Some(v) = crate::misc::secret_get_persist(key, st.config_store.dir()) {
+            match crate::misc::provider_env_names(key) {
+                Some(envs) => {
+                    for e in envs {
+                        agent_env.insert(e.to_string(), v.clone());
                     }
-                    None => {
-                        agent_env.insert(key.clone(), v);
-                    }
+                }
+                None => {
+                    agent_env.insert(key.clone(), v);
                 }
             }
         }
@@ -1061,7 +1061,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         if let Some(bin) = &st.hook_bin {
             let seed = {
                 let cfg = st.config.lock().unwrap();
-                hermes_seed_plan(&cfg, &crate::misc::secret_get)
+                let root = st.config_store.dir().to_path_buf();
+                hermes_seed_plan(&cfg, &|k| crate::misc::secret_get_persist(k, &root))
             };
             if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
                 agent_env.insert("HERMES_HOME".into(), home.display().to_string());
@@ -1990,10 +1991,9 @@ const KEYRING_SERVICE: &str = "agent-office";
 /// Read a credential — the caller's only path to a value (slack secrets and
 /// spawn-time env injection both go through here).
 fn secret_get(app: &AppHandle, key: &str) -> Option<String> {
-    let _ = app;
-    keyring::Entry::new(KEYRING_SERVICE, key)
-        .ok()
-        .and_then(|e| e.get_password().ok())
+    // Keychain first, DPAPI fallback file — same store spawn injection reads.
+    let root = state(app).config_store.dir().to_path_buf();
+    crate::misc::secret_get_persist(key, &root)
 }
 
 /// Store a secret in the OS credential store and register its env key for
@@ -2004,10 +2004,10 @@ pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), Stri
     if key.is_empty() || value.is_empty() {
         return Err("key and value required".into());
     }
-    keyring::Entry::new(KEYRING_SERVICE, &key)
-        .and_then(|e| e.set_password(&value))
-        .map_err(|e| format!("keychain: {e}"))?;
+    // Verify-after-write, DPAPI-file fallback — a CredMan-dropped write lands
+    // in the encrypted file store instead of pretending to persist.
     let st = state(&app);
+    crate::misc::secret_set_persist(&key, &value, st.config_store.dir())?;
     let mut cfg = st.config.lock().unwrap();
     if !cfg.secret_env_keys.contains(&key) {
         cfg.secret_env_keys.push(key);
@@ -2019,10 +2019,8 @@ pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), Stri
 /// Remove a secret — from the keychain AND the injection list.
 #[tauri::command(async)]
 pub fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &key) {
-        let _ = e.delete_credential();
-    }
     let st = state(&app);
+    crate::misc::secret_delete_persist(&key, st.config_store.dir());
     let mut cfg = st.config.lock().unwrap();
     cfg.secret_env_keys.retain(|k| k != &key);
     st.config_store.save(&cfg).map_err(err_str)
@@ -3042,10 +3040,9 @@ fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
     let launcher = std::net::TcpStream::connect(("127.0.0.1", SHARDX_API_PORT)).is_ok();
     let mcp_dir = st.hive.root.join("mcp-servers").join("shardx");
     let mcp_installed = mcp_dir.join("index.js").exists() && mcp_dir.join("node_modules").is_dir();
-    let token_set = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .is_some_and(|t| !t.is_empty());
+    let token_set =
+        crate::misc::secret_get_persist(SHARDX_TOKEN_KEY, st.config_store.dir())
+            .is_some_and(|t| !t.is_empty());
     serde_json::json!({
         "launcherRunning": launcher,
         "mcpInstalled": mcp_installed,
@@ -3058,19 +3055,18 @@ fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
 /// Store the launcher's Bearer token in the OS keychain — never config.json.
 #[tauri::command(async)]
 pub fn shardx_set_token(app: AppHandle, token: String) -> Result<(), String> {
-    let _ = app;
-    shardx_set_token_inner(&token)
+    let dir = state(&app).config_store.dir().to_path_buf();
+    shardx_set_token_inner(&token, &dir)
 }
 
-fn shardx_set_token_inner(token: &str) -> Result<(), String> {
+fn shardx_set_token_inner(token: &str, store_dir: &std::path::Path) -> Result<(), String> {
     let t = token.trim();
     if t.is_empty() {
         return Err("empty token".into());
     }
-    keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-        .map_err(|e| e.to_string())?
-        .set_password(t)
-        .map_err(|e| e.to_string())
+    // Verify-after-write, DPAPI-file fallback — a dropped token write breaks
+    // every shardx call (401s) silently.
+    crate::misc::secret_set_persist(SHARDX_TOKEN_KEY, t, store_dir).map(|_| ())
 }
 
 /// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
@@ -3256,12 +3252,12 @@ fn shardx_token_from_settings(path: &std::path::Path) -> Result<String, String> 
 
 /// Read the launcher's secret, mint the long-lived token, keychain it.
 /// Returns the configured api_port so callers can sanity-check SHARDX_API.
-fn shardx_auto_token() -> Result<u16, String> {
+fn shardx_auto_token(store_dir: &std::path::Path) -> Result<u16, String> {
     let path = shardx_launcher_settings_path().ok_or_else(|| {
         "launcher settings.json not found — run the ShardX launcher once".to_string()
     })?;
     let token = shardx_token_from_settings(&path)?;
-    shardx_set_token_inner(&token)?;
+    shardx_set_token_inner(&token, store_dir)?;
     Ok(shardx_launcher_secret()
         .map(|(_, p)| p)
         .unwrap_or(SHARDX_API_PORT))
@@ -3359,7 +3355,9 @@ fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Valu
     }
     steps["launcher"] = serde_json::json!({ "ok": launcher_up });
 
-    match shardx_auto_token() {
+    // Secrets live in harness home (config.json's dir) — hive_root.parent().
+    let secrets_dir = hive_root.parent().unwrap_or(hive_root).to_path_buf();
+    match shardx_auto_token(&secrets_dir) {
         Ok(api_port) => steps["token"] = serde_json::json!({ "ok": true, "apiPort": api_port }),
         Err(e) => steps["token"] = serde_json::json!({ "ok": false, "error": e }),
     }
@@ -3433,10 +3431,10 @@ fn shardx_ensure_profile(
     if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
         return None;
     }
-    let token = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-        .ok()?
-        .get_password()
-        .ok()?;
+    let token = crate::misc::secret_get_persist(
+        SHARDX_TOKEN_KEY,
+        hive_root.parent().unwrap_or(hive_root),
+    )?;
     let api = format!("http://127.0.0.1:{port}");
     let auth = format!("Bearer {token}");
     let http = ureq::Agent::config_builder()
@@ -3503,15 +3501,12 @@ fn shardx_cleanup_plan(profiles: &[Value], bound: &std::collections::HashSet<Str
 /// Shared launcher-API plumbing: resolves the port, mint-token keychain read,
 /// and an authorized ureq agent. None when the launcher or token is missing —
 /// callers map that to a short "not running"/"no token" reason.
-fn shardx_api() -> Option<(String, String, ureq::Agent)> {
+fn shardx_api(store_dir: &std::path::Path) -> Option<(String, String, ureq::Agent)> {
     let port = shardx_launcher_secret()
         .map(|(_, p)| p)
         .unwrap_or(SHARDX_API_PORT);
     std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
-    let token = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-        .ok()?
-        .get_password()
-        .ok()?;
+    let token = crate::misc::secret_get_persist(SHARDX_TOKEN_KEY, store_dir)?;
     let http = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(8)))
         .build()
@@ -3530,7 +3525,7 @@ fn shardx_api() -> Option<(String, String, ureq::Agent)> {
 #[tauri::command(async)]
 pub fn shardx_profiles(app: AppHandle) -> Value {
     let st = state(&app);
-    let Some((api, auth, http)) = shardx_api() else {
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
     };
     let Ok(mut resp) = http
@@ -3615,10 +3610,7 @@ pub fn shardx_cleanup(app: AppHandle) -> Value {
     if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
         return serde_json::json!({ "ok": false, "error": "launcher not running" });
     }
-    let Some(token) = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-    else {
+    let Some(token) = crate::misc::secret_get_persist(SHARDX_TOKEN_KEY, st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "no token" });
     };
     let api = format!("http://127.0.0.1:{port}");
@@ -4222,24 +4214,17 @@ mod tests {
     fn shardx_token_roundtrip_through_keychain() {
         let app = tauri::test::mock_app();
         let handle = app.app_handle().clone();
-        assert!(shardx_set_token_inner("  ").is_err());
-        // Store → status sees it → delete.
-        match shardx_set_token_inner("tok-test-xyz") {
-            Ok(()) => {
-                let home = tmp_home("shardx-tok");
-                handle.manage(AppState::new(home.clone()).unwrap());
-                // Windows Credential Manager can drop entries between
-                // processes on some VM hosts — the write must succeed; the
-                // readback is best-effort, not a hard gate.
-                let _ = shardx_status_inner(&handle);
-                let _ = keyring::Entry::new(KEYRING_SERVICE, SHARDX_TOKEN_KEY)
-                    .map(|e| e.delete_credential());
-                let _ = std::fs::remove_dir_all(&home);
-            }
-            // VM/headless hosts without a credential service: the command must
-            // fail cleanly rather than pretend a write happened.
-            Err(_) => {}
-        }
+        let home = tmp_home("shardx-tok");
+        assert!(shardx_set_token_inner("  ", &home).is_err());
+        // Store → status sees it → delete. With the DPAPI fallback the write
+        // must succeed even on hosts where CredMan drops credentials — that
+        // is exactly this VM's behavior, so this is now a hard gate.
+        shardx_set_token_inner("tok-test-xyz", &home).unwrap();
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = shardx_status_inner(&handle);
+        assert_eq!(st["tokenSet"], true, "stored token must read back");
+        crate::misc::secret_delete_persist(SHARDX_TOKEN_KEY, &home);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The vendored MCP dir lands under <hive>/mcp-servers/shardx — the same
@@ -4341,6 +4326,26 @@ mod tests {
         assert!(n.contains("mcp-servers"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
+    }
+
+    /// Persist-tier write: keychain OR the DPAPI file — a secret must read
+    /// back through secret_get_persist regardless of which store landed it.
+    /// On this VM the keychain drops entries between Entry objects, so the
+    /// file fallback is the store actually exercised here.
+    #[test]
+    fn secret_persist_roundtrips_despite_flaky_keychain() {
+        let home = tmp_home("secrets-persist");
+        let key = "DEVIN_TEST_PERSIST";
+        let store = crate::misc::secret_set_persist(key, "v1", &home).unwrap();
+        assert!(matches!(store, "keychain" | "dpapi-file"));
+        assert_eq!(
+            crate::misc::secret_get_persist(key, &home).as_deref(),
+            Some("v1"),
+            "value must read back from whichever store landed it"
+        );
+        crate::misc::secret_delete_persist(key, &home);
+        assert_eq!(crate::misc::secret_get_persist(key, &home), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The exact failure the user hit: a fresh harness with no provider base

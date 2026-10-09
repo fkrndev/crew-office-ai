@@ -50,7 +50,7 @@ log = "0.4.34"
 tauri = { version = "2.12", features = ["test"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_Security_Cryptography", "Win32_System_Memory"] }
 junction = "1"
 winreg = "0.52"
 

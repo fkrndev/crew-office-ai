@@ -22,7 +22,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::commands::state;
 use crate::misc::{
     err_str, expand_tilde, harness_home, is_filesystem_root, load_hero, mime_for, os_open,
-    random_hex32, secret_get, write_slack_reply_script, KEYRING_SERVICE,
+    random_hex32, write_slack_reply_script,
 };
 
 /// fs_read_binary's byte cap — same 2MB guard the confined reader uses.
@@ -549,10 +549,10 @@ pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Resu
     if value.is_empty() {
         return Err("key required".into());
     }
-    keyring::Entry::new(KEYRING_SERVICE, &key)
-        .and_then(|e| e.set_password(&value))
-        .map_err(|e| format!("keychain: {e}"))?;
+    // Verify-after-write, DPAPI-file fallback — same guarantee as secret_set:
+    // config only lists the key once its value provably persists somewhere.
     let st = state(&app);
+    crate::misc::secret_set_persist(&key, &value, st.config_store.dir())?;
     let mut cfg = st.config.lock().unwrap();
     if !cfg.secret_env_keys.contains(&key) {
         cfg.secret_env_keys.push(key);
@@ -563,17 +563,15 @@ pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Resu
 
 #[tauri::command(async)]
 pub fn provider_key_has(app: AppHandle, provider: String) -> Result<bool, String> {
-    let _ = app;
-    Ok(secret_get(&provider_key_name(&provider)?).is_some())
+    let dir = state(&app).config_store.dir().to_path_buf();
+    Ok(crate::misc::secret_get_persist(&provider_key_name(&provider)?, &dir).is_some())
 }
 
 #[tauri::command(async)]
 pub fn provider_key_clear(app: AppHandle, provider: String) -> Result<bool, String> {
     let key = provider_key_name(&provider)?;
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &key) {
-        let _ = e.delete_credential();
-    }
     let st = state(&app);
+    crate::misc::secret_delete_persist(&key, st.config_store.dir());
     let mut cfg = st.config.lock().unwrap();
     cfg.secret_env_keys.retain(|k| k != &key);
     st.config_store.save(&cfg).map_err(err_str)?;

@@ -2,7 +2,7 @@
 //! hive's registry.json; this file holds harness-level settings only).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::collections::HashMap;
 
@@ -217,6 +217,12 @@ impl ConfigStore {
         Self {
             path: dir.join("config.json"),
         }
+    }
+
+    /// The harness-home directory this store persists into — secrets' DPAPI
+    /// fallback file lives alongside config.json there.
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(&self.path)
     }
 
     pub fn load(&self) -> Config {
