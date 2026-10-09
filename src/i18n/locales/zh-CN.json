@@ -889,6 +889,7 @@
       "refresh": "刷新",
       "done": "完成",
       "failed": "失败",
+      "working": "运行中…（下载 + npm install 可能需要几分钟）",
       "savedTo": "已保存到 {{path}}"
     }
   },

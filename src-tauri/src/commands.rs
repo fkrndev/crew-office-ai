@@ -3120,6 +3120,31 @@ fn shardx_set_token_inner(token: &str, store_dir: &std::path::Path) -> Result<()
     crate::misc::secret_set_persist(SHARDX_TOKEN_KEY, t, store_dir).map(|_| ())
 }
 
+/// Downloads that hang forever leave the settings card's every button
+/// disabled — ureq's default agent has NO timeout, so a blocked GitHub
+/// connection kept `busy` pinned indefinitely. Bound every fetch.
+fn shardx_http(timeout_secs: u64) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
+        .build()
+        .new_agent()
+}
+
+/// Same bounded-wait for child processes: npm install behind a proxy or a
+/// dead network blocks the settings card forever otherwise.
+fn wait_or_kill(mut child: std::process::Child, secs: u64) -> bool {
+    for _ in 0..secs {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.success(),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            Err(_) => return false,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
 /// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
 /// install it with the browser download skipped (patchright only ever
 /// connectOverCDP to a running ShardX profile — its own chromium is dead
@@ -3128,7 +3153,8 @@ fn shardx_set_token_inner(token: &str, store_dir: &std::path::Path) -> Result<()
 fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
     let tmp = std::env::temp_dir().join(format!("shardx-mcp-{}.tgz", uuid::Uuid::new_v4()));
     let step = || -> Result<(), String> {
-        let mut resp = ureq::get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
+        let mut resp = shardx_http(120)
+            .get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
             .call()
             .map_err(|e| format!("download failed: {e}"))?;
         let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
@@ -3153,18 +3179,18 @@ fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
             if cand.join("index.js").exists() {
                 std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
                 crate::hive::copy_dir(&cand, &dest).map_err(|e| e.to_string())?;
-                // npm install — browser download flags keep node_modules small.
+                // npm install — browser download flags keep node_modules
+                // small; a dead registry connection is killed at 4 min.
                 let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-                let ok = std::process::Command::new(npm)
+                let child = std::process::Command::new(npm)
                     .arg("install")
                     .current_dir(&dest)
                     .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
                     .env("PATCHRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if !ok {
-                    return Err("npm install failed".into());
+                    .spawn()
+                    .map_err(|e| format!("npm install failed to start: {e}"))?;
+                if !wait_or_kill(child, 240) {
+                    return Err("npm install failed or timed out".into());
                 }
                 let _ = std::fs::remove_dir_all(&out);
                 return Ok(());
@@ -3193,7 +3219,8 @@ pub fn shardx_setup(app: AppHandle) -> Value {
 #[tauri::command(async)]
 pub fn shardx_download_launcher() -> Value {
     let step = || -> Result<String, String> {
-        let rel: Value = ureq::get("https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest")
+        let rel: Value = shardx_http(30)
+            .get("https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest")
             .header("User-Agent", "agent-office")
             .call()
             .map_err(|e| e.to_string())?
@@ -3219,7 +3246,8 @@ pub fn shardx_download_launcher() -> Value {
             .or_else(dirs::home_dir)
             .unwrap_or_default()
             .join(name);
-        let mut resp = ureq::get(&url)
+        let mut resp = shardx_http(300)
+            .get(&url)
             .header("User-Agent", "agent-office")
             .call()
             .map_err(|e| e.to_string())?;

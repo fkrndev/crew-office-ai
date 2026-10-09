@@ -891,6 +891,7 @@
       "refresh": "Refresh",
       "done": "done",
       "failed": "failed",
+      "working": "working… (download + npm install can take a few minutes)",
       "savedTo": "saved to {{path}}"
     }
   },

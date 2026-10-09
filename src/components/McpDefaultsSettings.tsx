@@ -215,6 +215,9 @@ function ShardXSetup() {
   const run = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
+    // Bootstrap can run minutes (launcher download + npm install). Without a
+    // working note the whole card just looks dead-disabled.
+    setNote(t('mcpDefaults.shardx.working'));
     try {
       const r = (await fn()) as
         | { ok?: boolean; path?: string; error?: string; removed?: number; kept?: number }

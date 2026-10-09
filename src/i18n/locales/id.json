@@ -891,6 +891,7 @@
       "refresh": "Muat ulang",
       "done": "selesai",
       "failed": "gagal",
+      "working": "sedang jalan… (download + npm install bisa beberapa menit)",
       "savedTo": "tersimpan di {{path}}"
     }
   },
