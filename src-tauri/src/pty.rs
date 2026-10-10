@@ -102,6 +102,17 @@ fn fallback_candidates(prog: &str) -> Vec<PathBuf> {
     if prog.eq_ignore_ascii_case("agy") {
         out.push(PathBuf::from(format!(r"{local}\agy\bin\agy.exe")));
     }
+    // The official hermes installer lands its shims under %LOCALAPPDATA%\
+    // hermes\bin (with the venv under hermes-agent) — a running app holds the
+    // PATH it was launched with, so the install-ladder relaunch resolves
+    // through here even before a fresh PATH reaches it.
+    if prog.eq_ignore_ascii_case("hermes") {
+        out.push(PathBuf::from(format!(r"{local}\hermes\bin\hermes.exe")));
+        out.push(PathBuf::from(format!(r"{local}\hermes\bin\hermes.cmd")));
+        out.push(PathBuf::from(format!(
+            r"{local}\hermes\hermes-agent\venv\Scripts\hermes.exe"
+        )));
+    }
     out
 }
 

@@ -291,19 +291,21 @@ pub fn provider_install(
         "copilot" => (None, None, Some("npm install -g @github/copilot")),
         "cursor" => (
             Some("curl https://cursor.com/install -fsS | bash"),
-            Some("irm https://cursor.com/install?win32=true | iex"),
+            // cmd /c executes these — powershell syntax (iex/irm/|) must ride
+            // inside `powershell -c`, and cmd metachars get ^-escaped.
+            Some("powershell -NoProfile -c irm https://cursor.com/install?win32=true ^| iex"),
             None,
         ),
         // Hermes — Nous Research's installer. Native Windows works without
         // WSL; the scripts bundle Python+Node+TUI. No npm package.
         "hermes" => (
             Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
-            Some("iex (irm https://hermes-agent.nousresearch.com/install.ps1)"),
+            Some("powershell -NoProfile -c iex ^(irm https://hermes-agent.nousresearch.com/install.ps1^)"),
             None,
         ),
         "openclaw" => (
             Some("curl -fsSL https://openclaw.ai/install | bash"),
-            Some("irm https://openclaw.ai/install.ps1 | iex"),
+            Some("powershell -NoProfile -c irm https://openclaw.ai/install.ps1 ^| iex"),
             None,
         ),
         // No known installer: grok/kimi/antigravity(agy)/qwen/custom — these
@@ -395,9 +397,11 @@ fn node_install_script(n: &NodeInstaller) -> String {
             "echo   Installing - approve the Windows prompt if it appears...".to_string(),
             format!("msiexec /i {f} /passive /norestart"),
             "if errorlevel 1 exit /b 1".to_string(),
-            "set \"PATH=%ProgramFiles%\\nodejs;%PATH%\"".to_string(),
+            "set PATH=%ProgramFiles%\\nodejs;%PATH%".to_string(),
         ]
-        .join("\r\n");
+        // cmd /c reads ONE line — `&` chains the steps (same reason the
+        // caller's rung text can't carry quotes).
+        .join(" & ");
     }
     let verify = if cfg!(target_os = "macos") {
         format!(
@@ -432,6 +436,11 @@ fn node_install_script(n: &NodeInstaller) -> String {
 /// installer program being reachable on PATH. Returns `(script, relaunch)` —
 /// the manual rung returns `false` (a respawn would die on the same missing
 /// binary, so upstream arms no relaunch there).
+///
+/// The script becomes `cmd /d /s /c <string>` on Windows — cmd consumes ONE
+/// line of a /c argument, so statements chain with `&` there; `sh -c` gets
+/// real newlines. No double-quotes anywhere: the arg is passed verbatim and
+/// a quote would unbalance cmd's parse.
 pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<(String, bool)> {
     let (native_posix, native_win32, npm) = provider_install(provider);
     let native = if cfg!(windows) {
@@ -439,12 +448,20 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
     } else {
         native_posix
     };
-    let header = format!("[agent-office] \"{bin}\" is not installed — ");
+    let header = format!("[agent-office] {bin} is not installed - ");
+    // One joiner for every rung: `&` chains under cmd, newline under sh.
+    let join = |a: String, b: &str| -> String {
+        if cfg!(windows) {
+            format!("{a} & {b}")
+        } else {
+            format!("{a}\n{b}")
+        }
+    };
 
     // Rung 1: npm present — run the package install directly.
     if let (Some(cmd), true) = (npm, npm_available) {
         return Some((
-            format!("echo {header}installing it with npm.\r\n{cmd}"),
+            join(format!("echo {header}installing it with npm."), cmd),
             true,
         ));
     }
@@ -460,9 +477,12 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
                 "export PATH=/usr/local/bin:$PATH"
             };
             return Some((
-                format!(
-                    "echo {header}installing Node.js first, then the package.\r\n{}\r\n{path_fix}{cmd}",
-                    node_install_script(&n)
+                join(
+                    join(
+                        format!("echo {header}installing Node.js first, then the package."),
+                        &node_install_script(&n),
+                    ),
+                    &format!("{path_fix}{cmd}"),
                 ),
                 true,
             ));
@@ -472,8 +492,9 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
     // Rung 3: the vendor's self-contained installer (no Node needed).
     if let Some(cmd) = native {
         return Some((
-            format!(
-                "echo {header}running the official {provider} installer (no Node needed).\r\n{cmd}"
+            join(
+                format!("echo {header}running the official {provider} installer - no Node needed."),
+                cmd,
             ),
             true,
         ));
@@ -482,8 +503,9 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
     // Rung 4: manual hint — honest output, intentionally no relaunch.
     if native.is_some() || npm.is_some() {
         return Some((
-            format!(
-                "echo {header}no bundled installer works on this machine.\r\necho Install {bin} manually, then respawn this agent."
+            join(
+                format!("echo {header}no bundled installer works on this machine."),
+                &format!("echo Install {bin} manually, then respawn this agent."),
             ),
             false,
         ));
@@ -1360,6 +1382,29 @@ mod tests {
         // no-installer provider → None (spawn falls through, never loops).
         assert!(install_script("custom", "custom", false).is_none());
         assert!(install_script("grok", "grok", true).is_none());
+    }
+
+    /// The install script becomes `cmd /d /s /c <one arg>` — cmd executes
+    /// only the FIRST line of a /c string and a double-quote unbalances the
+    /// parse, so on Windows every script must be a single `&`-chained line
+    /// with no quotes. The native-only providers are checked here (their
+    /// rung never touches the network for a Node probe).
+    #[test]
+    fn install_script_is_one_quote_free_cmd_line() {
+        if !cfg!(windows) {
+            return;
+        }
+        for p in ["hermes", "openclaw", "cursor"] {
+            let (script, relaunch) = install_script(p, p, false).unwrap();
+            assert!(!script.contains('\n'), "{p}: must be one cmd line: {script}");
+            assert!(!script.contains('"'), "{p}: quotes would break /c: {script}");
+            assert!(script.contains(" & "), "{p}: expected &-chained cmd: {script}");
+            // Powershell syntax must ride inside `powershell -c` — bare
+            // `irm`/`iex`/`(` are cmd errors, not installs.
+            assert!(script.contains("powershell"), "{p}: native rung needs powershell -c: {script}");
+            assert!(relaunch, "{p}: native rung must re-arm the spawn");
+        }
+        // POSIX stays newline-joined — sh -c handles multi-line.
     }
 
     #[test]

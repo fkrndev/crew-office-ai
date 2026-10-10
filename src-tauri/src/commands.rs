@@ -5388,4 +5388,255 @@ mod tests {
         assert_eq!(r.error.as_deref(), Some("no pty: pty-nada"));
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    /// LIVE TEST — the whole missing-CLI ladder against the real world:
+    /// `hermes` uninstalled → spawn_agent_core runs the installer PTY →
+    /// exit-0 relaunch → `hermes chat` booting in the same slot. Downloads +
+    /// installs the real Nous Research CLI (minutes); run manually:
+    ///   cargo test --lib hermes_install_ladder_live -- --ignored --nocapture
+    #[test]
+    #[ignore = "live: downloads and installs the real hermes CLI"]
+    fn hermes_install_ladder_live() {
+        // The test only means something with the binary actually absent —
+        // but PATH-based checks must not re-hit after install, so also probe
+        // the venv fallback (a fresh resolve AFTER install is the success
+        // signal, so the guard runs on PATH alone).
+        let path_env = std::env::var("PATH").unwrap_or_default();
+        assert!(
+            crate::pty::resolve_program("hermes", &path_env).is_none(),
+            "uninstall hermes first — this test exercises the missing-CLI ladder"
+        );
+
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("hermes-live");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-hermes", "provider": "hermes",
+                "command": "hermes chat",
+                "cwd": home.display().to_string(),
+                "hive": { "id": "hermes-live", "name": "Hermes", "role": "worker" }
+            })),
+        );
+        assert!(res.ok, "spawn failed: {:?}", res.error);
+        let st = state(&handle);
+        // The install rail spawned a PTY in the slot AND armed the relaunch —
+        // the two halves of "installs on first run".
+        assert!(st.ptys.lock().unwrap().contains_key("pty-hermes"));
+        assert!(
+            PENDING_INSTALLS.lock().unwrap().contains_key("pty-hermes"),
+            "install PTY must be armed for relaunch"
+        );
+        eprintln!("[live] install PTY spawned + relaunch armed — waiting for the installer");
+        // PowerShell under conpty emits CSI 6 n (cursor-position query) and
+        // BLOCKS on the reply — the real app's xterm answers it; the test has
+        // no terminal, so answer it here with a fixed position.
+        let answer_dsr = |st: &tauri::State<'_, AppState>, answered: &mut usize| {
+            let mut ptys = st.ptys.lock().unwrap();
+            if let Some(h) = ptys.get_mut("pty-hermes") {
+                let cur = h.tail().matches("\u{1b}[6n").count();
+                // Relaunch swaps in a fresh handle (fresh tail) — reset.
+                if cur < *answered {
+                    *answered = 0;
+                }
+                for _ in 0..cur - *answered {
+                    let _ = h.write("\u{1b}[24;80R");
+                }
+                *answered = cur;
+            }
+        };
+        let mut answered = 0usize;
+        // The installer downloads Python+deps and builds the TUI — allow 40
+        // minutes (measured ~24 on this machine). Success = relaunch
+        // consumed the pending entry AND `hermes` resolves now.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40 * 60);
+        loop {
+            answer_dsr(&st, &mut answered);
+            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-hermes");
+            let resolved = crate::pty::resolve_program("hermes", &path_env).is_some();
+            if !armed && resolved {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                let tail = st
+                    .ptys
+                    .lock()
+                    .unwrap()
+                    .get("pty-hermes")
+                    .map(|h| h.tail())
+                    .unwrap_or_default();
+                panic!("install never finished (armed={armed} resolved={resolved}); tail: {tail:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+        // Relaunch landed: the slot now hosts the real REPL, not the
+        // installer — keep answering DSR (prompt_toolkit queries the cursor
+        // position on boot and blocks on the reply).
+        for _ in 0..120 {
+            answer_dsr(&st, &mut answered);
+            let done = st
+                .ptys
+                .lock()
+                .unwrap()
+                .get("pty-hermes")
+                .map(|h| h.command.contains("hermes"))
+                .unwrap_or(false);
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let cmd = st
+            .ptys
+            .lock()
+            .unwrap()
+            .get("pty-hermes")
+            .map(|h| h.command.clone())
+            .unwrap_or_default();
+        assert!(cmd.contains("hermes"), "relaunch should run hermes chat: {cmd:?}");
+        eprintln!("[live] hermes installed + relaunched: {cmd}");
+        let pty = { st.ptys.lock().unwrap().remove("pty-hermes") };
+        if let Some(mut h) = pty {
+            let _ = h.kill();
+        }
+    }
+
+    /// A PTY whose child exits on its own must trip the waiter path (the
+    /// `pty-exit` → map removal → teardown rail every kill/exit depends on,
+    /// and the install-relaunch rail builds on). `ver` exits immediately.
+    #[test]
+    fn probe_pty_natural_exit_detection() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("probe-exit");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+        let env: std::collections::HashMap<String, String> = Default::default();
+        let h = crate::pty::spawn(
+            "pty-probe",
+            "ver",
+            &home.display().to_string(),
+            &env,
+            80,
+            24,
+            handle.clone(),
+        )
+        .unwrap();
+        st.ptys.lock().unwrap().insert("pty-probe".into(), h);
+        let mut answered = 0usize;
+        for i in 0..50 {
+            // ConPTY emits CSI 6 n at session start and the child BLOCKS on
+            // the reply — the real app's xterm answers it; here we must.
+            {
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut("pty-probe") {
+                    let cur = h.tail().matches("\u{1b}[6n").count();
+                    for _ in answered..cur {
+                        let _ = h.write("\u{1b}[24;80R");
+                    }
+                    answered = cur;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if !st.ptys.lock().unwrap().contains_key("pty-probe") {
+                eprintln!("[probe] exit detected after {}ms", i * 200);
+                return;
+            }
+        }
+        let tail = st
+            .ptys
+            .lock()
+            .unwrap()
+            .get("pty-probe")
+            .map(|h| h.tail())
+            .unwrap_or_default();
+        panic!("exit never detected after 10s; tail={tail:?}");
+    }
+
+    /// The install PTY's exit-0 → relaunch rail (upstream
+    /// pendingInstallRelaunch): an armed entry whose installer finishes
+    /// cleanly must re-run the SAME spawn in the same slot. `exit /b 0`
+    /// stands in for the installer, `more` (a stdin echo filter that stays
+    /// alive) for the agent CLI — deterministic, offline, seconds.
+    #[test]
+    fn install_exit_zero_relaunches_same_slot() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("install-relaunch");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+
+        // Arm exactly the way spawn_inner does once the installer PTY is up.
+        let (mut args, mut plan) = translate_spawn_request(&req(serde_json::json!({
+            "id": "pty-x", "cwd": home.display().to_string(),
+            "command": "more", "provider": "custom",
+            "hive": { "id": "agent-x", "name": "X", "role": "worker" }
+        })))
+        .unwrap();
+        args.no_auto_install = true;
+        plan.pty_id = Some("pty-x".into());
+        plan.auto_type_seed = true;
+        PENDING_INSTALLS
+            .lock()
+            .unwrap()
+            .insert("pty-x".into(), PendingInstall { args, plan });
+
+        // A PTY that exits 0 immediately — "the installer just finished".
+        // (`exit` under `cmd /c` quits cmd with code 0.)
+        let env: std::collections::HashMap<String, String> = Default::default();
+        let h = crate::pty::spawn(
+            "pty-x",
+            "exit 0",
+            &home.display().to_string(),
+            &env,
+            80,
+            24,
+            handle.clone(),
+        )
+        .unwrap();
+        st.ptys.lock().unwrap().insert("pty-x".into(), h);
+
+        // The waiter thread consumes the arm and re-spawns the agent's real
+        // command into the same slot. ConPTY's startup CSI 6 n blocks the
+        // child until a terminal answers — in the app that's xterm; here the
+        // test replies with a fixed position. (The relaunched `more` PTY asks
+        // too, so keep answering.)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut answered = 0usize;
+        loop {
+            {
+                let mut ptys = st.ptys.lock().unwrap();
+                if let Some(h) = ptys.get_mut("pty-x") {
+                    let cur = h.tail().matches("\u{1b}[6n").count();
+                    if cur < answered {
+                        answered = 0; // relaunch swapped in a fresh handle
+                    }
+                    for _ in answered..cur {
+                        let _ = h.write("\u{1b}[24;80R");
+                    }
+                    answered = cur;
+                }
+            }
+            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-x");
+            let (present, relaunched) = {
+                let ptys = st.ptys.lock().unwrap();
+                let cur = ptys.get("pty-x").map(|h| h.command.contains("more")).unwrap_or(false);
+                (ptys.contains_key("pty-x"), cur)
+            };
+            if !armed && relaunched {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "relaunch never happened (armed={armed} pty_present={present} relaunched={relaunched})"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let pty = { st.ptys.lock().unwrap().remove("pty-x") };
+        if let Some(mut h) = pty {
+            let _ = h.kill();
+        }
+    }
 }
