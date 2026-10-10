@@ -591,6 +591,7 @@ fn infer_agent_provider(command: &str, explicit: Option<&str>) -> String {
         "copilot",
         "cursor",
         "hermes",
+        "openclaw",
         "custom",
     ];
     if let Some(p) = explicit
@@ -625,6 +626,7 @@ fn infer_agent_provider(command: &str, explicit: Option<&str>) -> String {
         "copilot" => "copilot",
         "cursor-agent" | "agent" => "cursor",
         "hermes" => "hermes",
+        "openclaw" => "openclaw",
         // An unknown binary is a custom command; empty defaults to claude,
         // upstream's preset default.
         "" | "claude" => "claude",
@@ -3224,6 +3226,9 @@ fn wait_or_kill(mut child: std::process::Child, secs: u64) -> bool {
 /// binary downloads (launcher exe ~100MB, repo tarballs, fingerprint
 /// bundles) exceed it, so they stream through as_reader() instead.
 fn download_to_file(resp: &mut ureq::http::Response<ureq::Body>, dest: &Path) -> Result<u64, String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let mut out = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     std::io::copy(&mut resp.body_mut().as_reader(), &mut out).map_err(|e| e.to_string())
 }
@@ -3300,46 +3305,53 @@ pub fn shardx_setup(app: AppHandle) -> Value {
 /// fetch of the engine is theirs too).
 #[tauri::command(async)]
 pub fn shardx_download_launcher() -> Value {
-    let step = || -> Result<String, String> {
-        let rel: Value = shardx_http(30)
-            .get("https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest")
-            .header("User-Agent", "agent-office")
-            .call()
-            .map_err(|e| e.to_string())?
-            .body_mut()
-            .read_json()
-            .map_err(|e| e.to_string())?;
-        let want = if cfg!(windows) {
-            "portable-win-x64.exe"
-        } else if cfg!(target_os = "macos") {
-            "aarch64.dmg"
-        } else {
-            "amd64.AppImage"
-        };
-        let assets = rel["assets"].as_array().cloned().unwrap_or_default();
-        let url = assets
-            .iter()
-            .find(|a| a["name"].as_str().unwrap_or("").contains(want))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .ok_or("no asset for this OS")?
-            .to_string();
-        let name = url.rsplit('/').next().unwrap_or("shardx-launcher");
-        let dest = dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .unwrap_or_default()
-            .join(name);
-        let mut resp = shardx_http(300)
-            .get(&url)
-            .header("User-Agent", "agent-office")
-            .call()
-            .map_err(|e| e.to_string())?;
-        download_to_file(&mut resp, &dest)?;
-        Ok(dest.display().to_string())
-    };
-    match step() {
+    let dest_dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_default();
+    match shardx_download_launcher_at(
+        "https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest",
+        &dest_dir,
+    ) {
         Ok(p) => serde_json::json!({ "ok": true, "path": p }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+}
+
+/// The fetch itself, with the release-API URL and destination dir injected —
+/// a test points both at a localhost stub and a temp dir, no GitHub or
+/// ~/Downloads required.
+fn shardx_download_launcher_at(release_api: &str, dest_dir: &Path) -> Result<String, String> {
+    let rel: Value = shardx_http(30)
+        .get(release_api)
+        .header("User-Agent", "agent-office")
+        .call()
+        .map_err(|e| e.to_string())?
+        .body_mut()
+        .read_json()
+        .map_err(|e| e.to_string())?;
+    let want = if cfg!(windows) {
+        "portable-win-x64.exe"
+    } else if cfg!(target_os = "macos") {
+        "aarch64.dmg"
+    } else {
+        "amd64.AppImage"
+    };
+    let assets = rel["assets"].as_array().cloned().unwrap_or_default();
+    let url = assets
+        .iter()
+        .find(|a| a["name"].as_str().unwrap_or("").contains(want))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or("no asset for this OS")?
+        .to_string();
+    let name = url.rsplit('/').next().unwrap_or("shardx-launcher");
+    let dest = dest_dir.join(name);
+    let mut resp = shardx_http(300)
+        .get(&url)
+        .header("User-Agent", "agent-office")
+        .call()
+        .map_err(|e| e.to_string())?;
+    download_to_file(&mut resp, &dest)?;
+    Ok(dest.display().to_string())
 }
 
 // ── ShardX bootstrap: one consent → the whole chain ─────────────────────────
@@ -5118,6 +5130,8 @@ mod tests {
     fn fake_shardx_api(routes: Vec<(&'static str, Vec<u8>)>) -> FakeShardX {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let base_for_thread = base_url.clone();
         let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let h = hits.clone();
         std::thread::spawn(move || {
@@ -5152,10 +5166,24 @@ mod tests {
                 h.lock()
                     .unwrap()
                     .push((method, path.clone(), auth, body.to_string()));
+                // {BASE} in a served body self-references the stub's own
+                // loopback URL — lets fixtures embed absolute URLs (release
+                // asset browser_download_url) without knowing the port.
                 let payload = routes
                     .iter()
                     .find(|(p, _)| p == &path)
-                    .map(|(_, b)| b.clone())
+                    .map(|(_, b)| {
+                        // Only text bodies get the {BASE} substitution —
+                        // binary fixtures (zips, exes) must pass through
+                        // byte-exact.
+                        if b.windows(6).any(|w| w == b"{BASE}") {
+                            String::from_utf8_lossy(b)
+                                .replace("{BASE}", &base_for_thread)
+                                .into_bytes()
+                        } else {
+                            b.clone()
+                        }
+                    })
                     .unwrap_or_else(|| b"{}".to_vec());
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
@@ -5246,6 +5274,49 @@ mod tests {
         // The README.txt in the fixture was correctly ignored.
         assert!(!lib.join("README.txt").exists());
         let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// The full launcher-download arc against a stub release API: pick the
+    /// OS-correct asset, stream a >10 MiB body to disk (the exact case that
+    /// used to die on ureq's 10 MiB cap), and land the file under the
+    /// destination dir — fresh-download → usable.
+    #[test]
+    fn shardx_download_launcher_picks_os_asset_and_lands() {
+        let want = if cfg!(windows) {
+            "portable-win-x64.exe"
+        } else if cfg!(target_os = "macos") {
+            "aarch64.dmg"
+        } else {
+            "amd64.AppImage"
+        };
+        let big = vec![0x4Du8; 11 * 1024 * 1024 + 13];
+        let srv = fake_shardx_api(vec![
+            (
+                "/releases/latest",
+                serde_json::json!({
+                    "assets": [
+                        { "name": "ShardX-x86_64-unknown.AppImage", "browser_download_url": "{BASE}/wrong-1" },
+                        { "name": format!("ShardX-{want}"), "browser_download_url": "{BASE}/dl/asset" },
+                        { "name": "ShardX-aarch64.dmg", "browser_download_url": "{BASE}/wrong-2" }
+                    ]
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+            ("/dl/asset", big.clone()),
+        ]);
+        let home = tmp_home("shardx-dl");
+        let release_url = format!("{}/releases/latest", srv.base);
+        let p = shardx_download_launcher_at(&release_url, &home).unwrap();
+        let landed = PathBuf::from(&p);
+        assert!(landed.starts_with(&home), "lander landed outside dest: {p}");
+        assert!(landed.exists(), "launcher never landed: {p}");
+        assert_eq!(
+            std::fs::metadata(&landed).unwrap().len() as usize,
+            big.len(),
+            "streamed body truncated"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// ureq's buffered readers cap at 10 MiB by default — the launcher exe
@@ -5577,6 +5648,125 @@ mod tests {
             body.to_lowercase().contains("pineapple"),
             "no DeepSeek reply token in output: {body}"
         );
+    }
+
+    /// LIVE TEST — openclaw's ladder, same rails as hermes': missing binary
+    /// → install PTY (`install.ps1 -NoOnboard` so the onboard wizard can't
+    /// park) → exit-0 relaunch → `openclaw tui --local` in the same slot.
+    /// Downloads a private Node + the npm package — minutes; run manually:
+    ///   cargo test --lib openclaw_install_ladder_live -- --ignored --nocapture
+    #[test]
+    #[ignore = "live: downloads and installs the real openclaw CLI"]
+    fn openclaw_install_ladder_live() {
+        // user_shell_path() on Windows re-reads the registry PATH — the same
+        // live view spawn_inner resolves with, so a shim the installer JUST
+        // registered (its private portable-node prefix) is visible here.
+        let path_env = crate::pty::user_shell_path();
+        assert!(
+            crate::pty::resolve_program("openclaw", &path_env).is_none(),
+            "uninstall openclaw first — this test exercises the missing-CLI ladder"
+        );
+
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("openclaw-live");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-openclaw", "provider": "openclaw",
+                "command": "openclaw tui --local",
+                "cwd": home.display().to_string(),
+                "hive": { "id": "openclaw-live", "name": "OpenClaw", "role": "worker" }
+            })),
+        );
+        assert!(res.ok, "spawn failed: {:?}", res.error);
+        let st = state(&handle);
+        assert!(st.ptys.lock().unwrap().contains_key("pty-openclaw"));
+        assert!(
+            PENDING_INSTALLS.lock().unwrap().contains_key("pty-openclaw"),
+            "install PTY must be armed for relaunch"
+        );
+        eprintln!("[live] openclaw install PTY spawned + relaunch armed");
+        let answer_dsr = |st: &tauri::State<'_, AppState>| {
+            let mut ptys = st.ptys.lock().unwrap();
+            if let Some(h) = ptys.get_mut("pty-openclaw") {
+                if h.tail().trim_end().ends_with("\u{1b}[6n") {
+                    let _ = h.write("\u{1b}[24;80R");
+                }
+            }
+        };
+        // Node bootstrap + npm i -g — allow 20 minutes.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
+        loop {
+            answer_dsr(&st);
+            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-openclaw");
+            let resolved =
+                crate::pty::resolve_program("openclaw", &crate::pty::user_shell_path()).is_some();
+            if !armed && resolved {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                let tail = st
+                    .ptys
+                    .lock()
+                    .unwrap()
+                    .get("pty-openclaw")
+                    .map(|h| h.tail())
+                    .unwrap_or_default();
+                panic!("openclaw install never finished (armed={armed} resolved={resolved}); tail: {tail:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+        // Same-slot relaunch carries the real TUI command.
+        for _ in 0..60 {
+            answer_dsr(&st);
+            let done = st
+                .ptys
+                .lock()
+                .unwrap()
+                .get("pty-openclaw")
+                .map(|h| h.command.contains("openclaw"))
+                .unwrap_or(false);
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let cmd = st
+            .ptys
+            .lock()
+            .unwrap()
+            .get("pty-openclaw")
+            .map(|h| h.command.clone())
+            .unwrap_or_default();
+        assert!(cmd.contains("openclaw"), "relaunch should run openclaw: {cmd:?}");
+        eprintln!("[live] openclaw installed + relaunched: {cmd}");
+        let pty = { st.ptys.lock().unwrap().remove("pty-openclaw") };
+        if let Some(mut h) = pty {
+            let _ = h.kill();
+        }
+        // Binary sanity: version probe outside the PTY — resolve through the
+        // same live registry path the spawner uses; our own process PATH may
+        // still predate the installer's PATH write.
+        let exe = match crate::pty::resolve_program("openclaw", &crate::pty::user_shell_path())
+        {
+            Some(crate::pty::Resolved::Script(p) | crate::pty::Resolved::Exe(p)) => p,
+            _ => panic!("openclaw still not resolvable post-install"),
+        };
+        let out = std::process::Command::new("cmd")
+            .args(["/d", "/s", "/c"])
+            .arg(format!(
+                "{} --version",
+                crate::pty::cmd_quote(&exe.display().to_string())
+            ))
+            .output()
+            .expect("run openclaw --version");
+        eprintln!(
+            "[live] openclaw --version: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(out.status.success(), "openclaw --version failed");
     }
 
     /// A PTY whose child exits on its own must trip the waiter path (the

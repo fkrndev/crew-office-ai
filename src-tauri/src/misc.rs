@@ -307,9 +307,14 @@ pub fn provider_install(
             Some("curl -fsSL https://hermes-agent.nousresearch.com/install.ps1 -o %TEMP%\\hermes-install.ps1 & powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\\hermes-install.ps1 -NonInteractive"),
             None,
         ),
+        // OpenClaw — the installers end with an interactive `openclaw onboard`
+        // wizard unless told otherwise: `--no-onboard` / `-NoOnboard` skip it
+        // (an install-PTY spawn has nobody to answer). Same %TEMP%+& shape as
+        // hermes so cmd /c carries no quotes. The POSIX URL must be
+        // install.sh — bare /install serves the marketing page's HTML.
         "openclaw" => (
-            Some("curl -fsSL https://openclaw.ai/install | bash"),
-            Some("powershell -NoProfile -c irm https://openclaw.ai/install.ps1 ^| iex"),
+            Some("curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard"),
+            Some("curl -fsSL https://openclaw.ai/install.ps1 -o %TEMP%\\openclaw-install.ps1 & powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\\openclaw-install.ps1 -NoOnboard"),
             None,
         ),
         // No known installer: grok/kimi/antigravity(agy)/qwen/custom — these

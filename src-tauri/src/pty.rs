@@ -113,6 +113,18 @@ fn fallback_candidates(prog: &str) -> Vec<PathBuf> {
             r"{local}\hermes\hermes-agent\venv\Scripts\hermes.exe"
         )));
     }
+    // OpenClaw's install.ps1 lays down a PRIVATE portable Node + npm prefix
+    // under %LOCALAPPDATA%\OpenClaw\deps\portable-node — the openclaw.cmd shim
+    // lives there, not in %APPDATA%\npm, and the running app's PATH never sees
+    // the installer's registry update.
+    if prog.eq_ignore_ascii_case("openclaw") {
+        out.push(PathBuf::from(format!(
+            r"{local}\OpenClaw\deps\portable-node\openclaw.cmd"
+        )));
+        out.push(PathBuf::from(format!(
+            r"{local}\OpenClaw\deps\portable-node\openclaw"
+        )));
+    }
     out
 }
 
