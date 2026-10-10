@@ -3118,15 +3118,23 @@ fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
 /// endpoint can't blank the whole row.
 fn shardx_api_counts(store_dir: &std::path::Path) -> Option<(Option<usize>, Option<usize>, Option<usize>)> {
     let (api, auth, http) = shardx_api(store_dir)?;
-    let count = |path: &str| -> Option<usize> {
-        http.get(&format!("{api}{path}"))
-            .header("Authorization", &auth)
-            .call()
-            .ok()
-            .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
-            .and_then(|v| v.as_array().map(|a| a.len()))
-    };
-    Some((count("/fingerprints"), count("/profiles"), count("/running")))
+    Some((
+        shardx_count_path(&http, &api, &auth, "/fingerprints"),
+        shardx_count_path(&http, &api, &auth, "/profiles"),
+        shardx_count_path(&http, &api, &auth, "/running"),
+    ))
+}
+
+/// GET a list endpoint and report its array length — the single request the
+/// status counts share. None on any failure so one dead endpoint can't
+/// blank the row.
+fn shardx_count_path(http: &ureq::Agent, api: &str, auth: &str, path: &str) -> Option<usize> {
+    http.get(&format!("{api}{path}"))
+        .header("Authorization", auth)
+        .call()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+        .and_then(|v| v.as_array().map(|a| a.len()))
 }
 
 /// Store the launcher's Bearer token in the OS keychain — never config.json.
@@ -3390,9 +3398,22 @@ const SHARDX_FINGERPRINTS_URL: &str =
 fn shardx_seed_fingerprints(secrets_dir: &std::path::Path) -> Result<Value, String> {
     let (api, auth, http) =
         shardx_api(secrets_dir).ok_or("launcher not running or no token")?;
+    let lib = shardx_fingerprints_dir().ok_or("config dir unavailable")?;
+    shardx_seed_fingerprints_at(&http, &api, &auth, SHARDX_FINGERPRINTS_URL, &lib)
+}
+
+/// The seed pipeline with its edges injected — a test drives the same logic
+/// against a localhost stub serving a fixture zip, no CDN and no %APPDATA%.
+fn shardx_seed_fingerprints_at(
+    http: &ureq::Agent,
+    api: &str,
+    auth: &str,
+    bundle_url: &str,
+    lib_dir: &Path,
+) -> Result<Value, String> {
     let mut existing = http
         .get(&format!("{api}/fingerprints"))
-        .header("Authorization", &auth)
+        .header("Authorization", auth)
         .call()
         .map_err(|e| format!("fingerprints list failed: {e}"))?;
     let count = existing
@@ -3409,7 +3430,7 @@ fn shardx_seed_fingerprints(secrets_dir: &std::path::Path) -> Result<Value, Stri
     let out = std::env::temp_dir().join(format!("shardx-fp-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<usize, String> {
         let mut resp = shardx_http(300)
-            .get(SHARDX_FINGERPRINTS_URL)
+            .get(bundle_url)
             .call()
             .map_err(|e| format!("bundle download failed: {e}"))?;
         let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
@@ -3438,8 +3459,7 @@ fn shardx_seed_fingerprints(secrets_dir: &std::path::Path) -> Result<Value, Stri
         if !extracted {
             return Err("zip extract failed".into());
         }
-        let dir = shardx_fingerprints_dir().ok_or("config dir unavailable")?;
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(lib_dir).map_err(|e| e.to_string())?;
         // Bundle wraps files in shardx-fingerprints/ when present, else flat.
         let walk = out.join("shardx-fingerprints");
         let walk = if walk.is_dir() { walk } else { out.clone() };
@@ -3447,7 +3467,7 @@ fn shardx_seed_fingerprints(secrets_dir: &std::path::Path) -> Result<Value, Stri
         for ent in std::fs::read_dir(&walk).map_err(|e| e.to_string())?.flatten() {
             let p = ent.path();
             if p.extension().and_then(|s| s.to_str()) == Some("json") {
-                std::fs::copy(&p, dir.join(p.file_name().unwrap()))
+                std::fs::copy(&p, lib_dir.join(p.file_name().unwrap()))
                     .map_err(|e| e.to_string())?;
                 seeded += 1;
             }
@@ -3878,14 +3898,26 @@ pub fn shardx_set_profile_proxy(
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
     };
-    match http
-        .patch(&format!("{api}/profiles/{profile_id}"))
-        .header("Authorization", &auth)
-        .send_json(serde_json::json!({ "proxy_id": proxy_id }))
-    {
-        Ok(_) => serde_json::json!({ "ok": true }),
-        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    match shardx_patch_profile_proxy(&http, &api, &auth, &profile_id, &proxy_id) {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+}
+
+/// PATCH /profiles/{id} with the proxy binding — `""` unbinds. Extracted so
+/// the wire shape (field name, method, path) is testable against a stub.
+fn shardx_patch_profile_proxy(
+    http: &ureq::Agent,
+    api: &str,
+    auth: &str,
+    profile_id: &str,
+    proxy_id: &str,
+) -> Result<(), String> {
+    http.patch(&format!("{api}/profiles/{profile_id}"))
+        .header("Authorization", auth)
+        .send_json(serde_json::json!({ "proxy_id": proxy_id }))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Profile name → owning agent label: explicit `extra.shardxProfile` bindings
@@ -4897,6 +4929,207 @@ mod tests {
         assert!(v["steps"]["fingerprints"].is_null());
         assert_eq!(v["ok"], false);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ── Local stub launcher API ─────────────────────────────────────────
+    /// Serves canned bodies per path on 127.0.0.1:<ephemeral> and records
+    /// (method, path, authorization, body) of every request — enough to drive
+    /// the real ureq helpers end-to-end without a launcher or the CDN.
+    struct FakeShardX {
+        base: String,
+        hits: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+    }
+
+    fn http_request_complete(buf: &[u8]) -> bool {
+        let Some(pos) = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+        else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&buf[..pos]);
+        let len: usize = head
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.trim().eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        buf.len() >= pos + 4 + len
+    }
+
+    fn fake_shardx_api(routes: Vec<(&'static str, Vec<u8>)>) -> FakeShardX {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 8192];
+                loop {
+                    match s.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&tmp[..n]);
+                            if http_request_complete(&buf) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+                let mut req = head.lines();
+                let mut parts = req.next().unwrap_or("").split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let auth = head
+                    .lines()
+                    .find(|l| l.to_lowercase().starts_with("authorization"))
+                    .unwrap_or("")
+                    .to_string();
+                h.lock()
+                    .unwrap()
+                    .push((method, path.clone(), auth, body.to_string()));
+                let payload = routes
+                    .iter()
+                    .find(|(p, _)| p == &path)
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or_else(|| b"{}".to_vec());
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = s.write_all(resp.as_bytes());
+                let _ = s.write_all(&payload);
+            }
+        });
+        FakeShardX {
+            base: format!("http://127.0.0.1:{port}"),
+            hits,
+        }
+    }
+
+    /// The fixture bundle: shardx-fingerprints/{fp-a,fp-b}.json + a README
+    /// the copier must skip — built once by hand with Compress-Archive.
+    const FP_FIXTURE: &[u8] = include_bytes!("fixtures/shardx-fp-test.zip");
+
+    /// Status counts read real array lengths; an unrouted path returns a
+    /// 404-shaped body → None, not a panic.
+    #[test]
+    fn shardx_counts_read_list_lengths() {
+        let srv = fake_shardx_api(vec![
+            ("/fingerprints", br#"[{"a":1},{"a":2},{"a":3}]"#.to_vec()),
+            ("/profiles", b"[{}]".to_vec()),
+            ("/running", b"[]".to_vec()),
+        ]);
+        let http = shardx_http(5);
+        assert_eq!(
+            shardx_count_path(&http, &srv.base, "Bearer t", "/fingerprints"),
+            Some(3)
+        );
+        assert_eq!(
+            shardx_count_path(&http, &srv.base, "Bearer t", "/profiles"),
+            Some(1)
+        );
+        assert_eq!(
+            shardx_count_path(&http, &srv.base, "Bearer t", "/running"),
+            Some(0)
+        );
+        // Missing route → stub 200s {} (not an array) → None.
+        assert_eq!(
+            shardx_count_path(&http, &srv.base, "Bearer t", "/nope"),
+            None
+        );
+        // The Bearer header actually went out on the wire.
+        let hits = srv.hits.lock().unwrap();
+        assert!(hits.iter().all(|(_, _, auth, _)| auth.contains("Bearer t")));
+    }
+
+    /// A library that already has entries is reported, never re-downloaded.
+    #[test]
+    fn shardx_seed_reports_already_without_downloading() {
+        let srv = fake_shardx_api(vec![
+            ("/fingerprints", b"[{},{}]".to_vec()),
+            ("/ShardX-Fingerprints.zip", FP_FIXTURE.to_vec()),
+        ]);
+        let http = shardx_http(5);
+        let lib = tmp_home("shardx-fp-already");
+        let v = shardx_seed_fingerprints_at(&http, &srv.base, "Bearer t", "unused://url", &lib)
+            .unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["already"], 2);
+        // One request: the emptiness probe. The zip route was never touched.
+        let hits = srv.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "/fingerprints");
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// Empty library → download → extract → jsons land in the library dir,
+    /// the wrapper dir and non-json files handled correctly.
+    #[test]
+    fn shardx_seed_populates_empty_library() {
+        let srv = fake_shardx_api(vec![
+            ("/fingerprints", b"[]".to_vec()),
+            ("/fp.zip", FP_FIXTURE.to_vec()),
+        ]);
+        let http = shardx_http(5);
+        let lib = tmp_home("shardx-fp-seed");
+        let url = format!("{}/fp.zip", srv.base);
+        let v = shardx_seed_fingerprints_at(&http, &srv.base, "Bearer t", &url, &lib).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["seeded"], 2);
+        assert!(lib.join("fp-a.json").exists());
+        assert!(lib.join("fp-b.json").exists());
+        // The README.txt in the fixture was correctly ignored.
+        assert!(!lib.join("README.txt").exists());
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// A DNS-hijack block page arrives with HTTP 200 but HTML bytes — the
+    /// PK magic check must reject it instead of writing garbage into the
+    /// library. This is the exact failure the launcher's own seed hit.
+    #[test]
+    fn shardx_seed_rejects_html_block_page() {
+        let srv = fake_shardx_api(vec![
+            ("/fingerprints", b"[]".to_vec()),
+            ("/fp.zip", b"<html><title>Internet Positif</title></html>".to_vec()),
+        ]);
+        let http = shardx_http(5);
+        let lib = tmp_home("shardx-fp-block");
+        let url = format!("{}/fp.zip", srv.base);
+        let e = shardx_seed_fingerprints_at(&http, &srv.base, "Bearer t", &url, &lib)
+            .unwrap_err();
+        assert!(e.contains("not a zip"), "got: {e}");
+        // Nothing landed in the library.
+        assert!(!lib.join("fp-a.json").exists());
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// The proxy bind goes out as PATCH /profiles/{id} with {"proxy_id":..},
+    /// and "" unbinds — the wire contract the launcher documents.
+    #[test]
+    fn shardx_proxy_bind_wire_shape() {
+        let srv = fake_shardx_api(vec![("/profiles/p1", b"{}".to_vec())]);
+        let http = shardx_http(5);
+        shardx_patch_profile_proxy(&http, &srv.base, "Bearer t", "p1", "px-9").unwrap();
+        shardx_patch_profile_proxy(&http, &srv.base, "Bearer t", "p1", "").unwrap();
+        let hits = srv.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "PATCH");
+        assert_eq!(hits[0].1, "/profiles/p1");
+        assert_eq!(
+            serde_json::from_str::<Value>(&hits[0].3).unwrap()["proxy_id"],
+            "px-9"
+        );
+        assert_eq!(serde_json::from_str::<Value>(&hits[1].3).unwrap()["proxy_id"], "");
     }
 
     /// The real download chain — the same tarball + npm install the consent
