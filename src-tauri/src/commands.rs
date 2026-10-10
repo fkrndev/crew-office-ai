@@ -2916,12 +2916,22 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
 /// observer tracks worker ACKs and the verified COMPLETE.
 #[tauri::command(async)]
 pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
-    let st = state(&app);
+    closing_time_start_core(&app)
+}
+
+/// Runtime-generic core — the command wrapper is Wry-pinned but tests drive
+/// this against mock_app().
+pub(crate) fn closing_time_start_core<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<usize, String> {
+    let st = state(app);
     // closing-time steers AGENT ids — translate the live PTY map through the
     // pty→agent mapping (pty keys carry the renderer's `pty-` prefix).
     let live: std::collections::HashSet<String> = st.live_agent_ids();
     let mut control = st.control.lock().unwrap();
     let n = st.closing.start(&st.hive, &mut control, &live)?;
+    drop(control);
+    nudge_idle_god(&st);
     emit_closing(&app, "started");
     Ok(n)
 }
@@ -2945,7 +2955,37 @@ pub fn closing_time_status(app: AppHandle) -> Result<serde_json::Value, String> 
 }
 
 /// Emit the protocol state to the floor UI (upstream 'app:closingTime').
-pub(crate) fn emit_closing(app: &AppHandle, phase: &str) {
+/// The watchdog deliberately never wakes god (workerwake.rs explain() →
+/// "god"), and the closing-time mail + steer only land at the next hook
+/// boundary — so an idle orchestrator would sit on the shutdown brief until
+/// the 6-minute timeout. Same fix the mission nudge uses: type into the PTY
+/// when god is confirmed idle (typing into a busy terminal is harmful).
+/// Returns whether a write went out — the observable half for tests.
+fn nudge_idle_god(st: &AppState) -> bool {
+    let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
+    let idle = st
+        .hive
+        .registry()
+        .iter()
+        .any(|a| a.id == god_id && a.status == "idle");
+    if !idle {
+        return false;
+    }
+    if let Some(pty_id) = st.pty_for_agent(&god_id) {
+        let mut ptys = st.ptys.lock().unwrap();
+        if let Some(h) = ptys.get_mut(&pty_id) {
+            return h
+                .write(
+                    "CLOSING TIME — check your inbox for the shutdown brief and run the protocol now.\r",
+                )
+                .is_ok();
+        }
+    }
+    false
+}
+
+/// Emit the protocol state to the floor UI (upstream 'app:closingTime').
+pub(crate) fn emit_closing<R: tauri::Runtime>(app: &AppHandle<R>, phase: &str) {
     let st = state(app);
     let (acked, total) = st.closing.progress();
     let _ = app.emit(
@@ -5254,6 +5294,50 @@ mod tests {
         assert_eq!(hits[0].1, "/automation/projects/proj-9/run");
         assert_eq!(hits[1].1, "/automation/projects/proj-9/stop");
         assert!(hits.iter().all(|(_, _, auth, _)| auth.contains("Bearer t")));
+    }
+
+    /// An idle orchestrator must get the closing-time nudge — workerwake
+    /// deliberately never wakes god (explain() → "god"), and the mail+steer
+    /// only land at the next hook boundary, so without this poke an idle god
+    /// sits on the shutdown brief until the 6-minute timeout. The fix types
+    /// the wake text into god's PTY when the registry marks it idle — cmd
+    /// echoes input back, so the tail buffer catches the proof.
+    #[test]
+    fn closing_time_nudges_idle_god() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("closing-god");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        // cmd stays alive and accepts writes — enough to prove the nudge
+        // path reaches the wire (conpty echo isn't reliable enough to assert
+        // on).
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-god", "cwd": home.display().to_string(),
+                "command": "cmd",
+                "hive": { "id": "god", "name": "God", "role": "orchestrator", "isGod": true }
+            })),
+        );
+        assert!(res.ok, "spawn failed: {:?}", res.error);
+        let st = state(&handle);
+        st.hive.set_status("god", "idle").unwrap();
+        // The full entry path: protocol starts (0 workers) without deadlocking
+        // on the control→pty lock order.
+        assert_eq!(closing_time_start_core(&handle).unwrap(), 0);
+        // Idle god + live PTY → the write is attempted and succeeds.
+        assert!(nudge_idle_god(&st));
+        // Busy god → never type into a working terminal.
+        st.hive.set_status("god", "busy").unwrap();
+        assert!(!nudge_idle_god(&st));
+        // Idle again but PTY gone → nothing to write to.
+        st.hive.set_status("god", "idle").unwrap();
+        let pty = { st.ptys.lock().unwrap().remove("pty-god") };
+        st.unmap_pty("pty-god");
+        assert!(!nudge_idle_god(&st));
+        if let Some(mut h) = pty {
+            let _ = h.kill();
+        }
     }
 
     /// The scheduler's shardx dispatch on a state with no usable token —
