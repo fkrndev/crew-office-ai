@@ -169,6 +169,9 @@ interface ShardXStatus {
   launcherRunning?: boolean;
   mcpInstalled?: boolean;
   tokenSet?: boolean;
+  fingerprintCount?: number | null;
+  profileCount?: number | null;
+  runningCount?: number | null;
   api?: string;
   mcpDir?: string;
 }
@@ -177,9 +180,19 @@ interface ShardXProfileInfo {
   id?: string;
   name?: string;
   folder?: string;
+  proxy_id?: string | null;
   running?: boolean;
   owner?: string;
   auto?: boolean;
+}
+
+interface ShardXProxyInfo {
+  id?: string;
+  name?: string;
+  kind?: string;
+  host?: string;
+  port?: number;
+  country?: string;
 }
 
 const shardxBtnStyle: React.CSSProperties = {
@@ -204,6 +217,7 @@ function ShardXSetup() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ShardXStatus | null>(null);
   const [profiles, setProfiles] = useState<ShardXProfileInfo[] | null>(null);
+  const [proxies, setProxies] = useState<ShardXProxyInfo[]>([]);
   const [token, setToken] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -221,6 +235,14 @@ function ShardXSetup() {
       setProfiles(r?.ok ? (r.profiles ?? []) : null);
     } catch {
       setProfiles(null);
+    }
+    try {
+      const px = (await window.cth.shardxProxies()) as
+        | { ok?: boolean; proxies?: ShardXProxyInfo[] }
+        | undefined;
+      setProxies(px?.ok ? (px.proxies ?? []) : []);
+    } catch {
+      setProxies([]);
     }
     // Prefill the token field with a freshly-minted JWT when the launcher
     // secret exists — the operator may want it copyable for their own tools.
@@ -299,11 +321,34 @@ function ShardXSetup() {
     }
   };
 
+  const setProxy = async (profileId: string | undefined, proxyId: string) => {
+    if (!profileId || busy) return;
+    try {
+      const r = (await window.cth.shardxSetProfileProxy(profileId, proxyId)) as
+        | { ok?: boolean; error?: string }
+        | undefined;
+      if (r?.ok) {
+        setProfiles((prev) =>
+          prev?.map((p) => (p.id === profileId ? { ...p, proxy_id: proxyId || null } : p)) ?? prev
+        );
+      } else {
+        flash(r?.error ?? t('mcpDefaults.shardx.failed'));
+        void refresh();
+      }
+    } catch {
+      flash(t('mcpDefaults.shardx.failed'));
+      void refresh();
+    }
+  };
+
   const gates: Array<[string, boolean]> = [
     [t('mcpDefaults.shardx.gateLauncher'), !!status?.launcherRunning],
     [t('mcpDefaults.shardx.gateBridge'), !!status?.mcpInstalled],
     [t('mcpDefaults.shardx.gateToken'), !!status?.tokenSet]
   ];
+
+  const proxyLabel = (px: ShardXProxyInfo) =>
+    [px.name || `${px.host ?? ''}:${px.port ?? ''}`, px.country].filter(Boolean).join(' ');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -335,6 +380,22 @@ function ShardXSetup() {
             </span>
           ))}
         </div>
+
+        {/* Live counts — an empty fingerprint library blocks every
+            create_profile, and it used to fail silently inside the
+            launcher. Surface it here so "set up" actually means usable. */}
+        {(status?.fingerprintCount != null || status?.profileCount != null || status?.runningCount != null) && (
+          <span style={{ fontSize: 11, lineHeight: '14px', color: 'var(--cth-ink-500)' }}>
+            {t('mcpDefaults.shardx.counts', {
+              fingerprints: status.fingerprintCount ?? '—',
+              profiles: status.profileCount ?? '—',
+              running: status.runningCount ?? '—'
+            })}
+            {status.fingerprintCount === 0 && (
+              <span style={{ color: '#6E1423' }}> — {t('mcpDefaults.shardx.fingerprintsEmpty')}</span>
+            )}
+          </span>
+        )}
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button
@@ -413,6 +474,28 @@ function ShardXSetup() {
                 </span>
                 {p.auto && (
                   <span style={{ fontSize: 10, color: 'var(--cth-ink-400, var(--cth-ink-500))' }}>auto</span>
+                )}
+                {p.id && (
+                  <select
+                    value={p.proxy_id ?? ''}
+                    disabled={busy}
+                    onChange={(e) => void setProxy(p.id, e.target.value)}
+                    title={t('mcpDefaults.shardx.proxy')}
+                    style={{
+                      maxWidth: 140, padding: '1px 4px',
+                      background: 'var(--cth-cream-100, var(--cth-paper-100))',
+                      border: 'none',
+                      boxShadow: 'inset 0 0 0 1px var(--cth-ink-400, var(--cth-ink-500))',
+                      fontFamily: 'var(--cth-font-mono)',
+                      fontSize: 10,
+                      color: 'var(--cth-ink-700)'
+                    }}
+                  >
+                    <option value="">{t('mcpDefaults.shardx.noProxy')}</option>
+                    {proxies.map((px) => (
+                      <option key={px.id} value={px.id}>{proxyLabel(px)}</option>
+                    ))}
+                  </select>
                 )}
                 <span style={{ flex: 1 }} />
                 {p.owner && (

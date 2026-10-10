@@ -892,7 +892,11 @@
       "done": "selesai",
       "failed": "gagal",
       "working": "sedang jalan… (download + npm install bisa beberapa menit)",
-      "savedTo": "tersimpan di {{path}}"
+      "savedTo": "tersimpan di {{path}}",
+      "counts": "fingerprint {{fingerprints}} · profil {{profiles}} · berjalan {{running}}",
+      "fingerprintsEmpty": "library fingerprint kosong — profil tidak bisa dibuat sampai bundle ter-seed (Setup otomatis memperbaikinya)",
+      "proxy": "Proxy",
+      "noProxy": "tanpa proxy"
     }
   },
   "devicePicker": {

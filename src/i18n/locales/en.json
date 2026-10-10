@@ -892,7 +892,11 @@
       "done": "done",
       "failed": "failed",
       "working": "working… (download + npm install can take a few minutes)",
-      "savedTo": "saved to {{path}}"
+      "savedTo": "saved to {{path}}",
+      "counts": "fingerprints {{fingerprints}} · profiles {{profiles}} · running {{running}}",
+      "fingerprintsEmpty": "fingerprint library empty — profiles can't be created until the bundle seeds (Auto setup fixes it)",
+      "proxy": "Proxy",
+      "noProxy": "no proxy"
     }
   },
   "devicePicker": {

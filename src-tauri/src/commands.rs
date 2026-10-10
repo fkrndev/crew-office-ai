@@ -3094,13 +3094,39 @@ fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
     let token_set =
         crate::misc::secret_get_persist(SHARDX_TOKEN_KEY, st.config_store.dir())
             .is_some_and(|t| !t.is_empty());
+    // Live counts so the card surfaces "library empty" / sessions without
+    // anyone opening the launcher GUI. None when the API is unreachable.
+    let (fingerprints, profiles, running) = if launcher && token_set {
+        shardx_api_counts(st.config_store.dir()).unwrap_or_default()
+    } else {
+        (None, None, None)
+    };
     serde_json::json!({
         "launcherRunning": launcher,
         "mcpInstalled": mcp_installed,
         "tokenSet": token_set,
+        "fingerprintCount": fingerprints,
+        "profileCount": profiles,
+        "runningCount": running,
         "api": SHARDX_API_DEFAULT,
         "mcpDir": mcp_dir.display().to_string(),
     })
+}
+
+/// (fingerprints, profiles, running) live counts — the health signal the
+/// empty-library bug hid. Each is independently optional so one bad
+/// endpoint can't blank the whole row.
+fn shardx_api_counts(store_dir: &std::path::Path) -> Option<(Option<usize>, Option<usize>, Option<usize>)> {
+    let (api, auth, http) = shardx_api(store_dir)?;
+    let count = |path: &str| -> Option<usize> {
+        http.get(&format!("{api}{path}"))
+            .header("Authorization", &auth)
+            .call()
+            .ok()
+            .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+            .and_then(|v| v.as_array().map(|a| a.len()))
+    };
+    Some((count("/fingerprints"), count("/profiles"), count("/running")))
 }
 
 /// Store the launcher's Bearer token in the OS keychain — never config.json.
@@ -3344,10 +3370,104 @@ pub fn shardx_token_preview(app: AppHandle) -> Value {
     }
 }
 
+/// `<config>/shardx-launcher/fingerprints` — the launcher's library dir.
+/// Each .json is one FingerprintConfig; `GET /fingerprints` lists them.
+fn shardx_fingerprints_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("shardx-launcher").join("fingerprints"))
+}
+
+/// CDN host for the fingerprint bundle — same PUB_BASE the launcher's
+/// runtime.rs downloads `ShardX-Fingerprints.zip` from on first run.
+const SHARDX_FINGERPRINTS_URL: &str =
+    "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev/ShardX-Fingerprints.zip";
+
+/// Seed the fingerprint library when empty — mirrors the launcher's own
+/// install_fingerprints(): download the bundle, extract, copy every .json
+/// (top dir `shardx-fingerprints` or flat) into the library dir. Returns a
+/// step json: {ok, already|seeded}. Skips the download when the library
+/// already has entries. Windows' bsdtar extracts zips; elsewhere falls
+/// back to `unzip`.
+fn shardx_seed_fingerprints(secrets_dir: &std::path::Path) -> Result<Value, String> {
+    let (api, auth, http) =
+        shardx_api(secrets_dir).ok_or("launcher not running or no token")?;
+    let mut existing = http
+        .get(&format!("{api}/fingerprints"))
+        .header("Authorization", &auth)
+        .call()
+        .map_err(|e| format!("fingerprints list failed: {e}"))?;
+    let count = existing
+        .body_mut()
+        .read_json::<Value>()
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    if count > 0 {
+        return Ok(serde_json::json!({ "ok": true, "already": count }));
+    }
+
+    let tmp = std::env::temp_dir().join(format!("shardx-fp-{}.zip", uuid::Uuid::new_v4()));
+    let out = std::env::temp_dir().join(format!("shardx-fp-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<usize, String> {
+        let mut resp = shardx_http(300)
+            .get(SHARDX_FINGERPRINTS_URL)
+            .call()
+            .map_err(|e| format!("bundle download failed: {e}"))?;
+        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        // A DNS-hijack / captive portal serves an HTML block page with a 200.
+        if !body.starts_with(b"PK") {
+            return Err("bundle download was not a zip (blocked by network?)".into());
+        }
+        std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        let extracted = std::process::Command::new("tar")
+            .arg("-xf")
+            .arg(&tmp)
+            .arg("-C")
+            .arg(&out)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+            || std::process::Command::new("unzip")
+                .arg("-qo")
+                .arg(&tmp)
+                .arg("-d")
+                .arg(&out)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if !extracted {
+            return Err("zip extract failed".into());
+        }
+        let dir = shardx_fingerprints_dir().ok_or("config dir unavailable")?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Bundle wraps files in shardx-fingerprints/ when present, else flat.
+        let walk = out.join("shardx-fingerprints");
+        let walk = if walk.is_dir() { walk } else { out.clone() };
+        let mut seeded = 0usize;
+        for ent in std::fs::read_dir(&walk).map_err(|e| e.to_string())?.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                std::fs::copy(&p, dir.join(p.file_name().unwrap()))
+                    .map_err(|e| e.to_string())?;
+                seeded += 1;
+            }
+        }
+        if seeded == 0 {
+            return Err("bundle had no fingerprint json files".into());
+        }
+        Ok(seeded)
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_dir_all(&out);
+    result.map(|n| serde_json::json!({ "ok": true, "seeded": n }))
+}
+
 /// Read the launcher's secret, mint the long-lived token, keychain it.
+/// `settings_path` is injected (bootstrap_impl passes the real one) so the
+/// "settings missing" branch is exercised without touching %APPDATA%.
 /// Returns the configured api_port so callers can sanity-check SHARDX_API.
-fn shardx_auto_token(store_dir: &std::path::Path) -> Result<u16, String> {
-    let path = shardx_launcher_settings_path().ok_or_else(|| {
+fn shardx_auto_token(store_dir: &std::path::Path, settings_path: Option<&Path>) -> Result<u16, String> {
+    let path = settings_path.ok_or_else(|| {
         "launcher settings.json not found — run the ShardX launcher once".to_string()
     })?;
     let token = shardx_token_from_settings(&path)?;
@@ -3427,11 +3547,27 @@ fn shardx_find_launcher_exe() -> Option<PathBuf> {
 /// `try_launch` exists so tests never spawn a real exe. Blocking (network +
 /// npm), same posture as shardx_setup.
 fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Value {
+    shardx_bootstrap_impl(
+        hive_root,
+        try_launch,
+        shardx_launcher_secret()
+            .map(|(_, p)| p)
+            .unwrap_or(SHARDX_API_PORT),
+        shardx_launcher_settings_path(),
+    )
+}
+
+/// The machine-touching bits (which port to probe, which settings.json to
+/// mint from) are parameters so tests point at a dead port + missing file —
+/// a real running launcher must not flip a "gate reporting" test green.
+fn shardx_bootstrap_impl(
+    hive_root: &std::path::Path,
+    try_launch: bool,
+    port: u16,
+    settings_path: Option<PathBuf>,
+) -> Value {
     let mut steps = serde_json::json!({});
 
-    let port = shardx_launcher_secret()
-        .map(|(_, p)| p)
-        .unwrap_or(SHARDX_API_PORT);
     let mut launcher_up = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
     if !launcher_up && try_launch {
         if let Some(exe) = shardx_find_launcher_exe() {
@@ -3451,7 +3587,7 @@ fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Valu
 
     // Secrets live in harness home (config.json's dir) — hive_root.parent().
     let secrets_dir = hive_root.parent().unwrap_or(hive_root).to_path_buf();
-    match shardx_auto_token(&secrets_dir) {
+    match shardx_auto_token(&secrets_dir, settings_path.as_deref()) {
         Ok(api_port) => steps["token"] = serde_json::json!({ "ok": true, "apiPort": api_port }),
         Err(e) => steps["token"] = serde_json::json!({ "ok": false, "error": e }),
     }
@@ -3466,8 +3602,21 @@ fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Valu
         }
     }
 
-    let ok = ["launcher", "token", "bridge"]
+    // Empty fingerprint library blocks ALL profile creation — the launcher
+    // seeds it from its CDN on first run and fails silently when the CDN is
+    // unreachable (ISP DNS hijack returns a block page, not an error).
+    // Reproduce install_fingerprints() here so setup actually works.
+    if launcher_up && steps["token"]["ok"].as_bool() == Some(true) {
+        steps["fingerprints"] = match shardx_seed_fingerprints(&secrets_dir) {
+            Ok(v) => v,
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+    }
+
+    let ok = ["launcher", "token", "bridge", "fingerprints"]
         .iter()
+        // A skipped seed (launcher down / no token) isn't a bootstrap failure.
+        .filter(|k| steps[*k].is_object())
         .all(|k| steps[k]["ok"].as_bool().unwrap_or(false));
     serde_json::json!({ "ok": ok, "steps": steps })
 }
@@ -3684,6 +3833,7 @@ pub fn shardx_profiles(app: AppHandle) -> Value {
                 "id": p["id"],
                 "name": name,
                 "folder": p["folder"],
+                "proxy_id": p["proxy_id"],
                 "running": running.contains(p["id"].as_str().unwrap_or("")),
                 "owner": owners.get(name),
                 "auto": name.starts_with("office-")
@@ -3692,6 +3842,50 @@ pub fn shardx_profiles(app: AppHandle) -> Value {
         })
         .collect();
     serde_json::json!({ "ok": true, "profiles": profiles })
+}
+
+/// Stored proxies for the renderer's per-profile dropdown. Credentials are
+/// never returned by the launcher, so all we echo is id/name/kind/endpoint.
+#[tauri::command(async)]
+pub fn shardx_proxies(app: AppHandle) -> Value {
+    let st = state(&app);
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
+        return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
+    };
+    match http
+        .get(&format!("{api}/proxies"))
+        .header("Authorization", &auth)
+        .call()
+    {
+        Ok(mut r) => match r.body_mut().read_json::<Value>() {
+            Ok(list) => serde_json::json!({ "ok": true, "proxies": list }),
+            Err(_) => serde_json::json!({ "ok": false, "error": "unexpected proxies payload" }),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+/// Bind a stored proxy to a profile ("" unbinds) — PATCH /profiles/{id}.
+/// The launcher's launcher-side full-test + QUIC/WebRTC gating run on the
+/// bind, so agents inherit a leak-checked route without doing anything.
+#[tauri::command(async)]
+pub fn shardx_set_profile_proxy(
+    app: AppHandle,
+    profile_id: String,
+    proxy_id: String,
+) -> Value {
+    let st = state(&app);
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
+        return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
+    };
+    match http
+        .patch(&format!("{api}/profiles/{profile_id}"))
+        .header("Authorization", &auth)
+        .send_json(serde_json::json!({ "proxy_id": proxy_id }))
+    {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
 }
 
 /// Profile name → owning agent label: explicit `extra.shardxProfile` bindings
@@ -3894,6 +4088,18 @@ fn shardx_workspace_note(
          - Phone profiles: human_click taps automatically, human_move refuses\n  \
          (no cursor on glass); use touch_* for swipes/drags.\n\
          - Use browser_aria_snapshot to SEE a page before guessing selectors.\n\n\
+         ## Reading & capture\n\n\
+         - browser_aria_snapshot is the DEFAULT page reader — the compact\n  \
+         accessibility tree costs far fewer tokens than browser_content/HTML.\n\
+         - browser_pdf saves the page as PDF — invoices, receipts, reports.\n\
+         - browser_capture_start/stop logs every finished network request —\n  \
+         use it to learn what a page calls before guessing an endpoint.\n\
+         - browser_block_resources skips images/fonts/media — scraping gets\n  \
+         faster and cheaper; re-enable before visual verification.\n\
+         - browser_mock / browser_intercept stub or rewrite requests in\n  \
+         flight — testing and offline replays, not live deception of users.\n\
+         - browser_wait_for_download catches file downloads; browser_dialog\n  \
+         answers JS alert/confirm/prompt.\n\n\
          ## Guardrails\n\n\
          - NEVER export cookies/session data (export_cookies) — sessions live in\n  \
          the profile and stay there.\n\
@@ -4477,6 +4683,13 @@ mod tests {
         assert!(n.contains("Downloads"));
         assert!(n.contains("LOCALAPPDATA"));
         assert!(n.contains("40325"));
+        // The reading/capture toolbox the bridge exposes — the note is what
+        // teaches agents aria-first page reads and the capture/pdf helpers.
+        assert!(n.contains("browser_aria_snapshot"));
+        assert!(n.contains("browser_pdf"));
+        assert!(n.contains("browser_capture_start"));
+        assert!(n.contains("browser_block_resources"));
+        assert!(n.contains("browser_mock"));
         let pending = shardx_workspace_note("office-toko-a", None, root);
         assert!(pending.contains("create_profile"));
     }
@@ -4674,10 +4887,14 @@ mod tests {
         let dest = home.join("mcp-servers").join("shardx");
         std::fs::create_dir_all(dest.join("node_modules")).unwrap();
         std::fs::write(dest.join("index.js"), "// stub").unwrap();
-        let v = shardx_bootstrap_inner(&home, false);
+        // Dead port + no settings file = deterministic "nothing live" —
+        // independent of whether a real launcher is running on this box.
+        let v = shardx_bootstrap_impl(&home, false, 1, None);
         assert_eq!(v["steps"]["bridge"]["ok"], true);
         assert_eq!(v["steps"]["launcher"]["ok"], false);
-        assert!(v["steps"]["token"]["ok"].is_boolean());
+        assert_eq!(v["steps"]["token"]["ok"], false);
+        // Launcher down → fingerprint seeding never ran (it's a live-API step).
+        assert!(v["steps"]["fingerprints"].is_null());
         assert_eq!(v["ok"], false);
         let _ = std::fs::remove_dir_all(&home);
     }

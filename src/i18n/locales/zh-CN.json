@@ -890,7 +890,11 @@
       "done": "完成",
       "failed": "失败",
       "working": "运行中…（下载 + npm install 可能需要几分钟）",
-      "savedTo": "已保存到 {{path}}"
+      "savedTo": "已保存到 {{path}}",
+      "counts": "指纹 {{fingerprints}} · 配置文件 {{profiles}} · 运行中 {{running}}",
+      "fingerprintsEmpty": "指纹库为空 — 在包下载完成前无法创建配置文件（自动安装可修复）",
+      "proxy": "代理",
+      "noProxy": "无代理"
     }
   },
   "devicePicker": {

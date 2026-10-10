@@ -890,7 +890,11 @@
       "done": "تم",
       "failed": "فشل",
       "working": "جارٍ التنفيذ… (التحميل + npm install قد يستغرقان دقائق)",
-      "savedTo": "حُفظ في {{path}}"
+      "savedTo": "حُفظ في {{path}}",
+      "counts": "بصمات {{fingerprints}} · ملفات {{profiles}} · قيد التشغيل {{running}}",
+      "fingerprintsEmpty": "مكتبة البصمات فارغة — لا يمكن إنشاء ملفات حتى يتم تنزيل الحزمة (الإعداد التلقائي يصلحها)",
+      "proxy": "بروكسي",
+      "noProxy": "بدون بروكسي"
     }
   },
   "devicePicker": {
