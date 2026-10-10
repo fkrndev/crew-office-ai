@@ -5415,7 +5415,7 @@ mod tests {
             &handle,
             req(serde_json::json!({
                 "id": "pty-hermes", "provider": "hermes",
-                "command": "hermes chat",
+                "command": "hermes chat --provider deepseek -m deepseek-v4-pro",
                 "cwd": home.display().to_string(),
                 "hive": { "id": "hermes-live", "name": "Hermes", "role": "worker" }
             })),
@@ -5430,30 +5430,25 @@ mod tests {
             "install PTY must be armed for relaunch"
         );
         eprintln!("[live] install PTY spawned + relaunch armed — waiting for the installer");
-        // PowerShell under conpty emits CSI 6 n (cursor-position query) and
-        // BLOCKS on the reply — the real app's xterm answers it; the test has
-        // no terminal, so answer it here with a fixed position.
-        let answer_dsr = |st: &tauri::State<'_, AppState>, answered: &mut usize| {
+        // PowerShell + prompt_toolkit under conpty emit CSI 6 n and BLOCK on
+        // the reply — the real app's xterm answers it; the test has no
+        // terminal. Answer only when the tail ENDS with a fresh query (the
+        // child is parked on that read) — replying on a count basis keeps
+        // writing into a pipe nobody drains and can stall the test.
+        let answer_dsr = |st: &tauri::State<'_, AppState>| {
             let mut ptys = st.ptys.lock().unwrap();
             if let Some(h) = ptys.get_mut("pty-hermes") {
-                let cur = h.tail().matches("\u{1b}[6n").count();
-                // Relaunch swaps in a fresh handle (fresh tail) — reset.
-                if cur < *answered {
-                    *answered = 0;
-                }
-                for _ in 0..cur - *answered {
+                if h.tail().trim_end().ends_with("\u{1b}[6n") {
                     let _ = h.write("\u{1b}[24;80R");
                 }
-                *answered = cur;
             }
         };
-        let mut answered = 0usize;
         // The installer downloads Python+deps and builds the TUI — allow 40
         // minutes (measured ~24 on this machine). Success = relaunch
         // consumed the pending entry AND `hermes` resolves now.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40 * 60);
         loop {
-            answer_dsr(&st, &mut answered);
+            answer_dsr(&st);
             let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-hermes");
             let resolved = crate::pty::resolve_program("hermes", &path_env).is_some();
             if !armed && resolved {
@@ -5475,7 +5470,7 @@ mod tests {
         // installer — keep answering DSR (prompt_toolkit queries the cursor
         // position on boot and blocks on the reply).
         for _ in 0..120 {
-            answer_dsr(&st, &mut answered);
+            answer_dsr(&st);
             let done = st
                 .ptys
                 .lock()
@@ -5497,10 +5492,59 @@ mod tests {
             .unwrap_or_default();
         assert!(cmd.contains("hermes"), "relaunch should run hermes chat: {cmd:?}");
         eprintln!("[live] hermes installed + relaunched: {cmd}");
+
+        // Keep answering DSR for a short window so the REPL can finish its
+        // boot probes, then let the TUI be — the API round-trip below is the
+        // assertion; the interactive REPL's health shows in the tail.
+        let repl_window = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        while std::time::Instant::now() < repl_window {
+            answer_dsr(&st);
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        {
+            let tail = st
+                .ptys
+                .lock()
+                .unwrap()
+                .get("pty-hermes")
+                .map(|h| h.tail())
+                .unwrap_or_default();
+            eprintln!("[live] repl tail: {}", &tail[tail.len().saturating_sub(400)..]);
+        }
+
+        // API round-trip against DeepSeek V4 Pro — `hermes chat -q --oneshot`
+        // prints the reply and exits; no TUI readline in the way. The key
+        // comes from the harness .env the install just laid down (the same
+        // .env the per-agent bridge copies — DEEPSEEK_API_KEY is set there).
         let pty = { st.ptys.lock().unwrap().remove("pty-hermes") };
         if let Some(mut h) = pty {
             let _ = h.kill();
         }
+        let out = std::process::Command::new("hermes")
+            .args([
+                "chat",
+                "-q",
+                "Answer with the single lowercase word for a tropical yellow fruit with spiky skin.",
+                "--oneshot",
+                "--provider",
+                "deepseek",
+                "-m",
+                "deepseek-v4-pro",
+            ])
+            .current_dir(&home)
+            .output()
+            .expect("run hermes oneshot");
+        let body = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!("[live] oneshot exit={:?} out: {}", out.status.code(), body);
+        assert!(out.status.success(), "hermes oneshot failed: {body}");
+        assert!(
+            body.to_lowercase().contains("pineapple"),
+            "no DeepSeek reply token in output: {body}"
+        );
     }
 
     /// A PTY whose child exits on its own must trip the waiter path (the

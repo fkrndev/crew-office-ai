@@ -297,10 +297,14 @@ pub fn provider_install(
             None,
         ),
         // Hermes — Nous Research's installer. Native Windows works without
-        // WSL; the scripts bundle Python+Node+TUI. No npm package.
+        // WSL; the scripts bundle Python+Node+TUI. No npm package. The ps1
+        // ends with an interactive `hermes setup` wizard — an install-PTY
+        // spawn must NOT park there (a worker agent would wait forever), so
+        // the script is fetched to %TEMP% and run -File -NonInteractive; the
+        // & chain is plain cmd — no quoting.
         "hermes" => (
             Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
-            Some("powershell -NoProfile -c iex ^(irm https://hermes-agent.nousresearch.com/install.ps1^)"),
+            Some("curl -fsSL https://hermes-agent.nousresearch.com/install.ps1 -o %TEMP%\\hermes-install.ps1 & powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\\hermes-install.ps1 -NonInteractive"),
             None,
         ),
         "openclaw" => (
