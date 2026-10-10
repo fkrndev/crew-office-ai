@@ -5256,6 +5256,18 @@ mod tests {
         assert!(hits.iter().all(|(_, _, auth, _)| auth.contains("Bearer t")));
     }
 
+    /// The scheduler's shardx dispatch on a state with no usable token —
+    /// the outcome string must NAME the project and say it failed, never
+    /// panic or pretend a run started. Works whether or not a real launcher
+    /// happens to be listening (fresh harness dir carries no token).
+    #[test]
+    fn shardx_fire_reports_failure_without_token() {
+        let st = AppState::new(tmp_home("shardx-fire")).unwrap();
+        let out = shardx_fire_automation(&st, "proj-nope");
+        assert!(out.contains("proj-nope"), "got: {out}");
+        assert!(out.contains("failed"), "got: {out}");
+    }
+
     /// The real download chain — the same tarball + npm install the consent
     /// button runs. Network + npm required; run manually:
     ///   cargo test shardx_bootstrap_live_download -- --ignored

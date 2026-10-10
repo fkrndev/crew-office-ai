@@ -1,16 +1,16 @@
-//! Scheduled missions --” port of the scheduler half of `index.ts` (syncMissions
+﻿//! Scheduled missions --â€ port of the scheduler half of `index.ts` (syncMissions
 //! + fire) and the mission constants of `config.ts`.
 //!
 //! A recurring auto-dispatched mission: when `now - last_fired_at >=
-//! interval_ms`, fire --” a `kind:'compact'` mission emits the compact trigger
+//! interval_ms`, fire --â€ a `kind:'compact'` mission emits the compact trigger
 //! instead of mailing (its `to`/`body` are empty), every other kind mails
 //! `body` to `to` from the virtual 'scheduler' sender. `kind:'heartbeat'` is
 //! additionally quiet-gated: it only fires when the floor has been silent for
-//! `quiet_threshold_ms` (log.jsonl + mailbox mtimes + PTY output --” the same
+//! `quiet_threshold_ms` (log.jsonl + mailbox mtimes + PTY output --â€ the same
 //! file/activity signals as upstream's isFloorQuiet, never registry.status).
 //!
 //! Deviation: upstream arms per-mission setTimeout/interval handles and
-//! re-arms on every config save. This port polls every 15s --” same due-time
+//! re-arms on every config save. This port polls every 15s --â€ same due-time
 //! semantics, no re-arm plumbing, and a config edit takes effect on the next
 //! tick for free. Weekly schedules port the full upstream shared/weeklySchedule.ts contract below..
 
@@ -25,14 +25,14 @@ pub struct ScheduledMission {
     pub to: String,
     pub body: String,
     pub enabled: bool,
-    /// 'heartbeat' | 'compact' | 'shardx' | None(regular) — 'shardx' runs a
+    /// 'heartbeat' | 'compact' | 'shardx' | None(regular) â€” 'shardx' runs a
     /// launcher automation project (`body` = project id) instead of mailing.
     pub kind: Option<String>,
     pub quiet_threshold_ms: Option<u64>,
     #[serde(default)]
     pub auto_compact: bool,
     /// shared/weeklySchedule.ts WeeklySchedule {days:[0..6], minute:0..1439}
-    /// --” when present and valid it REPLACES the interval cadence.
+    /// --â€ when present and valid it REPLACES the interval cadence.
     pub weekly: Option<serde_json::Value>,
     pub last_fired_at: u64,
 }
@@ -62,7 +62,7 @@ pub fn ops_standup() -> ScheduledMission {
         interval_ms: 3_600_000,
         to: "god".into(),
         body: "Hourly ops standup. Review every agent: who is doing what, and confirm each \
-               is still running (not stalled or idle-stale). Check the task board --” are \
+               is still running (not stalled or idle-stale). Check the task board --â€ are \
                in-flight tasks on track, and is anything blocked or unowned? Flag stale \
                items and re-engage whoever needs it."
             .into(),
@@ -76,7 +76,7 @@ pub fn ops_standup() -> ScheduledMission {
 }
 
 /// Shipped DISABLED (opt-in): unlike the standup, the heartbeat nudges god's
-/// PTY --” the user turns it on explicitly (upstream ships it off too).
+/// PTY --â€ the user turns it on explicitly (upstream ships it off too).
 pub fn heartbeat() -> ScheduledMission {
     ScheduledMission {
         id: "heartbeat".into(),
@@ -84,7 +84,7 @@ pub fn heartbeat() -> ScheduledMission {
         interval_ms: 120_000,
         to: "god".into(),
         body: "Floor heartbeat: the team has gone quiet. Review the digest in your inbox, \
-               re-engage anyone stalled or blocked, and keep the board accurate --” or rest \
+               re-engage anyone stalled or blocked, and keep the board accurate --â€ or rest \
                if the work is genuinely done."
             .into(),
         enabled: false,
@@ -116,16 +116,16 @@ pub fn compact_maintenance() -> ScheduledMission {
 
 // --- weeklySchedule.ts -------------------------------------------------------
 //
-// "every Monday and Thursday at 09:00" — an interval cannot say that, so a
+// "every Monday and Thursday at 09:00" â€” an interval cannot say that, so a
 // mission carrying a valid `weekly` schedule fires on calendar slots instead.
 // ALL times are LOCAL, built from calendar fields so a DST boundary lands on
 // the same wall-clock slot, never an hour off (upstream's deliberate choice).
 
-/// 6h — a slot MISSED this long ago still fires (laptop asleep at 09:00,
+/// 6h â€” a slot MISSED this long ago still fires (laptop asleep at 09:00,
 /// opened 10:30); one from Friday when opened Monday does not.
 const WEEKLY_CATCHUP_MS: u64 = 6 * 60 * 60 * 1000;
 
-/// normalizeWeekly — null for anything that is not a usable schedule: no
+/// normalizeWeekly â€” null for anything that is not a usable schedule: no
 /// days, a day outside 0..6, or a minute outside the day.
 #[derive(Clone, Copy)]
 struct Weekly {
@@ -158,7 +158,7 @@ fn normalize_weekly(w: &serde_json::Value) -> Option<Weekly> {
 }
 
 /// Build the local instant for `minute` on the date `offset` days from `from`
-/// — chrono's Local calendar fields do the DST roll the same way the JS
+/// â€” chrono's Local calendar fields do the DST roll the same way the JS
 /// `new Date(y, m, d, h, min)` constructor does.
 fn slot_at_ms(from: chrono::DateTime<chrono::Local>, offset: i64, minute: u32) -> u64 {
     let date = from.date_naive() + chrono::Duration::days(offset);
@@ -173,7 +173,7 @@ fn slot_at_ms(from: chrono::DateTime<chrono::Local>, offset: i64, minute: u32) -
     }
 }
 
-/// nextWeeklyFireMs — first matching slot STRICTLY after now.
+/// nextWeeklyFireMs â€” first matching slot STRICTLY after now.
 fn next_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     let from = chrono::DateTime::<chrono::Local>::from(
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms as i64)?,
@@ -197,7 +197,7 @@ fn next_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     None
 }
 
-/// previousWeeklyFireMs — most recent matching slot at or before now.
+/// previousWeeklyFireMs â€” most recent matching slot at or before now.
 fn previous_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     let from = chrono::DateTime::<chrono::Local>::from(
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms as i64)?,
@@ -221,7 +221,7 @@ fn previous_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     None
 }
 
-/// weeklyDelayMs — upstream semantics: 0 means "fire now" (a recent missed
+/// weeklyDelayMs â€” upstream semantics: 0 means "fire now" (a recent missed
 /// slot we have not run yet); otherwise ms until the next slot; None when the
 /// schedule is unusable. `last_fired` stops a scheduler re-arm from re-firing
 /// a slot that already ran minutes ago.
@@ -235,7 +235,7 @@ pub fn weekly_delay_ms(w: &serde_json::Value, now_ms: u64, last_fired: u64) -> O
     next_weekly_fire_ms(w, now_ms).map(|t| t.saturating_sub(now_ms))
 }
 
-/// Is this mission due right now? Interval cadence or weekly slots — a valid
+/// Is this mission due right now? Interval cadence or weekly slots â€” a valid
 /// weekly schedule REPLACES the interval (upstream rule).
 /// Upstream ignores `weekly` on heartbeat missions (they self-cadence).
 pub fn is_mission_due(m: &ScheduledMission, now_ms: u64) -> bool {
@@ -338,7 +338,7 @@ pub fn heartbeat_digest(hive: &crate::hive::Hive, quiet_ms: u64, actionable: usi
 pub fn looks_stuck(st: &crate::commands::AppState, window_ms: u64, now: u64) -> bool {
     let reg = st.hive.registry();
     let god = st.hive.god_id();
-    // Registry ids are agent ids; the PTY map is pty-keyed — snapshot the
+    // Registry ids are agent ids; the PTY map is pty-keyed â€” snapshot the
     // mapping up front rather than locking it inside the ptys hold.
     let pty_for = st.agent_to_pty.lock().unwrap().clone();
     let ptys = st.ptys.lock().unwrap();
@@ -420,3 +420,35 @@ pub fn mission_due_ms(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// kind:'shardx' is a plain cadence mission — no heartbeat adaptivity,
+    /// no weekly special-casing. Interval elapses -> due; not yet -> not.
+    #[test]
+    fn shardx_mission_uses_plain_interval() {
+        let m = ScheduledMission {
+            id: "sx".into(),
+            label: "replay".into(),
+            interval_ms: 60_000,
+            to: "shardx".into(),
+            body: "proj-1".into(),
+            enabled: true,
+            kind: Some("shardx".into()),
+            ..Default::default()
+        };
+        assert!(!is_mission_due(&m, 30_000));
+        assert!(is_mission_due(&m, 61_000));
+        // And the "when" math agrees — next fire is last+interval.
+        let no_cadence = std::collections::HashMap::new();
+        assert_eq!(mission_due_ms(&m, 0, &no_cadence), Some(60_000));
+        // Disabled never fires — replay must not run behind a dead switch.
+        // (is_mission_due leaves enabled-filtering to the caller loop; the
+        // due_ms form is what the loop actually consults.)
+        let off = ScheduledMission { enabled: false, ..m };
+        assert_eq!(mission_due_ms(&off, 999_999, &no_cadence), None);
+    }
+}
+
