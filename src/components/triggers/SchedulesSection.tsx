@@ -32,7 +32,9 @@ interface ScheduledMission {
   enabled: boolean;
   autoCompact?: boolean;
   lastFiredAt?: number;
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  // 'shardx' runs a launcher automation project (body = project id) on the
+  // cadence — replay is launcher-side, so the mission costs zero tokens.
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'shardx';
   quietThresholdMs?: number;
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
   weekly?: { days: number[]; minute: number };
@@ -63,6 +65,24 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const [mWeekly, setMWeekly] = useState<WeeklyDraft | null>(null);
   const [mTo, setMTo] = useState<string>('god');
   const [mBody, setMBody] = useState('');
+  // Launcher automation projects — the pick-list when a mission targets
+  // ShardX instead of an agent inbox.
+  const [autoProjects, setAutoProjects] = useState<Array<{ id: string; name: string }>>([]);
+
+  useEffect(() => {
+    window.cth.shardxAutomations?.()
+      .then((r: unknown) => {
+        const res = r as { ok?: boolean; projects?: Array<{ id?: string; name?: string }> } | undefined;
+        if (res?.ok) {
+          setAutoProjects(
+            (res.projects ?? [])
+              .filter((p) => p.id)
+              .map((p) => ({ id: p.id!, name: p.name ?? p.id! }))
+          );
+        }
+      })
+      .catch(() => { /* launcher off — the picker just stays empty */ });
+  }, []);
 
   useEffect(() => {
     const load = () => { window.cth.listMissions().then(setMissions).catch(() => { /* noop */ }); };
@@ -99,6 +119,8 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
       ...(mWeekly ? { weekly: mWeekly } : {}),
       to: mTo,
       body: mBody.trim(),
+      // A shardx mission's body is the automation project id, not a prompt.
+      ...(mTo === 'shardx' ? { kind: 'shardx' as const } : {}),
       enabled: true
     }]);
     setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
@@ -108,8 +130,12 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
 
   const targetName = (to: string) =>
     to === 'broadcast' ? t('schedulesSection.everyone')
+      : to === 'shardx' ? t('schedulesSection.shardxAutomation')
       : to === 'god' ? (agents.find((a) => a.isGod)?.name ?? 'the orchestrator')
         : agents.find((a) => a.id === to)?.name ?? to;
+
+  const automationName = (id: string) =>
+    autoProjects.find((p) => p.id === id)?.name ?? id;
 
   return (
     <>
@@ -119,6 +145,8 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
           key={m.id}
           mission={m}
           targetName={targetName}
+          automationName={automationName}
+          autoProjects={autoProjects}
           agents={agents}
           onPatch={(fields) => patch(m.id, fields)}
           onDelete={() => remove(m.id)}
@@ -146,6 +174,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              <option value="shardx">{t('schedulesSection.shardxAutomation')}</option>
             </Select>
           </Field>
           <Field label={t('schedulesSection.when')}>
@@ -156,16 +185,28 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               onWeekly={setMWeekly}
             />
           </Field>
-          <Field label={t('schedulesSection.prompt')}>
-            <textarea
-              dir={rtl ? 'auto' : undefined}
-              value={mBody}
-              onChange={(e) => setMBody(e.target.value)}
-              rows={3}
-              placeholder={t('schedulesSection.promptPlaceholder')}
-              style={textareaStyle}
-            />
-          </Field>
+          {mTo === 'shardx' ? (
+            <Field label={t('schedulesSection.shardxProject')}>
+              <Select value={mBody} onChange={setMBody} style={{ width: '100%' }}>
+                <option value="">{t('schedulesSection.shardxPick')}</option>
+                {autoProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </Select>
+              {autoProjects.length === 0 && (
+                <Hint>{t('schedulesSection.shardxNoProjects')}</Hint>
+              )}
+            </Field>
+          ) : (
+            <Field label={t('schedulesSection.prompt')}>
+              <textarea
+                dir={rtl ? 'auto' : undefined}
+                value={mBody}
+                onChange={(e) => setMBody(e.target.value)}
+                rows={3}
+                placeholder={t('schedulesSection.promptPlaceholder')}
+                style={textareaStyle}
+              />
+            </Field>
+          )}
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
             <PixelButton variant="primary" size="sm" onClick={add} disabled={!mLabel.trim() || !mBody.trim() || !whenIsUsable}>
               {t('common.add')}
@@ -184,9 +225,11 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
 
 interface RosterAgent { id: string; name: string; isGod?: boolean }
 
-function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
+function MissionRow({ mission, targetName, automationName, autoProjects, agents, onPatch, onDelete }: {
   mission: ScheduledMission;
   targetName: (to: string) => string;
+  automationName: (id: string) => string;
+  autoProjects: Array<{ id: string; name: string }>;
   agents: RosterAgent[];
   onPatch: (fields: Partial<ScheduledMission>) => void;
   onDelete: () => void;
@@ -215,6 +258,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
   }, [open]);
 
   const heartbeat = mission.kind === 'heartbeat';
+  const shardx = mission.kind === 'shardx' || to === 'shardx';
   const storedWeekly = weeklyDraft(mission.weekly);
   // Compare the CANONICAL form, not the raw object: [1,3] and [3,1] mean the
   // same schedule, and a row that reads as dirty after a no-op click is noise.
@@ -246,7 +290,14 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
     // `weekly: undefined` is the switch back to interval mode. It has to be sent
     // explicitly — the backend merges by id and spreads, so simply omitting the
     // key would leave the old schedule in place and the row would snap back.
-    onPatch({ label: trimmed, to, intervalMs, body, weekly: weekly ?? undefined });
+    // kind follows the target: retargeting a shardx mission to an agent (or
+    // vice versa) has to rewrite the kind or fire_mission still replays the
+    // project instead of mailing the body.
+    onPatch({
+      label: trimmed, to, intervalMs, body,
+      weekly: weekly ?? undefined,
+      kind: to === 'shardx' ? 'shardx' : undefined
+    });
     setSaved(true);
     setTimeout(() => setSaved(false), 1300);
   };
@@ -278,7 +329,9 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
           fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '15px',
           color: 'var(--cth-ink-700)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-        }}>{mission.body.trim() || t('schedulesSection.noPrompt')}</div>
+        }}>{mission.kind === 'shardx'
+          ? `▶ ${automationName(mission.body)}`
+          : mission.body.trim() || t('schedulesSection.noPrompt')}</div>
       )}
 
       {open && (
@@ -291,6 +344,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              <option value="shardx">{t('schedulesSection.shardxAutomation')}</option>
             </Select>
           </Field>
           <Field label={t('schedulesSection.when')}>
@@ -301,16 +355,33 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
               : <SchedulePicker intervalMs={intervalMs} weekly={weekly} onInterval={setIntervalMs} onWeekly={setWeekly} />}
             {heartbeat && <Hint>{t('schedulesSection.beatCeiling')}</Hint>}
           </Field>
-          <Field label={t('schedulesSection.prompt')}>
-            <textarea
-              dir={rtl ? 'auto' : undefined}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={4}
-              placeholder={t('schedulesSection.promptPlaceholder')}
-              style={textareaStyle}
-            />
-          </Field>
+          {shardx ? (
+            <Field label={t('schedulesSection.shardxProject')}>
+              <Select value={body} onChange={setBody} style={{ width: '100%' }}>
+                <option value="">{t('schedulesSection.shardxPick')}</option>
+                {autoProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {/* The stored id may not be in today's list (project deleted
+                    upstream) — keep it selectable so the row isn't blank. */}
+                {body && !autoProjects.some((p) => p.id === body) && (
+                  <option value={body}>{body}</option>
+                )}
+              </Select>
+              {autoProjects.length === 0 && (
+                <Hint>{t('schedulesSection.shardxNoProjects')}</Hint>
+              )}
+            </Field>
+          ) : (
+            <Field label={t('schedulesSection.prompt')}>
+              <textarea
+                dir={rtl ? 'auto' : undefined}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={4}
+                placeholder={t('schedulesSection.promptPlaceholder')}
+                style={textareaStyle}
+              />
+            </Field>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
             <PixelButton variant="primary" size="sm" onClick={save} disabled={!dirty || !label.trim() || !whenIsUsable}>
               {saved && !dirty ? t('schedulesSection.saved') : t('common.save')}

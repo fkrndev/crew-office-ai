@@ -3920,6 +3920,110 @@ fn shardx_patch_profile_proxy(
         .map_err(|e| e.to_string())
 }
 
+// ── Automation projects ─────────────────────────────────────────────────────
+
+/// Every saved automation project — the block graphs the launcher's
+/// Automation tab edits. Run/stop here costs zero tokens: replay is the
+/// launcher's engine, not an LLM.
+#[tauri::command(async)]
+pub fn shardx_automations(app: AppHandle) -> Value {
+    let st = state(&app);
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
+        return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
+    };
+    match http
+        .get(&format!("{api}/automation/projects"))
+        .header("Authorization", &auth)
+        .call()
+    {
+        Ok(mut r) => match r.body_mut().read_json::<Value>() {
+            Ok(list) => serde_json::json!({ "ok": true, "projects": list }),
+            Err(_) => serde_json::json!({ "ok": false, "error": "unexpected projects payload" }),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+/// POST /automation/projects/{id}/run — 400 means "already running" or "no
+/// enabled steps", which the launcher spells out in its error body.
+#[tauri::command(async)]
+pub fn shardx_run_automation(app: AppHandle, project_id: String) -> Value {
+    let st = state(&app);
+    match shardx_automation_call(&st, &project_id, "run") {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+#[tauri::command(async)]
+pub fn shardx_stop_automation(app: AppHandle, project_id: String) -> Value {
+    let st = state(&app);
+    match shardx_automation_call(&st, &project_id, "stop") {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+/// POST {api}/automation/projects/{id}/{action} with the launcher's error
+/// body lifted into `error` — a 400 on run carries the reason (already
+/// running, no enabled steps) and that's what the card should show.
+fn shardx_automation_call(st: &AppState, project_id: &str, action: &str) -> Result<Value, String> {
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
+        return Err("launcher not running or no token".into());
+    };
+    match shardx_automation_call_at(&http, &api, &auth, project_id, action) {
+        Ok(()) => Ok(serde_json::json!({ "ok": true })),
+        Err(e) => Err(e),
+    }
+}
+
+/// The wire call itself — edges injected so a localhost stub can verify the
+/// verb, path, and auth header without a real launcher.
+fn shardx_automation_call_at(
+    http: &ureq::Agent,
+    api: &str,
+    auth: &str,
+    project_id: &str,
+    action: &str,
+) -> Result<(), String> {
+    http.post(&format!("{api}/automation/projects/{project_id}/{action}"))
+        .header("Authorization", auth)
+        .send_empty()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Runs in flight right now — the card's "running" badges and the scheduler
+/// run-log row share this list.
+#[tauri::command(async)]
+pub fn shardx_automation_runs(app: AppHandle) -> Value {
+    let st = state(&app);
+    let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
+        return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
+    };
+    match http
+        .get(&format!("{api}/automation/runs"))
+        .header("Authorization", &auth)
+        .call()
+    {
+        Ok(mut r) => match r.body_mut().read_json::<Value>() {
+            Ok(list) => serde_json::json!({ "ok": true, "runs": list }),
+            Err(_) => serde_json::json!({ "ok": false, "error": "unexpected runs payload" }),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+/// Scheduler entry point for `kind: "shardx"` missions — `body` carries the
+/// project id. Returns a one-line result for the hive log instead of mailing
+/// a prompt: the run is the mission, there's no agent to read it.
+pub fn shardx_fire_automation(st: &AppState, project_id: &str) -> String {
+    match shardx_automation_call(st, project_id, "run") {
+        Ok(_) => format!("automation run started (project {project_id})"),
+        Err(e) => format!("automation run failed (project {project_id}): {e}"),
+    }
+}
+
 /// Profile name → owning agent label: explicit `extra.shardxProfile` bindings
 /// plus the `office-<agentId>` auto-name convention. Display-only — the
 /// renderer shows "→ <agent>" next to each profile.
@@ -5130,6 +5234,26 @@ mod tests {
             "px-9"
         );
         assert_eq!(serde_json::from_str::<Value>(&hits[1].3).unwrap()["proxy_id"], "");
+    }
+
+    /// kind:'shardx' missions POST /automation/projects/{id}/run — empty
+    /// body, Bearer auth. The scheduler relies on this exact shape: a wrong
+    /// verb or path turns a scheduled run into a silent 404.
+    #[test]
+    fn shardx_automation_call_wire_shape() {
+        let srv = fake_shardx_api(vec![
+            ("/automation/projects/proj-9/run", b"{}".to_vec()),
+            ("/automation/projects/proj-9/stop", b"{}".to_vec()),
+        ]);
+        let http = shardx_http(5);
+        shardx_automation_call_at(&http, &srv.base, "Bearer t", "proj-9", "run").unwrap();
+        shardx_automation_call_at(&http, &srv.base, "Bearer t", "proj-9", "stop").unwrap();
+        let hits = srv.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "POST");
+        assert_eq!(hits[0].1, "/automation/projects/proj-9/run");
+        assert_eq!(hits[1].1, "/automation/projects/proj-9/stop");
+        assert!(hits.iter().all(|(_, _, auth, _)| auth.contains("Bearer t")));
     }
 
     /// The real download chain — the same tarball + npm install the consent

@@ -896,7 +896,11 @@
       "counts": "fingerprint {{fingerprints}} · profil {{profiles}} · berjalan {{running}}",
       "fingerprintsEmpty": "library fingerprint kosong — profil tidak bisa dibuat sampai bundle ter-seed (Setup otomatis memperbaikinya)",
       "proxy": "Proxy",
-      "noProxy": "tanpa proxy"
+      "noProxy": "tanpa proxy",
+      "automations": "Automation",
+      "blocks": "{{n}} blok",
+      "run": "Jalankan",
+      "stop": "Stop"
     }
   },
   "devicePicker": {
@@ -1013,7 +1017,11 @@
     "noPrompt": "Belum ada prompt.",
     "saved": "tersimpan",
     "when": "KAPAN",
-    "beatCeiling": "Detak menyesuaikan seberapa sepi lantai, jadi ini batas atas, bukan jeda persis."
+    "beatCeiling": "Detak menyesuaikan seberapa sepi lantai, jadi ini batas atas, bukan jeda persis.",
+    "shardxAutomation": "Automation ShardX",
+    "shardxProject": "PROYEK AUTOMATION",
+    "shardxPick": "pilih proyek",
+    "shardxNoProjects": "Belum ada proyek automation di launcher — buat dulu di tab Automation launcher."
   },
   "webhooksSection": {
     "summaryNone": "tidak ada",

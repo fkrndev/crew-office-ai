@@ -73,6 +73,63 @@ describe('ShardX live counts', () => {
   });
 });
 
+describe('ShardX automation projects', () => {
+  const projects = [
+    { id: 'a1', name: 'reply-buyers', blocks: [{}, {}, {}], run: { threads: 1, loops: 1 } },
+    { id: 'a2', name: 'price-watch', blocks: [{}], run: { threads: 2, loops: 0 } }
+  ];
+
+  beforeEach(() => {
+    cth.shardxAutomations = vi.fn(async () => ({ ok: true, projects }));
+    cth.shardxAutomationRuns = vi.fn(async () => ({
+      ok: true,
+      runs: [{ project_id: 'a1', running: true }]
+    }));
+    cth.shardxRunAutomation = vi.fn(async () => ({ ok: true }));
+    cth.shardxStopAutomation = vi.fn(async () => ({ ok: true }));
+  });
+
+  const rowFor = (name: string) =>
+    screen.getByText(name).closest('span')!.parentElement!;
+
+  it('lists projects with block counts and live run state', async () => {
+    render(<McpDefaultsSettings config={config} />);
+    await waitFor(() => expect(rowFor('reply-buyers')).toBeTruthy());
+    // a1 is running → its button says Stop; a2 idle → Run.
+    expect(rowFor('reply-buyers').querySelector('button')!.textContent).toBe('Stop');
+    expect(rowFor('price-watch').querySelector('button')!.textContent).toBe('Run');
+    expect(rowFor('reply-buyers').textContent).toMatch(/3 blocks/);
+  });
+
+  it('run button fires shardxRunAutomation with the project id', async () => {
+    render(<McpDefaultsSettings config={config} />);
+    await waitFor(() => expect(rowFor('price-watch')).toBeTruthy());
+    fireEvent.click(rowFor('price-watch').querySelector('button')!);
+    await waitFor(() =>
+      expect(cth.shardxRunAutomation).toHaveBeenCalledWith('a2')
+    );
+  });
+
+  it('stop button fires shardxStopAutomation on a live project', async () => {
+    render(<McpDefaultsSettings config={config} />);
+    await waitFor(() => expect(rowFor('reply-buyers')).toBeTruthy());
+    fireEvent.click(rowFor('reply-buyers').querySelector('button')!);
+    await waitFor(() =>
+      expect(cth.shardxStopAutomation).toHaveBeenCalledWith('a1')
+    );
+  });
+
+  it('a failed run surfaces the launcher reason', async () => {
+    cth.shardxRunAutomation = vi.fn(async () => ({ ok: false, error: 'project has no enabled steps' }));
+    render(<McpDefaultsSettings config={config} />);
+    await waitFor(() => expect(rowFor('price-watch')).toBeTruthy());
+    fireEvent.click(rowFor('price-watch').querySelector('button')!);
+    await waitFor(() =>
+      expect(screen.getByText(/no enabled steps/i)).toBeTruthy()
+    );
+  });
+});
+
 describe('ShardX proxy binding', () => {
   const profiles = [
     { id: 'p1', name: 'office-toko', proxy_id: 'px-1', running: false, auto: true },

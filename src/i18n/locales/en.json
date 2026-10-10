@@ -896,7 +896,11 @@
       "counts": "fingerprints {{fingerprints}} · profiles {{profiles}} · running {{running}}",
       "fingerprintsEmpty": "fingerprint library empty — profiles can't be created until the bundle seeds (Auto setup fixes it)",
       "proxy": "Proxy",
-      "noProxy": "no proxy"
+      "noProxy": "no proxy",
+      "automations": "Automations",
+      "blocks": "{{n}} blocks",
+      "run": "Run",
+      "stop": "Stop"
     }
   },
   "devicePicker": {
@@ -1013,7 +1017,11 @@
     "noPrompt": "No prompt set.",
     "saved": "saved",
     "when": "WHEN",
-    "beatCeiling": "The beat adapts to how quiet the floor is, so this is the ceiling, not the exact gap."
+    "beatCeiling": "The beat adapts to how quiet the floor is, so this is the ceiling, not the exact gap.",
+    "shardxAutomation": "ShardX automation",
+    "shardxProject": "AUTOMATION PROJECT",
+    "shardxPick": "pick a project",
+    "shardxNoProjects": "No automation projects in the launcher yet — create one in the launcher's Automation tab."
   },
   "webhooksSection": {
     "summaryNone": "none",

@@ -25,7 +25,8 @@ pub struct ScheduledMission {
     pub to: String,
     pub body: String,
     pub enabled: bool,
-    /// 'heartbeat' | 'compact' | None(regular)
+    /// 'heartbeat' | 'compact' | 'shardx' | None(regular) — 'shardx' runs a
+    /// launcher automation project (`body` = project id) instead of mailing.
     pub kind: Option<String>,
     pub quiet_threshold_ms: Option<u64>,
     #[serde(default)]

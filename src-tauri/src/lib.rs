@@ -83,6 +83,16 @@ fn emit_context_trigger(app: &tauri::AppHandle, action: &str) {
 }
 
 fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMission) {
+    // kind 'shardx' runs a launcher automation project — `body` is the
+    // project id. No mail, no agent: replay is the whole point.
+    if m.kind.as_deref() == Some("shardx") {
+        let out = commands::shardx_fire_automation(st, &m.body);
+        let _ = app.emit(
+            "hive-log",
+            serde_json::json!({ "event": "mission_fired", "id": m.id, "label": m.label, "detail": out }),
+        );
+        return;
+    }
     if m.kind.as_deref() != Some("compact") && !m.to.is_empty() {
         let _ = st
             .hive
@@ -1140,6 +1150,10 @@ pub fn run() {
             commands::shardx_token_preview,
             commands::shardx_proxies,
             commands::shardx_set_profile_proxy,
+            commands::shardx_automations,
+            commands::shardx_run_automation,
+            commands::shardx_stop_automation,
+            commands::shardx_automation_runs,
             commands::skills_uninstall,
             commands::secret_set,
             commands::secret_delete,

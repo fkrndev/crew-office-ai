@@ -894,7 +894,11 @@
       "counts": "指纹 {{fingerprints}} · 配置文件 {{profiles}} · 运行中 {{running}}",
       "fingerprintsEmpty": "指纹库为空 — 在包下载完成前无法创建配置文件（自动安装可修复）",
       "proxy": "代理",
-      "noProxy": "无代理"
+      "noProxy": "无代理",
+      "automations": "自动化",
+      "blocks": "{{n}} 个块",
+      "run": "运行",
+      "stop": "停止"
     }
   },
   "devicePicker": {
@@ -1011,7 +1015,11 @@
     "noPrompt": "未设置提示词。",
     "saved": "已保存",
     "when": "何时",
-    "beatCeiling": "心跳频率会根据楼层的繁忙程度调整，因此这是上限，而非精确间隔。"
+    "beatCeiling": "心跳频率会根据楼层的繁忙程度调整，因此这是上限，而非精确间隔。",
+    "shardxAutomation": "ShardX 自动化",
+    "shardxProject": "自动化项目",
+    "shardxPick": "选择项目",
+    "shardxNoProjects": "启动器中还没有自动化项目 — 请在启动器的 Automation 标签页中创建。"
   },
   "webhooksSection": {
     "summaryNone": "无",

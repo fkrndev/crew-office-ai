@@ -195,6 +195,19 @@ interface ShardXProxyInfo {
   country?: string;
 }
 
+interface ShardXAutomation {
+  id?: string;
+  name?: string;
+  blocks?: unknown[];
+  run?: { threads?: number; loops?: number; hours?: number };
+}
+
+interface ShardXRun {
+  project_id?: string;
+  project_name?: string;
+  running?: boolean;
+}
+
 const shardxBtnStyle: React.CSSProperties = {
   flexShrink: 0,
   padding: '3px 10px 1px',
@@ -218,6 +231,8 @@ function ShardXSetup() {
   const [status, setStatus] = useState<ShardXStatus | null>(null);
   const [profiles, setProfiles] = useState<ShardXProfileInfo[] | null>(null);
   const [proxies, setProxies] = useState<ShardXProxyInfo[]>([]);
+  const [automations, setAutomations] = useState<ShardXAutomation[] | null>(null);
+  const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
   const [token, setToken] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -243,6 +258,28 @@ function ShardXSetup() {
       setProxies(px?.ok ? (px.proxies ?? []) : []);
     } catch {
       setProxies([]);
+    }
+    try {
+      const a = (await window.cth.shardxAutomations()) as
+        | { ok?: boolean; projects?: ShardXAutomation[] }
+        | undefined;
+      setAutomations(a?.ok ? (a.projects ?? []) : null);
+    } catch {
+      setAutomations(null);
+    }
+    try {
+      const runs = (await window.cth.shardxAutomationRuns()) as
+        | { ok?: boolean; runs?: ShardXRun[] }
+        | undefined;
+      setRunningIds(
+        new Set(
+          (runs?.ok ? runs.runs ?? [] : [])
+            .filter((r) => r.running && r.project_id)
+            .map((r) => r.project_id!)
+        )
+      );
+    } catch {
+      setRunningIds(new Set());
     }
     // Prefill the token field with a freshly-minted JWT when the launcher
     // secret exists — the operator may want it copyable for their own tools.
@@ -349,6 +386,24 @@ function ShardXSetup() {
 
   const proxyLabel = (px: ShardXProxyInfo) =>
     [px.name || `${px.host ?? ''}:${px.port ?? ''}`, px.country].filter(Boolean).join(' ');
+
+  // Run/stop an automation project — launcher-side replay, zero tokens. A
+  // 400 from /run carries the reason (already running / no enabled steps).
+  const runAutomation = async (id: string, action: 'run' | 'stop') => {
+    if (busy) return;
+    try {
+      const r = (await (action === 'run'
+        ? window.cth.shardxRunAutomation(id)
+        : window.cth.shardxStopAutomation(id))) as
+        | { ok?: boolean; error?: string }
+        | undefined;
+      flash(r?.ok ? t('mcpDefaults.shardx.done') : (r?.error ?? t('mcpDefaults.shardx.failed')));
+    } catch {
+      flash(t('mcpDefaults.shardx.failed'));
+    } finally {
+      void refresh();
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -505,6 +560,45 @@ function ShardXSetup() {
                 )}
               </span>
             ))}
+          </div>
+        )}
+
+        {/* Automation projects — no-code block graphs that replay without an
+            LLM. Editing stays in the launcher; here you run/stop and see
+            which is live. The scheduler can fire these on a timer (kind
+            'shardx' mission). */}
+        {automations !== null && automations.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ ...labelStyle, marginBottom: 2 }}>{t('mcpDefaults.shardx.automations')}</span>
+            {automations.map((a) => {
+              const live = !!a.id && runningIds.has(a.id);
+              return (
+                <span key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                  <span
+                    style={{
+                      width: 7, height: 7, flexShrink: 0,
+                      background: live ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
+                      boxShadow: `inset 0 0 0 1px ${live ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)'}`
+                    }}
+                  />
+                  <span style={{ fontFamily: 'var(--cth-font-mono)', color: 'var(--cth-ink-900)' }}>
+                    {a.name}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--cth-ink-500)' }}>
+                    {t('mcpDefaults.shardx.blocks', { n: a.blocks?.length ?? 0 })}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => a.id && void runAutomation(a.id, live ? 'stop' : 'run')}
+                    style={shardxBtnStyle}
+                  >
+                    {live ? t('mcpDefaults.shardx.stop') : t('mcpDefaults.shardx.run')}
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
 
