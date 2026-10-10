@@ -3219,6 +3219,15 @@ fn wait_or_kill(mut child: std::process::Child, secs: u64) -> bool {
     false
 }
 
+/// Stream a response body straight to disk. ureq's buffered readers
+/// (read_to_vec/read_to_string/read_json) carry a 10 MiB default cap —
+/// binary downloads (launcher exe ~100MB, repo tarballs, fingerprint
+/// bundles) exceed it, so they stream through as_reader() instead.
+fn download_to_file(resp: &mut ureq::http::Response<ureq::Body>, dest: &Path) -> Result<u64, String> {
+    let mut out = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    std::io::copy(&mut resp.body_mut().as_reader(), &mut out).map_err(|e| e.to_string())
+}
+
 /// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
 /// install it with the browser download skipped (patchright only ever
 /// connectOverCDP to a running ShardX profile — its own chromium is dead
@@ -3231,8 +3240,7 @@ fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
             .get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
             .call()
             .map_err(|e| format!("download failed: {e}"))?;
-        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
+        download_to_file(&mut resp, &tmp)?;
         let out = std::env::temp_dir().join(format!("shardx-src-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         let ok = std::process::Command::new("tar")
@@ -3325,8 +3333,7 @@ pub fn shardx_download_launcher() -> Value {
             .header("User-Agent", "agent-office")
             .call()
             .map_err(|e| e.to_string())?;
-        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
-        std::fs::write(&dest, &body).map_err(|e| e.to_string())?;
+        download_to_file(&mut resp, &dest)?;
         Ok(dest.display().to_string())
     };
     match step() {
@@ -3473,12 +3480,16 @@ fn shardx_seed_fingerprints_at(
             .get(bundle_url)
             .call()
             .map_err(|e| format!("bundle download failed: {e}"))?;
-        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+        download_to_file(&mut resp, &tmp)?;
         // A DNS-hijack / captive portal serves an HTML block page with a 200.
-        if !body.starts_with(b"PK") {
+        let mut f = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
+        let mut magic = [0u8; 2];
+        use std::io::Read as _;
+        let is_zip = f.read_exact(&mut magic).is_ok() && &magic == b"PK";
+        drop(f);
+        if !is_zip {
             return Err("bundle download was not a zip (blocked by network?)".into());
         }
-        std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         let extracted = std::process::Command::new("tar")
             .arg("-xf")
@@ -5235,6 +5246,27 @@ mod tests {
         // The README.txt in the fixture was correctly ignored.
         assert!(!lib.join("README.txt").exists());
         let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// ureq's buffered readers cap at 10 MiB by default — the launcher exe
+    /// and fingerprint bundle both exceed it ("the response body is larger
+    /// than request limit: 10485760"). download_to_file streams instead, so
+    /// a >10 MiB body must land on disk intact.
+    #[test]
+    fn download_to_file_streams_past_ureq_10mb_cap() {
+        let big = vec![0xABu8; 11 * 1024 * 1024 + 7];
+        let srv = fake_shardx_api(vec![("/big.bin", big.clone())]);
+        let http = shardx_http(30);
+        let mut resp = http
+            .get(&format!("{}/big.bin", srv.base))
+            .call()
+            .unwrap();
+        let tmp = std::env::temp_dir().join(format!("dl-{}", uuid::Uuid::new_v4()));
+        let n = download_to_file(&mut resp, &tmp).unwrap();
+        assert_eq!(n as usize, big.len());
+        assert_eq!(std::fs::metadata(&tmp).unwrap().len() as usize, big.len());
+        assert_eq!(&std::fs::read(&tmp).unwrap()[..4], &[0xAB; 4]);
+        let _ = std::fs::remove_file(&tmp);
     }
 
     /// A DNS-hijack block page arrives with HTTP 200 but HTML bytes — the
