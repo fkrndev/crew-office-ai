@@ -296,6 +296,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(250));
+                let mut closing_nudge_ticks = 0u32;
                 loop {
                     tick.tick().await;
                     let st = handle.state::<AppState>();
@@ -310,6 +311,20 @@ pub fn run() {
                             // Closing-time observer: routed subjects carry
                             // the worker ACKs + god's COMPLETE verdict.
                             if st.closing.is_active() {
+                                // The kickoff nudge is one-shot at press
+                                // time — a god that was BUSY then and goes
+                                // idle now would sit on the brief forever
+                                // (the mail + steer only land at a hook
+                                // boundary an idle REPL never reaches).
+                                // Re-nudge every ~12s while the protocol is
+                                // open; nudge_idle_god self-guards on a
+                                // confirmed-idle god, so a working
+                                // orchestrator is never typed into.
+                                closing_nudge_ticks += 1;
+                                if closing_nudge_ticks >= 48 {
+                                    closing_nudge_ticks = 0;
+                                    commands::nudge_idle_god(st.inner());
+                                }
                                 // Agent-namespace live set (the pty map keys
                                 // are renderer `pty-<agent>` ids).
                                 let live: std::collections::HashSet<String> =

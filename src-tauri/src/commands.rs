@@ -2963,27 +2963,35 @@ pub fn closing_time_status(app: AppHandle) -> Result<serde_json::Value, String> 
 /// the 6-minute timeout. Same fix the mission nudge uses: type into the PTY
 /// when god is confirmed idle (typing into a busy terminal is harmful).
 /// Returns whether a write went out — the observable half for tests.
-fn nudge_idle_god(st: &AppState) -> bool {
+pub(crate) fn nudge_idle_god(st: &AppState) -> bool {
     let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
-    let idle = st
+    let Some(pty_id) = st.pty_for_agent(&god_id) else {
+        return false;
+    };
+    let mut ptys = st.ptys.lock().unwrap();
+    let Some(h) = ptys.get_mut(&pty_id) else {
+        return false;
+    };
+    // Two idle signals, either suffices — registry status is the primary
+    // (a Stop hook flips it), but a provider whose REPL never emits Stop
+    // (hermes sits at a bare prompt between turns) leaves it stuck on
+    // "working" forever. PTY-quiet-≥12s is the same evidence the worker
+    // wake watchdog uses for engines without reliable idle hooks.
+    let idle_by_status = st
         .hive
         .registry()
         .iter()
         .any(|a| a.id == god_id && a.status == "idle");
-    if !idle {
+    let last_out = h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);
+    let quiet_ms = crate::closing_time::now_ms_pub().saturating_sub(last_out);
+    let idle_by_quiet = last_out > 0 && quiet_ms >= crate::workerwake::WORKER_WAKE_IDLE_MS;
+    if !(idle_by_status || idle_by_quiet) {
         return false;
     }
-    if let Some(pty_id) = st.pty_for_agent(&god_id) {
-        let mut ptys = st.ptys.lock().unwrap();
-        if let Some(h) = ptys.get_mut(&pty_id) {
-            return h
-                .write(
-                    "CLOSING TIME — check your inbox for the shutdown brief and run the protocol now.\r",
-                )
-                .is_ok();
-        }
-    }
-    false
+    h.write(
+        "CLOSING TIME — check your inbox for the shutdown brief and run the protocol now.\r",
+    )
+    .is_ok()
 }
 
 /// Emit the protocol state to the floor UI (upstream 'app:closingTime').

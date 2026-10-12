@@ -52,6 +52,11 @@ pub struct ClosingTime {
     inner: Mutex<Option<Active>>,
 }
 
+/// Pub so commands.rs's god nudge can reuse the same clock.
+pub fn now_ms_pub() -> u64 {
+    now_ms()
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
