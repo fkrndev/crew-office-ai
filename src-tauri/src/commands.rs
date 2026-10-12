@@ -3233,6 +3233,67 @@ fn download_to_file(resp: &mut ureq::http::Response<ureq::Body>, dest: &Path) ->
     std::io::copy(&mut resp.body_mut().as_reader(), &mut out).map_err(|e| e.to_string())
 }
 
+/// Resolve a hostname via DNS-over-HTTPS (Cloudflare's JSON API over the
+/// 1.1.1.1 IP literal — the poisoned system resolver never sees the
+/// query). The escape hatch for ISP DNS hijacks: Indonesian ISPs answer
+/// `pub-*.r2.dev` with an Internet Positif block-page IP, and every TLS
+/// handshake then fails on a cert that doesn't match the hostname.
+fn doh_resolve(host: &str) -> Option<String> {
+    let mut resp = shardx_http(15)
+        .get(&format!("https://1.1.1.1/dns-query?name={host}&type=A"))
+        .header("accept", "application/dns-json")
+        .call()
+        .ok()?;
+    let v: Value = resp.body_mut().read_json().ok()?;
+    v["Answer"]
+        .as_array()?
+        .iter()
+        .filter(|a| a["type"].as_u64() == Some(1))
+        .filter_map(|a| a["data"].as_str())
+        .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        .map(String::from)
+}
+
+/// Download `url` to `dest` with a DNS-hijack fallback: try the direct
+/// fetch first; when it fails, resolve the host over DoH and re-fetch
+/// through `curl --resolve host:443:<ip>` — the connection goes to the
+/// real IP while SNI and Host keep the original domain, so TLS verifies
+/// normally. curl ships in Windows' System32 and on every POSIX box.
+fn download_url(url: &str, dest: &Path, timeout_secs: u64) -> Result<u64, String> {
+    match (|| {
+        let mut resp = shardx_http(timeout_secs)
+            .get(url)
+            .header("User-Agent", "agent-office")
+            .call()
+            .map_err(|e| e.to_string())?;
+        download_to_file(&mut resp, dest)
+    })() {
+        Ok(n) => Ok(n),
+        Err(e) => doh_download(url, dest)
+            .map_err(|e2| format!("{e} | DoH-pinned retry also failed: {e2}")),
+    }
+}
+
+fn doh_download(url: &str, dest: &Path) -> Result<u64, String> {
+    let host = url
+        .strip_prefix("https://")
+        .and_then(|s| s.split('/').next())
+        .ok_or("not an https url")?
+        .to_string();
+    let ip = doh_resolve(&host).ok_or("DoH resolution failed")?;
+    let st = std::process::Command::new("curl")
+        .args(["-fsSL", "--resolve", &format!("{host}:443:{ip}")])
+        .arg("-o")
+        .arg(dest)
+        .arg(url)
+        .status()
+        .map_err(|e| format!("curl spawn failed: {e}"))?;
+    if !st.success() {
+        return Err(format!("curl --resolve exit {}", st.code().unwrap_or(-1)));
+    }
+    std::fs::metadata(dest).map_err(|e| e.to_string()).map(|m| m.len())
+}
+
 /// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
 /// install it with the browser download skipped (patchright only ever
 /// connectOverCDP to a running ShardX profile — its own chromium is dead
@@ -3448,6 +3509,150 @@ fn shardx_fingerprints_dir() -> Option<PathBuf> {
 const SHARDX_FINGERPRINTS_URL: &str =
     "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev/ShardX-Fingerprints.zip";
 
+/// Engine archive key for this host — same constant set the launcher's
+/// runtime.rs host_spec() selects.
+fn shardx_engine_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ShardX-Windows.zip"
+    } else if cfg!(target_os = "macos") {
+        "ShardX-Mac-arm64.zip"
+    } else {
+        "ShardX-Linux.zip"
+    }
+}
+
+/// Engine dir inside the launcher runtime — the host_spec key minus `.zip`.
+fn shardx_engine_root() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ShardX-Windows"
+    } else if cfg!(target_os = "macos") {
+        "ShardX-Mac-arm64"
+    } else {
+        "ShardX-Linux"
+    }
+}
+
+/// `<data>/shardx-launcher/runtime` — where the launcher expects its
+/// engine + manifest.json (mirrors runtime.rs runtime_dir()).
+fn shardx_runtime_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("shardx-launcher").join("runtime"))
+}
+
+/// Pre-seed the ShardX browser engine so the launcher's own first-run
+/// download never has to reach the CDN — the same ISP DNS hijack that
+/// serves Internet Positif for pub-*.r2.dev would otherwise kill it
+/// outright. Steps: skip when chrome.exe already exists → download the
+/// engine zip (direct, then DoH-pinned curl) → PK check → extract into
+/// runtime/ → stamp manifest.json with the values runtime_install()
+/// checks (installed_chromium_version + the remote archive etags, so
+/// engine_outdated() and install_fingerprints() both see "up to date").
+fn shardx_seed_engine() -> Result<Value, String> {
+    let runtime = shardx_runtime_dir().ok_or("data dir unavailable")?;
+    let bin = runtime
+        .join(shardx_engine_root())
+        .join(if cfg!(windows) { "chrome.exe" } else { "chrome" });
+    if bin.exists() {
+        return Ok(serde_json::json!({ "ok": true, "already": true }));
+    }
+    let key = shardx_engine_key();
+    let url = format!(
+        "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev/{key}"
+    );
+    let tmp = std::env::temp_dir().join(format!("shardx-eng-{}.zip", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        download_url(&url, &tmp, 300).map_err(|e| format!("engine download failed: {e}"))?;
+        {
+            use std::io::Read as _;
+            let mut f = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
+            let mut magic = [0u8; 2];
+            let is_zip = f.read_exact(&mut magic).is_ok() && &magic == b"PK";
+            drop(f);
+            if !is_zip {
+                return Err("engine download was not a zip (blocked by network?)".into());
+            }
+        }
+        std::fs::create_dir_all(&runtime).map_err(|e| e.to_string())?;
+        let extracted = std::process::Command::new("tar")
+            .arg("-xf")
+            .arg(&tmp)
+            .arg("-C")
+            .arg(&runtime)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+            || std::process::Command::new("unzip")
+                .arg("-qo")
+                .arg(&tmp)
+                .arg("-d")
+                .arg(&runtime)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if !extracted {
+            return Err("engine zip extract failed".into());
+        }
+        if !bin.exists() {
+            return Err("engine extracted but chrome binary is missing".into());
+        }
+        // Remote manifest (GitHub raw — reachable even under the R2 hijack)
+        // carries the etags + chromium version runtime_install() compares
+        // against. Unreachable → nulls; an unknown local value is never a
+        // mismatch in engine_outdated()/install_fingerprints().
+        let remote = shardx_fetch_remote_manifest();
+        let remote_ver = remote
+            .get("chromium_version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        // On-disk truth beats the remote manifest: the extracted engine
+        // dir carries a `<ver>.manifest` marker on Windows.
+        let on_disk_ver = std::fs::read_dir(&runtime.join(shardx_engine_root()))
+            .ok()
+            .and_then(|rd| {
+                rd.flatten().find_map(|e| {
+                    let p = e.path();
+                    if p.extension().and_then(|s| s.to_str()) != Some("manifest") {
+                        return None;
+                    }
+                    let stem = p.file_stem()?.to_str()?.to_string();
+                    (stem.split('.').count() >= 2 && stem.starts_with(|c: char| c.is_ascii_digit()))
+                        .then_some(stem)
+                })
+            });
+        let ver = on_disk_ver.or_else(|| remote_ver.clone());
+        let archives = remote.get("archives").cloned().unwrap_or(Value::Null);
+        let etag = |k: &str| archives.get(k).and_then(|v| v.as_str());
+        let manifest = serde_json::json!({
+            "browser_etag": etag(key),
+            "widevine_etag": null,
+            "fingerprints_etag": etag("ShardX-Fingerprints.zip"),
+            "applied_chromium_version": ver,
+            "installed_chromium_version": ver,
+            "installed_engine_build": remote.get("engine_build")
+                .and_then(|v| v.as_str().map(String::from)
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))),
+        });
+        std::fs::write(
+            runtime.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result.map(|_| serde_json::json!({ "ok": true }))
+}
+
+/// The launcher's remote version manifest (runtime.json on GitHub raw) —
+/// Value::Null when unreachable; callers treat every field as optional.
+fn shardx_fetch_remote_manifest() -> Value {
+    shardx_http(30)
+        .get("https://raw.githubusercontent.com/ProxyShard/ShardBrowser/main/runtime.json")
+        .header("User-Agent", "agent-office")
+        .call()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+        .unwrap_or(Value::Null)
+}
+
 /// Seed the fingerprint library when empty — mirrors the launcher's own
 /// install_fingerprints(): download the bundle, extract, copy every .json
 /// (top dir `shardx-fingerprints` or flat) into the library dir. Returns a
@@ -3488,11 +3693,8 @@ fn shardx_seed_fingerprints_at(
     let tmp = std::env::temp_dir().join(format!("shardx-fp-{}.zip", uuid::Uuid::new_v4()));
     let out = std::env::temp_dir().join(format!("shardx-fp-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<usize, String> {
-        let mut resp = shardx_http(300)
-            .get(bundle_url)
-            .call()
+        download_url(bundle_url, &tmp, 300)
             .map_err(|e| format!("bundle download failed: {e}"))?;
-        download_to_file(&mut resp, &tmp)?;
         // A DNS-hijack / captive portal serves an HTML block page with a 200.
         let mut f = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
         let mut magic = [0u8; 2];
@@ -3637,17 +3839,20 @@ fn shardx_bootstrap_inner(hive_root: &std::path::Path, try_launch: bool) -> Valu
             .map(|(_, p)| p)
             .unwrap_or(SHARDX_API_PORT),
         shardx_launcher_settings_path(),
+        shardx_seed_engine,
     )
 }
 
 /// The machine-touching bits (which port to probe, which settings.json to
-/// mint from) are parameters so tests point at a dead port + missing file —
-/// a real running launcher must not flip a "gate reporting" test green.
+/// mint from, how the engine gets seeded) are parameters so tests point at
+/// a dead port + missing file + a no-op seed — a real running launcher and
+/// a 150MB CDN pull must not leak into a "gate reporting" test.
 fn shardx_bootstrap_impl(
     hive_root: &std::path::Path,
     try_launch: bool,
     port: u16,
     settings_path: Option<PathBuf>,
+    seed_engine: fn() -> Result<Value, String>,
 ) -> Value {
     let mut steps = serde_json::json!({});
 
@@ -3696,7 +3901,17 @@ fn shardx_bootstrap_impl(
         };
     }
 
-    let ok = ["launcher", "token", "bridge", "fingerprints"]
+    // Engine pre-seed — the launcher's own first-run engine download
+    // (~150MB from the same poisoned CDN host) dies on the DNS hijack.
+    // Landing it here (manifest stamped so runtime_install sees "up to
+    // date") means the launcher skips that step entirely. Files only —
+    // independent of launcher_up.
+    steps["engine"] = match seed_engine() {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    };
+
+    let ok = ["launcher", "token", "bridge", "fingerprints", "engine"]
         .iter()
         // A skipped seed (launcher down / no token) isn't a bootstrap failure.
         .filter(|k| steps[*k].is_object())
@@ -5088,7 +5303,9 @@ mod tests {
         std::fs::write(dest.join("index.js"), "// stub").unwrap();
         // Dead port + no settings file = deterministic "nothing live" —
         // independent of whether a real launcher is running on this box.
-        let v = shardx_bootstrap_impl(&home, false, 1, None);
+        let v = shardx_bootstrap_impl(&home, false, 1, None, || {
+            Ok(serde_json::json!({ "ok": true, "stubbed": true }))
+        });
         assert_eq!(v["steps"]["bridge"]["ok"], true);
         assert_eq!(v["steps"]["launcher"]["ok"], false);
         assert_eq!(v["steps"]["token"]["ok"], false);
