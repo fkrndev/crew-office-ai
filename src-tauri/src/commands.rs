@@ -5319,6 +5319,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// LIVE — the real GitHub release → real launcher asset → disk. ~100MB
+    /// download; run manually:
+    ///   cargo test shardx_download_launcher_live -- --ignored --nocapture
+    #[test]
+    #[ignore = "live: real GitHub release download (~100MB)"]
+    fn shardx_download_launcher_live() {
+        let home = tmp_home("shardx-dl-live");
+        let p = shardx_download_launcher_at(
+            "https://api.github.com/repos/ProxyShard/ShardBrowser/releases/latest",
+            &home,
+        )
+        .unwrap();
+        let landed = PathBuf::from(&p);
+        let meta = std::fs::metadata(&landed).unwrap();
+        eprintln!("[live] landed {p} ({} bytes)", meta.len());
+        assert!(meta.len() > 10 * 1024 * 1024, "suspiciously small asset");
+        // A real portable exe starts with MZ; an HTML error page doesn't.
+        if cfg!(windows) {
+            let mut magic = [0u8; 2];
+            use std::io::Read as _;
+            std::fs::File::open(&landed)
+                .unwrap()
+                .read_exact(&mut magic)
+                .unwrap();
+            assert_eq!(&magic, b"MZ", "downloaded file is not a PE exe");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// ureq's buffered readers cap at 10 MiB by default — the launcher exe
     /// and fingerprint bundle both exceed it ("the response body is larger
     /// than request limit: 10485760"). download_to_file streams instead, so
