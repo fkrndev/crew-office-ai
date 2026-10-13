@@ -687,6 +687,9 @@ const MINE_IGNORE_LINES: &[&str] = &[
     "inbox/",
     "outbox/",
     ".codex/",
+    ".hermes/",
+    ".openclaw/",
+    "node_modules/",
 ];
 
 /// Churny/ephemeral live files kept out of the hive git repo (upstream
@@ -791,6 +794,15 @@ impl Hive {
             root: root.to_path_buf(),
         };
         hive.ensure_gitignore_lines(&root.join(".gitignore"), HIVE_GITIGNORE_LINES);
+        // Agents created before a provider's private home was on the ignore
+        // list (hermes' .hermes/ holds a ~30k-file node/venv runtime) only
+        // get the lines at their next spawn; the init commit below runs on
+        // the UI thread at startup and would hash all of it first.
+        if let Ok(rd) = fs::read_dir(root.join("agents")) {
+            for ent in rd.flatten().filter(|e| e.path().is_dir()) {
+                hive.ensure_gitignore_lines(&ent.path().join(".gitignore"), MINE_IGNORE_LINES);
+            }
+        }
         hive.commit("hive: init");
         Ok(hive)
     }
@@ -2780,6 +2792,17 @@ impl Hive {
             Err(_) => git2::Repository::init(&self.root).context("git init")?,
         };
         let mut index = repo.index()?;
+        // Drop entries committed before their path was ignored — add_all
+        // never untracks, so a once-tracked runtime dir would be re-stat'ed
+        // and re-hashed on every commit forever.
+        let stale: Vec<PathBuf> = index
+            .iter()
+            .filter_map(|e| std::str::from_utf8(&e.path).ok().map(PathBuf::from))
+            .filter(|p| repo.is_path_ignored(p).unwrap_or(false))
+            .collect();
+        for p in stale {
+            let _ = index.remove_path(&p);
+        }
         index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
         index.write()?;
         let tree_id = index.write_tree()?;
@@ -3085,6 +3108,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oa-{tag}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         (Hive::ensure(&dir.join("hive")).unwrap(), dir)
+    }
+
+    #[test]
+    fn ensure_untracks_provider_private_home_committed_before_it_was_ignored() {
+        let (hive, dir) = tmp_hive("untrack-hermes");
+        let home = dir.join("hive/agents/god/.hermes/runtime/node");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("big.bin"), "x").unwrap();
+        std::fs::write(dir.join("hive/agents/god/memory.md"), "keep").unwrap();
+        // The pre-fix state: no per-agent ignore, so everything got committed.
+        let _ = std::fs::remove_file(dir.join("hive/agents/god/.gitignore"));
+        hive.commit("legacy");
+        let tracked = |root: &Path| -> Vec<String> {
+            let repo = git2::Repository::open(root).unwrap();
+            repo.index().unwrap().iter()
+                .map(|e| String::from_utf8_lossy(&e.path).to_string())
+                .collect()
+        };
+        assert!(tracked(&dir.join("hive")).iter().any(|p| p.contains(".hermes/")));
+
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let after = tracked(&dir.join("hive"));
+        assert!(!after.iter().any(|p| p.contains(".hermes/")), "{after:?}");
+        assert!(after.iter().any(|p| p.ends_with("agents/god/memory.md")));
+        drop(hive);
     }
 
     #[test]

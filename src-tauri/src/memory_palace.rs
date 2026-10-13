@@ -35,6 +35,9 @@ const MINE_IGNORE_LINES: &[&str] = &[
     "inbox/",
     "outbox/",
     ".codex/",
+    ".hermes/",
+    ".openclaw/",
+    "node_modules/",
 ];
 
 /// Re-mine changed memories every 10 min (upstream MINE_INTERVAL_MS).
