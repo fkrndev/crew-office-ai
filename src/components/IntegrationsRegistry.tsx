@@ -111,6 +111,7 @@ export function IntegrationsRegistry() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const flash = (msg: string) => { setNote(msg); setTimeout(() => setNote(''), 2400); };
   const refresh = async () => setRecords(await integrationsClient.list());
@@ -391,9 +392,20 @@ export function IntegrationsRegistry() {
                     </div>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: st.color, whiteSpace: 'nowrap' }}><span style={{ fontSize: 10 }}>{st.dot}</span> {st.text}</span>
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                      <PixelButton variant="secondary" size="sm" onClick={() => { void onTestRow(r); }} disabled={busy || testingId === r.id}>{testingId === r.id ? '…' : tr('integrations.test')}</PixelButton>
-                      <PixelButton variant="ghost" size="sm" onClick={() => startEdit(r)} disabled={busy}>{tr('integrations.edit')}</PixelButton>
-                      <PixelButton variant="ghost" size="sm" onClick={() => { void onRemove(r); }} disabled={busy}>✕</PixelButton>
+                      <PixelButton variant="secondary" size="sm" onClick={() => { setPendingDelete(null); void onTestRow(r); }} disabled={busy || testingId === r.id}>{testingId === r.id ? '…' : tr('integrations.test')}</PixelButton>
+                      <PixelButton variant="ghost" size="sm" onClick={() => { setPendingDelete(null); startEdit(r); }} disabled={busy}>{tr('integrations.edit')}</PixelButton>
+                      <PixelButton
+                        variant={pendingDelete === r.id ? 'destructive' : 'ghost'}
+                        size="sm"
+                        onClick={() => {
+                          if (pendingDelete === r.id) { void onRemove(r); setPendingDelete(null); }
+                          else { setPendingDelete(r.id); }
+                        }}
+                        disabled={busy}
+                        title={pendingDelete === r.id ? tr('integrations.confirmDelete') : tr('integrations.delete')}
+                      >
+                        {pendingDelete === r.id ? tr('integrations.confirmDelete') : '✕'}
+                      </PixelButton>
                     </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

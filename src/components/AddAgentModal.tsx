@@ -287,17 +287,19 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   };
 
   // Close only the modal on Esc. Capture prevents the fullscreen terminal's
-  // window-level handler from also closing the view underneath.
+  // window-level handler from also closing the view underneath. Blocked while
+  // a spawn is in flight so the user can't orphan it without feedback.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (busy) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       onClose();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  }, [onClose, busy]);
 
   // Zero-step resume: when a session id is entered, look up the cwd it originally
   // ran in (from the transcript) and pre-fill the Folder so the user doesn't have
@@ -634,7 +636,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
 
   return (
     <div
-      onClick={onClose}
+      onClick={busy ? undefined : onClose}
       style={{
         position: 'fixed', inset: 0,
         background: 'rgba(26, 19, 32, 0.6)',
@@ -879,6 +881,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         onChange={(e) => {
                           const next = e.target.value;
                           setName(next);
+                          if (error) setError(undefined);
                           const match = characterForName(next);
                           if (match) setCharacter(match);
                         }}
@@ -892,7 +895,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         {OFFICE_CAST.map(c => (
                           <button
                             key={c.name}
-                            onClick={() => { setCharacter(c.name); setName(c.displayName); }}
+                            onClick={() => {
+                              setCharacter(c.name);
+                              // Only auto-fill the name when the user hasn't typed
+                              // their own — otherwise clicking a character tile
+                              // while browsing silently renames the agent.
+                              const isCastName = OFFICE_CAST.some(m => m.displayName === name);
+                              if (!name.trim() || isCastName) setName(c.displayName);
+                            }}
                             title={c.blurb}
                             style={{
                               padding: 4,
@@ -1013,7 +1023,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                         <input
                           value={cwd}
-                          onChange={(e) => setCwd(e.target.value)}
+                          onChange={(e) => { setCwd(e.target.value); if (error) setError(undefined); }}
                           placeholder={tr('addAgent.projectPlaceholder')}
                           style={{ ...inputStyle, flex: 1, fontFamily: 'var(--cth-font-mono)', fontSize: 13 }}
                         />
@@ -1094,6 +1104,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                             <option key={p.name} value={p.name} />
                           ))}
                         </datalist>
+                        <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)', marginTop: 4, display: 'block' }}>
+                          {tr('addAgent.shardxProfileHint')}
+                        </span>
                       </>
                     )}
 
@@ -1274,7 +1287,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     <Row label={config.autoMode && preset.autoFlag ? tr('addAgent.commandAuto') : tr('addAgent.command')}>
                       <input
                         value={command}
-                        onChange={(e) => setCommand(e.target.value)}
+                        onChange={(e) => { setCommand(e.target.value); if (error) setError(undefined); }}
                         placeholder={
                           provider === 'antigravity'
                             ? 'agy'

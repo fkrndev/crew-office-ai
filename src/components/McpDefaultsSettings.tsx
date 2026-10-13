@@ -471,15 +471,16 @@ function ShardXSetup() {
             onClick={() => void run(() => window.cth.shardxDownloadLauncher())}
             style={shardxBtnStyle}
           >
-            {t('mcpDefaults.shardx.downloadLauncher')}
+            {t('mcpDefaults.shardx.step1')} · {t('mcpDefaults.shardx.downloadLauncher')}
           </button>
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !status?.launcherRunning}
+            title={!status?.launcherRunning ? t('mcpDefaults.shardx.bridgeNeedsLauncher') : undefined}
             onClick={() => void run(() => window.cth.shardxSetup())}
             style={shardxBtnStyle}
           >
-            {t('mcpDefaults.shardx.installBridge')}
+            {t('mcpDefaults.shardx.step2')} · {t('mcpDefaults.shardx.installBridge')}
           </button>
           <button
             type="button"
@@ -491,7 +492,7 @@ function ShardXSetup() {
           </button>
           {/* Orphan sweep — deletes ONLY auto-created office-* profiles no
               registry entry still owns; user-named profiles never touched.
-              Destructive → explicit confirm. */}
+              Destructive → explicit confirm + destructive styling. */}
           <button
             type="button"
             disabled={busy || !status?.launcherRunning || !status?.tokenSet}
@@ -499,7 +500,11 @@ function ShardXSetup() {
               if (!window.confirm(t('mcpDefaults.shardx.cleanConfirm'))) return;
               void run(() => window.cth.shardxCleanup());
             }}
-            style={shardxBtnStyle}
+            style={{
+              ...shardxBtnStyle,
+              background: 'var(--cth-coral-light)',
+              boxShadow: 'inset 0 0 0 1px var(--cth-coral)'
+            }}
           >
             {t('mcpDefaults.shardx.cleanProfiles')}
           </button>

@@ -196,7 +196,8 @@
     "stillWorkingPlural": "⚠ {{count}} agents are still working.",
     "cantUndo": "This can't be undone.",
     "switching": "switching…",
-    "deleteSwitch": "delete {{count}} & switch"
+    "deleteSwitch": "delete {{count}} & switch",
+    "notBuiltWarning": "This theme ({{label}}) is not built yet — your office will look the same, but your agents are still deleted. Pick a built theme, or switch after it ships."
   },
   "settings": {
     "title": "SETTINGS",
@@ -287,7 +288,12 @@
       "hardStopDesc": "When tripped, stop the agent entirely instead of just constraining it. Off = note first (recommended).",
       "killOnTrip": "kill on trip",
       "steerFirst": "steer first",
-      "saved": "saved"
+      "saved": "saved",
+      "orchSpawnTitle": "Who can add agents",
+      "orchSpawnOnDesc": "{{godName}} can hire on its own. Every agent it starts spends tokens you did not approve.",
+      "orchSpawnOffDesc": "Only you. {{godName}} can still ask, and its request waits in the queue instead of failing.",
+      "orchSpawnOnBtn": "me and {{godName}}",
+      "orchSpawnOffBtn": "only me"
     },
     "memory": {
       "semanticMemory": "Semantic memory",
@@ -727,7 +733,10 @@
     },
     "errPickHome": "Pick a harness home folder first.",
     "errCreateHome": "could not create harness home",
-    "errEngineNotInstalled": "{{label}} is not installed. Install it and press \"check again\", or pick another engine."
+    "errEngineNotInstalled": "{{label}} is not installed. Install it and press \"check again\", or pick another engine.",
+    "checking": "checking…",
+    "checkAgain": "check again",
+    "installInstructions": "install instructions"
   },
   "office": {
     "gpuError": "The office floor lost its GPU context.\n\nToo many terminals are using the GPU at once.\nClose a few agent terminals, or restart the app, to bring it back.",
@@ -856,7 +865,9 @@
     "runningOpenModels": "Running open models? Step-by-step guides:",
     "runOnOpenModels": "run Munder Difflin on open models",
     "setUpMacMini": "set it up on a Mac Mini",
-    "autoModeCaveat": "⚠ In auto mode these engines run with full filesystem + shell access (no sandbox) — like Claude's bypass mode. Turn auto mode off (General) to make them ask first."
+    "autoModeCaveat": "⚠ In auto mode these engines run with full filesystem + shell access (no sandbox) — like Claude's bypass mode. Turn auto mode off (General) to make them ask first.",
+    "removeKey": "remove key",
+    "baseUrlPlaceholder": "base-URL"
   },
   "mcpDefaults": {
     "title": "Default MCP servers",
@@ -900,7 +911,10 @@
       "automations": "Automations",
       "blocks": "{{n}} blocks",
       "run": "Run",
-      "stop": "Stop"
+      "stop": "Stop",
+      "step1": "Step 1",
+      "step2": "Step 2",
+      "bridgeNeedsLauncher": "Start the launcher first (Step 1)."
     }
   },
   "devicePicker": {
@@ -1335,7 +1349,9 @@
     "count": "{{count}} integrations · {{usable}} available to workers",
     "needsSecretShort": "Needs secret",
     "test": "test",
-    "edit": "edit"
+    "edit": "edit",
+    "delete": "delete",
+    "confirmDelete": "confirm delete"
   },
   "kanban": {
     "count": "{{count}} tasks",
@@ -1525,5 +1541,18 @@
     "noWorkers": "NO WORKERS ON THE FLOOR — WAITING FOR THE ORCHESTRATOR",
     "timeoutNote": "This is taking a while (an agent may be mid-compaction or deep in a tool call). Keep waiting, or force quit and accept the data loss.",
     "errorFallback": "Closing time could not start."
+  },
+  "hivePicker": {
+    "title": "SELECT A WORKSPACE",
+    "intro": "A workspace is the folder where the app keeps everything for one setup — its settings, your agents and their memory, tasks, triggers, and history. Each workspace is separate and self-contained, so you can run different setups side by side. Open the one you were working in, switch to another, or start a new one.",
+    "current": "CURRENT",
+    "recent": "RECENT",
+    "open": "open",
+    "switch": "switch →",
+    "opening": "opening…",
+    "switchTitle": "Switch to {{path}} (reloads the app)",
+    "openingNote": "Opening {{name}} — the app will reload…",
+    "chooseFolder": "choose folder…",
+    "openFailed": "Could not open that folder."
   }
 }

@@ -541,11 +541,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     <span>{engineAvailabilityMessage(selectedEngine, providerPreset(godProvider).label)}</span>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <PixelButton variant="secondary" size="sm" onClick={() => { void probeEngines(); }} disabled={probing}>
-                        {probing ? 'checking...' : 'check again'}
+                        {probing ? t('onboarding.checking') : t('onboarding.checkAgain')}
                       </PixelButton>
                       {selectedEngine.docsUrl && (
                         <PixelButton variant="ghost" size="sm" onClick={() => { void window.cth.openExternal(selectedEngine.docsUrl!); }}>
-                          install instructions
+                          {t('onboarding.installInstructions')}
                         </PixelButton>
                       )}
                     </div>
@@ -791,7 +791,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                       // screen, instead of letting a pick that cannot boot through
                       // to a Michael that never starts.
                       if (step === 'orchestrator' && engineBlocked) {
-                        setError(`${providerPreset(godProvider).label} is not installed. Install it and press "check again", or pick another engine.`);
+                        setError(t('onboarding.errEngineNotInstalled', { label: providerPreset(godProvider).label }));
                         return;
                       }
                       setError(undefined);

@@ -251,9 +251,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [autoCompactPending, setAutoCompactPending] = useState<boolean | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveNote, setSaveNote] = useState('');
-  /** True once a control that USED to persist on click has been changed. Only
-   *  those need the close guard: the text fields always needed a Save. */
-  const dirty = Object.keys(pending).length > 0 || autoCompactPending !== null;
+  const [saveErr, setSaveErr] = useState(false);
   const stage = (patch: Partial<HarnessConfig>): void =>
     setPending((prev) => ({ ...prev, ...patch }));
 
@@ -346,10 +344,27 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       }
     } as Partial<HarnessConfig>;
   };
+  /** True once a control that USED to persist on click has been changed. Only
+   *  those need the close guard: the text fields always needed a Save.
+   *
+   *  Includes the breaker/budget/maxTurns fields, which are applied via
+   *  budgetPatch()/maxTurnsPatch() in saveAll rather than through `pending` —
+   *  without this they could be edited and lost silently on Close while a
+   *  trivial toggle like Keep awake trips the unsaved warning. */
+  const dirty =
+    Object.keys(pending).length > 0 ||
+    autoCompactPending !== null ||
+    maxTurnsVal !== (cfgX.maxTurns != null ? String(cfgX.maxTurns) : '') ||
+    agentBudget !== (breakerCfg.costCapTokens != null ? String(breakerCfg.costCapTokens) : '') ||
+    velocityCeiling !== (breakerCfg.circuitBreaker?.tokenVelocityPerMin != null ? String(breakerCfg.circuitBreaker.tokenVelocityPerMin) : '') ||
+    brkRepeated !== (breakerCfg.circuitBreaker?.repeatedToolLimit != null ? String(breakerCfg.circuitBreaker.repeatedToolLimit) : '') ||
+    brkErrStorm !== (breakerCfg.circuitBreaker?.errorStormLimit != null ? String(breakerCfg.circuitBreaker.errorStormLimit) : '') ||
+    brkEnabled !== (breakerCfg.circuitBreaker?.enabled !== false) ||
+    brkHardStop !== (breakerCfg.circuitBreaker?.hardStop === true);
   /** The one writer. Commits what the form currently shows, in a single
    *  updateConfig, so a half-applied save is not a state the app can reach. */
   const saveAll = async (): Promise<void> => {
-    setSaveBusy(true); setSaveNote('');
+    setSaveBusy(true); setSaveNote(''); setSaveErr(false);
     try {
       const patch: Partial<HarnessConfig> = {
         ...maxTurnsPatch(),
@@ -368,9 +383,11 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setPending({});
       setAutoCompactPending(null);
       setSaveNote(t('settings.saved'));
+      setSaveErr(false);
       setTimeout(() => setSaveNote(''), 1800);
     } catch (e) {
       setSaveNote(e instanceof Error ? e.message : String(e));
+      setSaveErr(true);
     } finally { setSaveBusy(false); }
   };
 
@@ -1291,16 +1308,16 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                             <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
-                              Who can add agents
+                              {t('settings.autonomy.orchSpawnTitle')}
                             </span>
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
                               {orchSpawnOn
-                                ? `${godName} can hire on his own. Every agent he starts spends tokens you did not approve.`
-                                : `Only you. ${godName} can still ask, and his request waits in the queue instead of failing.`}
+                                ? t('settings.autonomy.orchSpawnOnDesc', { godName })
+                                : t('settings.autonomy.orchSpawnOffDesc', { godName })}
                             </span>
                           </div>
                           <PixelButton variant={orchSpawnOn ? 'primary' : 'secondary'} size="sm" onClick={toggleOrchSpawn}>
-                            {orchSpawnOn ? `me and ${godName}` : 'only me'}
+                            {orchSpawnOn ? t('settings.autonomy.orchSpawnOnBtn', { godName }) : t('settings.autonomy.orchSpawnOffBtn')}
                           </PixelButton>
                         </div>
                       </div>
@@ -2119,7 +2136,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                 background: 'var(--cth-cream-50)'
               }}>
                 {saveNote && (
-                  <span style={{ fontSize: 12, color: 'var(--cth-mint)' }}>{saveNote}</span>
+                  <span style={{ fontSize: 12, color: saveErr ? 'var(--cth-coral)' : 'var(--cth-mint)' }}>{saveNote}</span>
                 )}
                 {dirty && !saveNote && (
                   <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.unsavedChanges')}</span>

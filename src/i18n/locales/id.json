@@ -196,7 +196,8 @@
     "stillWorkingPlural": "⚠ {{count}} agen masih bekerja.",
     "cantUndo": "Ini tidak bisa dibatalkan.",
     "switching": "mengganti…",
-    "deleteSwitch": "hapus {{count}} & ganti"
+    "deleteSwitch": "hapus {{count}} & ganti",
+    "notBuiltWarning": "Tema ini ({{label}}) belum dibuat — office-mu akan terlihat sama, tapi agent-mu tetap dihapus. Pilih tema yang sudah ada, atau pindah setelah tema ini rilis."
   },
   "settings": {
     "title": "PENGATURAN",
@@ -287,7 +288,12 @@
       "hardStopDesc": "Saat terpicu, hentikan agent sepenuhnya alih-alih hanya membatasinya. Mati = catat dulu (disarankan).",
       "killOnTrip": "matikan saat terpicu",
       "steerFirst": "steer dulu",
-      "saved": "tersimpan"
+      "saved": "tersimpan",
+      "orchSpawnTitle": "Siapa yang bisa menambah agent",
+      "orchSpawnOnDesc": "{{godName}} bisa merekrut sendiri. Setiap agent yang ia mulai menghabiskan token yang tidak kamu setujui.",
+      "orchSpawnOffDesc": "Hanya kamu. {{godName}} masih bisa meminta, dan permintaannya menunggu di antrean alih-alih gagal.",
+      "orchSpawnOnBtn": "aku dan {{godName}}",
+      "orchSpawnOffBtn": "hanya aku"
     },
     "memory": {
       "semanticMemory": "Memori semantik",
@@ -727,7 +733,10 @@
     },
     "errPickHome": "Pilih folder rumah harness dulu.",
     "errCreateHome": "tidak bisa membuat rumah harness",
-    "errEngineNotInstalled": "{{label}} belum terinstal. Instal dulu lalu tekan \"periksa ulang\", atau pilih engine lain."
+    "errEngineNotInstalled": "{{label}} belum terinstal. Instal dulu lalu tekan \"periksa ulang\", atau pilih engine lain.",
+    "checking": "memeriksa…",
+    "checkAgain": "periksa lagi",
+    "installInstructions": "petunjuk pemasangan"
   },
   "office": {
     "gpuError": "Lantai kantor kehilangan konteks GPU-nya.\n\nTerlalu banyak terminal memakai GPU sekaligus.\nTutup beberapa terminal agen, atau restart aplikasinya, untuk mengembalikannya.",
@@ -856,7 +865,9 @@
     "runningOpenModels": "Menjalankan model terbuka? Panduan langkah demi langkah:",
     "runOnOpenModels": "jalankan Munder Difflin di model terbuka",
     "setUpMacMini": "siapkan di Mac Mini",
-    "autoModeCaveat": "⚠ Di mode auto engine ini jalan dengan akses filesystem + shell penuh (tanpa sandbox) — seperti mode bypass Claude. Matikan mode auto (Umum) agar mereka tanya dulu."
+    "autoModeCaveat": "⚠ Di mode auto engine ini jalan dengan akses filesystem + shell penuh (tanpa sandbox) — seperti mode bypass Claude. Matikan mode auto (Umum) agar mereka tanya dulu.",
+    "removeKey": "hapus kunci",
+    "baseUrlPlaceholder": "base-URL"
   },
   "mcpDefaults": {
     "title": "Server MCP default",
@@ -900,7 +911,10 @@
       "automations": "Automation",
       "blocks": "{{n}} blok",
       "run": "Jalankan",
-      "stop": "Stop"
+      "stop": "Stop",
+      "step1": "Langkah 1",
+      "step2": "Langkah 2",
+      "bridgeNeedsLauncher": "Mulai launcher dulu (Langkah 1)."
     }
   },
   "devicePicker": {
@@ -1335,7 +1349,9 @@
     "count": "{{count}} integrasi · {{usable}} tersedia untuk pekerja",
     "needsSecretShort": "Butuh secret",
     "test": "tes",
-    "edit": "edit"
+    "edit": "edit",
+    "delete": "hapus",
+    "confirmDelete": "konfirmasi hapus"
   },
   "kanban": {
     "count": "{{count}} tugas",
@@ -1525,5 +1541,18 @@
   "booting": {
     "title": "MASUK KERJA",
     "body": "{{godName}} sedang menempati sudut kantor dan menyiapkan floor. Tunggu sebentar…"
+  },
+  "hivePicker": {
+    "title": "PILIH WORKSPACE",
+    "intro": "Workspace adalah folder tempat aplikasi menyimpan semuanya untuk satu setup — pengaturannya, agent-mu dan memori mereka, tugas, trigger, dan riwayat. Setiap workspace terpisah dan mandiri, jadi kamu bisa menjalankan setup berbeda berdampingan. Buka yang sedang kamu kerjakan, pindah ke lain, atau mulai yang baru.",
+    "current": "SAAT INI",
+    "recent": "TERBARU",
+    "open": "buka",
+    "switch": "pindah →",
+    "opening": "membuka…",
+    "switchTitle": "Pindah ke {{path}} (memuat ulang aplikasi)",
+    "openingNote": "Membuka {{name}} — aplikasi akan dimuat ulang…",
+    "chooseFolder": "pilih folder…",
+    "openFailed": "Tidak bisa membuka folder itu."
   }
 }

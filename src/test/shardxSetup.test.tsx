@@ -52,9 +52,21 @@ describe('McpDefaultsSettings ShardX setup card', () => {
   });
 
   it('Install bridge calls shardxSetup then re-polls status', async () => {
-    renderSettings(cth);
-    await waitFor(() => screen.getByText('Install bridge'));
-    fireEvent.click(screen.getByText('Install bridge'));
+    // Install bridge is gated on the launcher running — override the shared
+    // renderSettings status so the bridge button is enabled.
+    cth.shardxStatus = async () => {
+      cth.calls.push({ method: 'shardxStatus', args: [] });
+      return {
+        launcherRunning: true,
+        mcpInstalled: false,
+        tokenSet: false,
+        api: 'http://127.0.0.1:40325',
+        mcpDir: 'C:/hive/mcp-servers/shardx'
+      };
+    };
+    render(<McpDefaultsSettings config={baseConfig} />);
+    await waitFor(() => screen.getByText(/Install bridge/));
+    fireEvent.click(screen.getByText(/Install bridge/));
     await waitFor(() => {
       expect(cth.calls.some((c) => c.method === 'shardxSetup')).toBe(true);
     });
@@ -75,8 +87,8 @@ describe('McpDefaultsSettings ShardX setup card', () => {
 
   it('Download launcher calls shardxDownloadLauncher', async () => {
     renderSettings(cth);
-    await waitFor(() => screen.getByText('Download launcher'));
-    fireEvent.click(screen.getByText('Download launcher'));
+    await waitFor(() => screen.getByText(/Download launcher/));
+    fireEvent.click(screen.getByText(/Download launcher/));
     await waitFor(() => {
       expect(cth.calls.some((c) => c.method === 'shardxDownloadLauncher')).toBe(true);
     });

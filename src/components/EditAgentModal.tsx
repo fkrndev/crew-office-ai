@@ -140,7 +140,11 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                       <button
                         key={c.name}
                         type="button"
-                        onClick={() => { setCharacter(c.name); setName(c.displayName); }}
+                        onClick={() => {
+                          setCharacter(c.name);
+                          const isCastName = OFFICE_CAST.some(m => m.displayName === name || m.displayName === agent.name);
+                          if (!name.trim() || name === agent.name || isCastName) setName(c.displayName);
+                        }}
                         title={c.blurb}
                         style={{
                           padding: 4,
@@ -174,6 +178,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                       type="button"
                       onClick={() => setAccent(a)}
                       title={a}
+                      aria-label={a}
                       style={{
                         width: 28, height: 28,
                         background: `var(--cth-${a})`,

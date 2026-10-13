@@ -172,6 +172,7 @@ export function OfficeThemePicker({ config }: { config: HarnessConfig }) {
       {pending && pendingMeta && (
         <ThemeSwitchConfirmModal
           label={pendingMeta.label}
+          built={pendingMeta.built}
           agents={nonGodAgents()}
           busy={busy}
           onCancel={() => setPending(null)}
@@ -186,9 +187,10 @@ interface VictimAgent { id: string; status?: string; }
 
 /** Destructive confirm for a theme switch with live workers (report §E copy). */
 function ThemeSwitchConfirmModal({
-  label, agents, busy, onCancel, onConfirm,
+  label, built, agents, busy, onCancel, onConfirm,
 }: {
   label: string;
+  built: boolean;
   agents: VictimAgent[];
   busy: boolean;
   onCancel: () => void;
@@ -242,6 +244,16 @@ function ThemeSwitchConfirmModal({
                 <div style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)', marginTop: 8 }}>
                   {t('officeTheme.cantUndo')}
                 </div>
+                {!built && (
+                  <div style={{
+                    marginTop: 8, padding: '6px 10px',
+                    background: 'var(--cth-lemon-light)',
+                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                    fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-900)'
+                  }}>
+                    ⚠ {t('officeTheme.notBuiltWarning', { label })}
+                  </div>
+                )}
               </div>
             </div>
 

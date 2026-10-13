@@ -196,7 +196,8 @@
     "stillWorkingPlural": "⚠ {{count}} 个智能体仍在工作。",
     "cantUndo": "此操作无法撤销。",
     "switching": "切换中…",
-    "deleteSwitch": "删除 {{count}} 个并切换"
+    "deleteSwitch": "删除 {{count}} 个并切换",
+    "notBuiltWarning": "此主题({{label}})尚未构建 — 你的办公室外观不变,但 agent 仍会被删除。选择一个已构建的主题,或在其发布后再切换。"
   },
   "settings": {
     "title": "设置",
@@ -286,7 +287,12 @@
       "hardStopDesc": "触发时,完全停止 agent 而不是仅仅限制它。关闭 = 先备注(推荐)。",
       "killOnTrip": "触发即终止",
       "steerFirst": "先引导",
-      "saved": "已保存"
+      "saved": "已保存",
+      "orchSpawnTitle": "谁可以添加 agent",
+      "orchSpawnOnDesc": "{{godName}} 可以自行招募。它启动的每个 agent 都会消耗你未批准的 token。",
+      "orchSpawnOffDesc": "只有你。{{godName}} 仍可以请求,其请求会在队列中等待而不是失败。",
+      "orchSpawnOnBtn": "我和 {{godName}}",
+      "orchSpawnOffBtn": "只有我"
     },
     "memory": {
       "semanticMemory": "语义记忆",
@@ -727,7 +733,10 @@
     },
     "errPickHome": "请先选择 harness 主文件夹。",
     "errCreateHome": "无法创建 harness 主文件夹",
-    "errEngineNotInstalled": "{{label}} 尚未安装。请先安装它并点击“重新检查”，或选择其他引擎。"
+    "errEngineNotInstalled": "{{label}} 尚未安装。请先安装它并点击“重新检查”，或选择其他引擎。",
+    "checking": "正在检查…",
+    "checkAgain": "重新检查",
+    "installInstructions": "安装说明"
   },
   "office": {
     "gpuError": "办公楼层丢失了 GPU 上下文。\n\n同时使用 GPU 的终端太多了。\n关闭几个智能体终端，或重启应用，即可恢复。",
@@ -856,7 +865,9 @@
     "runningOpenModels": "要跑开源模型？分步指南：",
     "runOnOpenModels": "在开源模型上运行 Munder Difflin",
     "setUpMacMini": "在 Mac Mini 上配置",
-    "autoModeCaveat": "⚠ 在自动模式下,这些引擎以完整文件系统 + shell 访问权限运行(无沙箱)— 类似 Claude 的 bypass 模式。关闭自动模式(通用)让它们先询问。"
+    "autoModeCaveat": "⚠ 在自动模式下,这些引擎以完整文件系统 + shell 访问权限运行(无沙箱)— 类似 Claude 的 bypass 模式。关闭自动模式(通用)让它们先询问。",
+    "removeKey": "移除密钥",
+    "baseUrlPlaceholder": "base-URL"
   },
   "mcpDefaults": {
     "title": "默认 MCP 服务器",
@@ -900,7 +911,10 @@
       "automations": "自动化",
       "blocks": "{{n}} 个块",
       "run": "运行",
-      "stop": "停止"
+      "stop": "停止",
+      "step1": "第 1 步",
+      "step2": "第 2 步",
+      "bridgeNeedsLauncher": "先启动 launcher(第 1 步)。"
     }
   },
   "devicePicker": {
@@ -1335,7 +1349,9 @@
     "count": "{{count}} 个集成 · {{usable}} 个对工人可用",
     "needsSecretShort": "需要密钥",
     "test": "测试",
-    "edit": "编辑"
+    "edit": "编辑",
+    "delete": "删除",
+    "confirmDelete": "确认删除"
   },
   "kanban": {
     "count": "{{count}} 项任务",
@@ -1525,5 +1541,18 @@
   "booting": {
     "title": "打卡上班",
     "body": "{{godName}} 正在进入角落办公室并准备楼层。请稍候…"
+  },
+  "hivePicker": {
+    "title": "选择工作区",
+    "intro": "工作区是应用为一个配置存放所有内容的文件夹 — 其设置、你的 agent 及其记忆、任务、触发器和历史。每个工作区独立且自包含,因此你可以并行运行不同配置。打开你正在使用的、切换到另一个,或新建一个。",
+    "current": "当前",
+    "recent": "最近",
+    "open": "打开",
+    "switch": "切换 →",
+    "opening": "正在打开…",
+    "switchTitle": "切换到 {{path}}(重新加载应用)",
+    "openingNote": "正在打开 {{name}} — 应用将重新加载…",
+    "chooseFolder": "选择文件夹…",
+    "openFailed": "无法打开该文件夹。"
   }
 }

@@ -88,6 +88,9 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
   const [models, setModels] = useState<Partial<Record<AgentProvider, string>>>(
     config.providerDefaultModels ?? {}
   );
+  // Per-CLI save feedback for the blur-saved base-URL / model fields. Without
+  // this the user gets zero signal — the field just keeps its value silently.
+  const [cliNote, setCliNote] = useState<Partial<Record<AgentProvider, { ok: boolean; msg: string }>>>({});
 
   // Reseed set/not-set flags on mount (write-only — only the boolean is fetched).
   useEffect(() => {
@@ -129,12 +132,22 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
   const saveBaseUrl = async (id: AgentProvider, value: string) => {
     const next = { ...baseUrls, [id]: value.trim() || undefined };
     setBaseUrls(next);
-    try { await window.cth.updateConfig({ providerBaseUrls: next }); } catch { /* noop */ }
+    try {
+      await window.cth.updateConfig({ providerBaseUrls: next });
+      setCliNote((s) => ({ ...s, [id]: { ok: true, msg: t('aiEngines.saved') } }));
+    } catch (e) {
+      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+    }
   };
   const saveModel = async (id: AgentProvider, value: string) => {
     const next = { ...models, [id]: value.trim() || undefined };
     setModels(next);
-    try { await window.cth.updateConfig({ providerDefaultModels: next }); } catch { /* noop */ }
+    try {
+      await window.cth.updateConfig({ providerDefaultModels: next });
+      setCliNote((s) => ({ ...s, [id]: { ok: true, msg: t('aiEngines.saved') } }));
+    } catch (e) {
+      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+    }
   };
 
   return (
@@ -163,9 +176,9 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
                 onChange={(e) => setDraftKey((s) => ({ ...s, [b.id]: e.target.value }))}
                 style={inputStyle}
               />
-              <PixelButton variant="secondary" size="sm" onClick={() => saveKey(b.id)}>{t('common.save')}</PixelButton>
+              <PixelButton variant="secondary" size="sm" onClick={() => saveKey(b.id)} disabled={!(draftKey[b.id] ?? '').trim()}>{t('common.save')}</PixelButton>
               {hasKey[b.id] && (
-                <PixelButton variant="secondary" size="sm" onClick={() => clearKey(b.id)}>{t('common.delete')}</PixelButton>
+                <PixelButton variant="secondary" size="sm" onClick={() => clearKey(b.id)}>{t('aiEngines.removeKey')}</PixelButton>
               )}
             </div>
             {note[b.id] && <div style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{note[b.id]}</div>}
@@ -183,7 +196,7 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
             </label>
             <div style={{ display: 'flex', gap: 6 }}>
               <input
-                placeholder={`base-URL — ${c.hint}`}
+                placeholder={t('aiEngines.baseUrlPlaceholder')}
                 defaultValue={baseUrls[c.id] ?? ''}
                 onBlur={(e) => saveBaseUrl(c.id, e.target.value)}
                 style={inputStyle}
@@ -195,6 +208,10 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
                 style={{ ...inputStyle, maxWidth: 220 }}
               />
             </div>
+            <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>{c.hint}</span>
+            {cliNote[c.id] && (
+              <span style={{ fontSize: 11, color: cliNote[c.id]!.ok ? 'var(--cth-mint)' : 'var(--cth-coral)' }}>{cliNote[c.id]!.msg}</span>
+            )}
           </div>
         ))}
         {/* Local-setup guides (ondev-c part-3) — link the two how-to blogs. */}
