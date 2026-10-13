@@ -308,7 +308,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
         <span style={{
           fontFamily: 'var(--cth-font-display)', fontSize: 12, lineHeight: '20px',
           color: 'var(--cth-ink-900)'
-        }}>MUNDER DIFFLIN · FOCUS MODE</span>
+        }}>{t('fullscreenTerminal.focusTitle')}</span>
         {/* Same top-right controls as the main title bar — fullscreen covers
             it, so theme / exit-fullscreen / IDE must live here too. */}
         <div className="cth-titlebar-nodrag" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -359,8 +359,8 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
           <button
             className="cth-settings-btn"
             onClick={() => window.dispatchEvent(new CustomEvent('cth:open-settings'))}
-            title="Settings"
-            aria-label="Settings"
+            title={t('app.settings')}
+            aria-label={t('app.settings')}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               width: 28, height: 28, padding: 0,
@@ -507,7 +507,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   background: 'var(--cth-status-working)',
                   boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
                 }}>
-                  <Icon name="play" /> restoring your team…
+                  <Icon name="play" /> {t('fullscreenTerminal.restoringTeam')}
                 </div>
               )}
               {!autoRestoring && restorableAgents.length > 0 && (
@@ -529,7 +529,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   {restorableAgents.map((a: Agent) => (
                     <span
                       key={a.id}
-                      title={`${a.name} — restorable from last session`}
+                      title={t('fullscreenTerminal.restorableTitle', { name: a.name })}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: 2,
                         height: 20, padding: '0 2px 0 6px',
@@ -541,8 +541,8 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                       {a.name}
                       <button
                         onClick={() => useStore.getState().removeRestorableAgent(a.id)}
-                        title={`Dismiss ${a.name} — remove permanently from the restore list`}
-                        aria-label={`Dismiss ${a.name}`}
+                        title={t('fullscreenTerminal.dismissTitle', { name: a.name })}
+                        aria-label={t('fullscreenTerminal.dismissAria', { name: a.name })}
                         style={{
                           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                           width: 14, height: 14, padding: 0, lineHeight: 1,
@@ -873,7 +873,7 @@ function SidebarRow({
             fontSize: noteLabelSize,
             lineHeight: `${Math.round(noteLabelSize * 1.5)}px`,
             color: 'var(--cth-ink-700)'
-          }}>PRIVATE NOTE</div>
+          }}>{t('fullscreenTerminal.privateNote')}</div>
           {/* A textarea, not an input: the note is a bullet list, so Enter has
               to make a new line rather than doing nothing. autoFocus is safe
               now that opening is an explicit click, not a pointer fly-by. */}

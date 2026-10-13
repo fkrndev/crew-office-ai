@@ -58,6 +58,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const rtl = useRtl();
   const agents = useStore((s) => s.agents);
   const [missions, setMissions] = useState<ScheduledMission[]>([]);
+  const [persistError, setPersistError] = useState<string | undefined>();
   const [adding, setAdding] = useState(false);
   const [mLabel, setMLabel] = useState('');
   const [mInterval, setMInterval] = useState<number>(DEFAULT_INTERVAL_MS);
@@ -97,10 +98,14 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   }, [missions, onSummary, t]);
 
   // Optimistic: the list is the truth on screen the moment you click, and the
-  // write is fire-and-forget (the house pattern across the Command Center).
+  // write is fire-and-forget — but a failed write surfaces instead of silently
+  // looking like a save.
   const persist = (next: ScheduledMission[]) => {
     setMissions(next);
-    void window.cth.saveMissions(next).catch(() => { /* noop */ });
+    setPersistError(undefined);
+    void window.cth.saveMissions(next).catch((e) => {
+      setPersistError(e instanceof Error ? e.message : t('schedulesSection.persistFailed'));
+    });
   };
   const patch = (id: string, fields: Partial<ScheduledMission>) =>
     persist(missions.map((m) => (m.id === id ? { ...m, ...fields } : m)));
@@ -139,6 +144,15 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
 
   return (
     <>
+      {persistError && (
+        <div style={{
+          padding: '6px 10px', background: 'var(--cth-coral-light)',
+          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)',
+          marginBottom: 8
+        }}>
+          {t('schedulesSection.persistFailed')}: {persistError}
+        </div>
+      )}
       {missions.length === 0 && <Muted>{t('schedulesSection.nothingScheduled')}</Muted>}
       {missions.map((m) => (
         <MissionRow

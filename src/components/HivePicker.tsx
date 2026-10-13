@@ -17,7 +17,7 @@ export interface HivePickerProps {
 const SKIP_KEY = 'cth.skipHivePickerOnce';
 
 function folderName(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 /**
@@ -40,6 +40,9 @@ export function HivePicker({ config, onOpenCurrent }: HivePickerProps) {
   const openHive = async (path: string) => {
     if (!path) return;
     if (current && path === current) { onOpenCurrent(); return; }
+    // Switching workspaces reloads the app — confirm so the user knows what
+    // is about to happen (their data in the target folder is kept).
+    if (!window.confirm(t('hivePicker.switchConfirm'))) return;
     setError(undefined);
     setBusy(path);
     try {

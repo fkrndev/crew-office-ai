@@ -215,7 +215,13 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
           </span>
         </PixelButton>
         {isReal && (
-          <PixelButton variant="destructive" size="sm" onClick={onKill}>
+          <PixelButton
+            variant="destructive"
+            size="sm"
+            onClick={onKill}
+            aria-label={t('agentDetail.killAria', { name: agent.name })}
+            title={t('agentDetail.killAria', { name: agent.name })}
+          >
             <Icon name="x" />
           </PixelButton>
         )}

@@ -112,7 +112,9 @@
     "viewAnswersHistory": "buka detail tugas dengan riwayat tanya jawab lengkap",
     "blockingDownstream": "MENGHAMBAT {{count}} TUGAS HILIR",
     "blockingDownstreamPlural": "MENGHAMBAT {{count}} TUGAS HILIR",
-    "more": "… +{{count}} lagi"
+    "more": "… +{{count}} lagi",
+    "sendFailed": "Tidak bisa mengirim jawaban — coba lagi.",
+    "dismissFailed": "Tidak bisa membuang — coba lagi."
   },
   "agentStrip": {
     "privateNote": "CATATAN PRIBADI · {{name}}",
@@ -160,7 +162,8 @@
     "terminalTip": "Buka aplikasi terminal sistem di {{cwd}} — shell biasa di folder agen ini, terpisah dari terminal milik agen.",
     "openIde": "Buka IDE",
     "ide": "IDE",
-    "openTerminalAria": "Buka terminal sistem di folder agen ini"
+    "openTerminalAria": "Buka terminal sistem di folder agen ini",
+    "killAria": "Hentikan {{name}}"
   },
   "settingsHero": {
     "sponsoredBy": "Disponsori oleh",
@@ -1035,7 +1038,8 @@
     "shardxAutomation": "Automation ShardX",
     "shardxProject": "PROYEK AUTOMATION",
     "shardxPick": "pilih proyek",
-    "shardxNoProjects": "Belum ada proyek automation di launcher — buat dulu di tab Automation launcher."
+    "shardxNoProjects": "Belum ada proyek automation di launcher — buat dulu di tab Automation launcher.",
+    "persistFailed": "Tidak bisa menyimpan"
   },
   "webhooksSection": {
     "summaryNone": "tidak ada",
@@ -1179,7 +1183,13 @@
     "ideTip": "Buka IDE: jelajahi dan edit file di workspace {{name}}, dan lihat perubahan mereka yang belum di-commit sebagai diff.",
     "openIdeAria": "Buka IDE",
     "openTerminalTip": "Buka aplikasi terminal sistem di {{cwd}} — shell biasa di folder agen ini, terpisah dari terminal milik agen.",
-    "openTerminalAria": "Buka terminal sistem di folder agen ini"
+    "openTerminalAria": "Buka terminal sistem di folder agen ini",
+    "focusTitle": "MUNDER DIFFLIN · MODE FOKUS",
+    "restoringTeam": "memulihkan timmu…",
+    "restorableTitle": "{{name}} — bisa dipulihkan dari sesi terakhir",
+    "dismissTitle": "Buang {{name}} — hapus permanen dari daftar restore",
+    "dismissAria": "Buang {{name}}",
+    "privateNote": "CATATAN PRIBADI"
   },
   "memoryPanel": {
     "pill": "🧠 memori",
@@ -1268,7 +1278,9 @@
     "uncapped": "tanpa batas",
     "preserved": "Worktree yang dipertahankan ({{count}})",
     "preservedIntro": "Pekerja yang sudah selesai dengan worktree berisi pekerjaan yang belum terintegrasi — dipertahankan (tidak pernah dibuang otomatis) dan direklamasi otomatis setelah pekerjaannya mendarat di branch dasarnya.",
-    "keptAgo": "disimpan {{age}} lalu"
+    "keptAgo": "disimpan {{age}} lalu",
+    "stopConfirm": "Hentikan worker ini? Terminalnya ditutup dan pekerjaan yang sedang berjalan berhenti.",
+    "stopFailed": "Tidak bisa menghentikan worker"
   },
   "memoryGraph": {
     "topics": "topik",
@@ -1371,7 +1383,9 @@
     "awaitingAnswer": "MENUNGGU JAWABANMU — TAB TANYA SAYA",
     "dependsOn": "TERGANTUNG PADA",
     "assign": "tugaskan",
-    "priority": "Prioritas {{level}}/5"
+    "priority": "Prioritas {{level}}/5",
+    "dismissConfirm": "Buang task ini? Keluar dari papan (riwayat tetap).",
+    "dismissFailed": "Tidak bisa membuang task — mungkin masih di papan."
   },
   "queueComposer": {
     "recording": "● merekam — klik berhenti untuk transkripsi",
@@ -1523,7 +1537,8 @@
     "goalPlaceholder": "direktif long-running yang disuntik di setiap prompt",
     "descriptionPlaceholder": "untuk apa agent ini",
     "namePlaceholder": "Stanley",
-    "saveChanges": "simpan perubahan"
+    "saveChanges": "simpan perubahan",
+    "unsavedWarning": "Ada perubahan agent yang belum disimpan. Buang?"
   },
   "updateToast": {
     "downloaded": "Update v{{version}} terunduh",
@@ -1553,6 +1568,30 @@
     "switchTitle": "Pindah ke {{path}} (memuat ulang aplikasi)",
     "openingNote": "Membuka {{name}} — aplikasi akan dimuat ulang…",
     "chooseFolder": "pilih folder…",
-    "openFailed": "Tidak bisa membuka folder itu."
+    "openFailed": "Tidak bisa membuka folder itu.",
+    "switchConfirm": "Pindah workspace? Aplikasi akan dimuat ulang. Datamu di folder itu tetap ada."
+  },
+  "app": {
+    "autoModeOn": "mode auto aktif",
+    "autoModeOff": "mode auto mati",
+    "lightTheme": "Tema terang",
+    "darkTheme": "Tema gelap",
+    "toggleDarkMode": "Ganti tema gelap/terang",
+    "settings": "Pengaturan",
+    "focusMode": "Mode fokus",
+    "exitFocusMode": "Keluar mode fokus (Esc)",
+    "toggleFocusMode": "Ganti mode fokus",
+    "wakingFloor": "FLOOR BANGUN",
+    "wakingDesc": "{{godName}} sedang masuk. Terminal akan muncul di sini setelah ia duduk.",
+    "noAgentSelected": "BELUM ADA AGENT DIPILIH",
+    "noAgentDesc": "Spawn agent dari strip di bawah. Terminal dan command bar akan muncul di sini.",
+    "addAgent": "tambah agent"
+  },
+  "ptyTerminal": {
+    "livePty": "langsung · terminal {{id}}",
+    "zoomOut": "Perkecil (Ctrl -)",
+    "zoomReset": "Reset zoom (Ctrl 0)",
+    "zoomIn": "Perbesar (Ctrl +)",
+    "exitFocus": "Keluar mode fokus (Esc)"
   }
 }

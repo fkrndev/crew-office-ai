@@ -112,7 +112,9 @@
     "viewAnswersHistory": "open the task detail with the full Q&A history",
     "blockingDownstream": "BLOCKING {{count}} DOWNSTREAM TASK",
     "blockingDownstreamPlural": "BLOCKING {{count}} DOWNSTREAM TASKS",
-    "more": "… +{{count}} more"
+    "more": "… +{{count}} more",
+    "sendFailed": "Could not send the answer — try again.",
+    "dismissFailed": "Could not dismiss — try again."
   },
   "agentStrip": {
     "privateNote": "PRIVATE NOTE · {{name}}",
@@ -160,7 +162,8 @@
     "terminalTip": "Open your system terminal app in {{cwd}} — a normal shell in this agent's folder, separate from the agent's own terminal.",
     "openIde": "Open the IDE",
     "ide": "IDE",
-    "openTerminalAria": "Open a system terminal in this agent's folder"
+    "openTerminalAria": "Open a system terminal in this agent's folder",
+    "killAria": "Stop {{name}}"
   },
   "settingsHero": {
     "sponsoredBy": "Sponsored by",
@@ -1035,7 +1038,8 @@
     "shardxAutomation": "ShardX automation",
     "shardxProject": "AUTOMATION PROJECT",
     "shardxPick": "pick a project",
-    "shardxNoProjects": "No automation projects in the launcher yet — create one in the launcher's Automation tab."
+    "shardxNoProjects": "No automation projects in the launcher yet — create one in the launcher's Automation tab.",
+    "persistFailed": "Could not save"
   },
   "webhooksSection": {
     "summaryNone": "none",
@@ -1179,7 +1183,13 @@
     "ideTip": "Open the IDE: browse and edit files in {{name}}'s workspace, and see their uncommitted changes as a diff.",
     "openIdeAria": "Open the IDE",
     "openTerminalTip": "Open your system terminal app in {{cwd}} — a normal shell in this agent's folder, separate from the agent's own terminal.",
-    "openTerminalAria": "Open a system terminal in this agent's folder"
+    "openTerminalAria": "Open a system terminal in this agent's folder",
+    "focusTitle": "MUNDER DIFFLIN · FOCUS MODE",
+    "restoringTeam": "restoring your team…",
+    "restorableTitle": "{{name}} — restorable from last session",
+    "dismissTitle": "Dismiss {{name}} — remove permanently from the restore list",
+    "dismissAria": "Dismiss {{name}}",
+    "privateNote": "PRIVATE NOTE"
   },
   "memoryPanel": {
     "pill": "🧠 memory",
@@ -1268,7 +1278,9 @@
     "uncapped": "uncapped",
     "preserved": "Preserved worktrees ({{count}})",
     "preservedIntro": "Finished workers whose worktree held un-integrated work — kept (never auto-discarded) and auto-reclaimed once the work lands in its base branch.",
-    "keptAgo": "kept {{age}} ago"
+    "keptAgo": "kept {{age}} ago",
+    "stopConfirm": "Stop this worker? Its terminal closes and in-progress work stops.",
+    "stopFailed": "Could not stop worker"
   },
   "memoryGraph": {
     "topics": "topics",
@@ -1371,7 +1383,9 @@
     "awaitingAnswer": "AWAITING YOUR ANSWER — ASK ME TAB",
     "dependsOn": "DEPENDS ON",
     "assign": "assign",
-    "priority": "Priority {{level}}/5"
+    "priority": "Priority {{level}}/5",
+    "dismissConfirm": "Dismiss this task? It leaves the board (history kept).",
+    "dismissFailed": "Could not dismiss the task — it may still be on the board."
   },
   "queueComposer": {
     "recording": "● recording — click stop to transcribe",
@@ -1496,7 +1510,8 @@
     "goalPlaceholder": "long-running directive injected on every prompt",
     "descriptionPlaceholder": "what is this agent for",
     "namePlaceholder": "Stanley",
-    "saveChanges": "save changes"
+    "saveChanges": "save changes",
+    "unsavedWarning": "You have unsaved changes to this agent. Discard them?"
   },
   "updateToast": {
     "downloaded": "Update v{{version}} downloaded",
@@ -1553,6 +1568,30 @@
     "switchTitle": "Switch to {{path}} (reloads the app)",
     "openingNote": "Opening {{name}} — the app will reload…",
     "chooseFolder": "choose folder…",
-    "openFailed": "Could not open that folder."
+    "openFailed": "Could not open that folder.",
+    "switchConfirm": "Switch workspace? The app will reload. Your data in that folder is kept."
+  },
+  "app": {
+    "autoModeOn": "auto mode on",
+    "autoModeOff": "auto mode off",
+    "lightTheme": "Light theme",
+    "darkTheme": "Dark theme",
+    "toggleDarkMode": "Toggle dark mode",
+    "settings": "Settings",
+    "focusMode": "Focus mode",
+    "exitFocusMode": "Exit focus mode (Esc)",
+    "toggleFocusMode": "Toggle focus mode",
+    "wakingFloor": "WAKING THE FLOOR",
+    "wakingDesc": "{{godName}} is clocking in. The terminal will land here once it is seated.",
+    "noAgentSelected": "NO AGENT SELECTED",
+    "noAgentDesc": "Spawn an agent from the strip below. The terminal and command bar will land here.",
+    "addAgent": "add agent"
+  },
+  "ptyTerminal": {
+    "livePty": "live · terminal {{id}}",
+    "zoomOut": "Zoom out (Ctrl -)",
+    "zoomReset": "Reset zoom (Ctrl 0)",
+    "zoomIn": "Zoom in (Ctrl +)",
+    "exitFocus": "Exit focus mode (Esc)"
   }
 }

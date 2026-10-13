@@ -121,6 +121,7 @@ export function TasksKanban() {
   const { t } = useTranslation();
   const agents = useStore((s) => s.agents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
+  const [dismissError, setDismissError] = useState<string | undefined>();
   // Detail view: cards show just the title — clicking one opens the full
   // breakdown as an APP-WIDE overlay over the office floor (see
   // TaskDetailOverlay) — the content grows (contracts, deps, human Q&A), so it
@@ -137,12 +138,19 @@ export function TasksKanban() {
   // Main removes the named id from its latest on-disk ledger, so a webhook or
   // god card added since this renderer's last poll cannot be lost.
   const dismissTask = useCallback(async (id: string) => {
+    if (!window.confirm(t('kanban.dismissConfirm'))) return;
     setTasks((prev) => prev.filter((t) => t.id !== id)); // optimistic
     try {
       const result = await window.cth.hiveDeleteTask(id);
-      if (!result.ok) void refresh();
-    } catch { /* keep last good; the next poll re-syncs from disk */ }
-  }, [refresh]);
+      if (!result.ok) {
+        setDismissError(t('kanban.dismissFailed'));
+        void refresh();
+      }
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : t('kanban.dismissFailed'));
+      void refresh();
+    }
+  }, [refresh, t]);
 
   useEffect(() => {
     refresh();
@@ -177,6 +185,15 @@ export function TasksKanban() {
           {t('kanban.newWorkHint')}
         </span>
       </div>
+
+      {dismissError && (
+        <div style={{
+          padding: '6px 10px', background: 'var(--cth-coral-light)',
+          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
+        }}>
+          {dismissError}
+        </div>
+      )}
 
       {/* Columns */}
       <div style={{

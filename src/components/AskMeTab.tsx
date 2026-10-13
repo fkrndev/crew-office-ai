@@ -56,6 +56,7 @@ export function AskMeTab() {
   const setAnswerDraft = useStore((s) => s.setAnswerDraft);
   const openTaskDetail = useStore((s) => s.openTaskDetail);
   const [sending, setSending] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | undefined>();
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -129,7 +130,9 @@ export function AskMeTab() {
         ].join('\n')
       }, 'human');
       setAnswerDraft(task.id, '');
-    } catch { /* leave the draft so the user can retry */ }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : translate('askMe.sendFailed'));
+    }
     setSending(null);
   };
 
@@ -157,8 +160,9 @@ export function AskMeTab() {
         ? await window.cth.hivePatchTask(task.id, { humanQA: updated.humanQA })
         : { ok: false };
       if (!result.ok) throw new Error('task changed before ask could be dismissed');
-    } catch {
+    } catch (e) {
       setTasks(tasks); // restore on failure so the user can retry
+      setActionError(e instanceof Error ? e.message : translate('askMe.dismissFailed'));
     }
   };
 
@@ -173,6 +177,14 @@ export function AskMeTab() {
           <span style={{ fontSize: 11, color: 'var(--cth-ink-300)' }}>
             {translate('askMe.emptySub')}
           </span>
+        </div>
+      )}
+      {actionError && (
+        <div style={{
+          padding: '6px 10px', background: 'var(--cth-coral-light)',
+          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
+        }}>
+          {actionError}
         </div>
       )}
       {waiting.map((t) => {

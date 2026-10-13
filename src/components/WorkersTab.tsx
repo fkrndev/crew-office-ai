@@ -69,6 +69,7 @@ export function WorkersTab() {
   const godName = useStore((s) => s.agents.find((a) => a.isGod)?.name) ?? 'the orchestrator';
   const [data, setData] = useState<WorkersData | null>(null);
   const [stopping, setStopping] = useState<Record<string, boolean>>({});
+  const [stopError, setStopError] = useState<string | undefined>();
 
   const refresh = useCallback(() => {
     window.cth.listWorkers().then(setData).catch(() => { /* main not ready */ });
@@ -81,10 +82,13 @@ export function WorkersTab() {
   }, [refresh]);
 
   const stop = useCallback((workerId: string) => {
+    if (!window.confirm(t('workersTab.stopConfirm'))) return;
+    setStopError(undefined);
     setStopping((s) => ({ ...s, [workerId]: true }));
     window.cth.stopWorker(workerId)
-      .catch(() => { /* surfaced by the row vanishing or not */ })
-      .finally(() => { refresh(); });
+      .then(() => { refresh(); })
+      .catch((e) => { setStopError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { setStopping((s) => ({ ...s, [workerId]: false })); refresh(); });
   }, [refresh]);
 
   const live = data?.live ?? [];
@@ -149,6 +153,15 @@ export function WorkersTab() {
           </div>
         )}
       </div>
+
+      {stopError && (
+        <div style={{
+          padding: '6px 10px', background: 'var(--cth-coral-light)',
+          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
+        }}>
+          {t('workersTab.stopFailed')}: {stopError}
+        </div>
+      )}
 
       {preserved.length > 0 && (
         <div>

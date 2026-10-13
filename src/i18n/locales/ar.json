@@ -112,7 +112,9 @@
     "viewAnswersHistory": "افتح تفاصيل المهمة مع سجلّ الأسئلة والأجوبة كاملًا",
     "blockingDownstream": "يعطّل {{count}} مهمة لاحقة",
     "blockingDownstreamPlural": "يعطّل {{count}} مهام لاحقة",
-    "more": "… +{{count}} أخرى"
+    "more": "… +{{count}} أخرى",
+    "sendFailed": "تعذّر إرسال الإجابة — حاول مجددًا.",
+    "dismissFailed": "تعذّر الاستبعاد — حاول مجددًا."
   },
   "agentStrip": {
     "privateNote": "ملاحظة خاصة · {{name}}",
@@ -160,7 +162,8 @@
     "terminalTip": "افتح تطبيق الطرفية في نظامك عند {{cwd}} — صدفة عادية داخل مجلد هذا الوكيل، منفصلة عن طرفيته الخاصة.",
     "openIde": "افتح بيئة التطوير",
     "ide": "بيئة التطوير",
-    "openTerminalAria": "افتح طرفية نظام في مجلد هذا الوكيل"
+    "openTerminalAria": "افتح طرفية نظام في مجلد هذا الوكيل",
+    "killAria": "إيقاف {{name}}"
   },
   "settingsHero": {
     "sponsoredBy": "برعاية",
@@ -1035,7 +1038,8 @@
     "shardxAutomation": "أتمتة ShardX",
     "shardxProject": "مشروع الأتمتة",
     "shardxPick": "اختر مشروعاً",
-    "shardxNoProjects": "لا توجد مشاريع أتمتة في المشغّل بعد — أنشئ واحداً من تبويب الأتمتة في المشغّل."
+    "shardxNoProjects": "لا توجد مشاريع أتمتة في المشغّل بعد — أنشئ واحداً من تبويب الأتمتة في المشغّل.",
+    "persistFailed": "تعذّر الحفظ"
   },
   "webhooksSection": {
     "summaryNone": "لا شيء",
@@ -1179,7 +1183,13 @@
     "ideTip": "افتح بيئة التطوير: تصفّح وحرّر الملفات في مساحة عمل {{name}}، واعرض تغييراته غير المودعة كفروقات.",
     "openIdeAria": "افتح بيئة التطوير",
     "openTerminalTip": "افتح تطبيق الطرفية في نظامك عند {{cwd}} — صدفة عادية داخل مجلد هذا الوكيل، منفصلة عن طرفيته الخاصة.",
-    "openTerminalAria": "افتح طرفية نظام في مجلد هذا الوكيل"
+    "openTerminalAria": "افتح طرفية نظام في مجلد هذا الوكيل",
+    "focusTitle": "MUNDER DIFFLIN · وضع التركيز",
+    "restoringTeam": "جارٍ استعادة فريقك…",
+    "restorableTitle": "{{name}} — قابل للاستعادة من الجلسة الأخيرة",
+    "dismissTitle": "استبعاد {{name}} — إزالة نهائية من قائمة الاستعادة",
+    "dismissAria": "استبعاد {{name}}",
+    "privateNote": "ملاحظة خاصة"
   },
   "memoryPanel": {
     "pill": "🧠 الذاكرة",
@@ -1268,7 +1278,9 @@
     "uncapped": "بلا سقف",
     "preserved": "أشجار العمل المحفوظة ({{count}})",
     "preservedIntro": "عمّال منتهون بقيت في أشجار عملهم أعمال لم تُدمَج — تُحفَظ (ولا تُحذَف تلقائيًا أبدًا) وتُستَعاد تلقائيًا بمجرد وصول العمل إلى فرعه الأساس.",
-    "keptAgo": "حُفظت منذ {{age}}"
+    "keptAgo": "حُفظت منذ {{age}}",
+    "stopConfirm": "إيقاف هذا العامل؟ سيُغلق طرفه ويتوقف العمل الجاري.",
+    "stopFailed": "تعذّر إيقاف العامل"
   },
   "memoryGraph": {
     "topics": "المواضيع",
@@ -1371,7 +1383,9 @@
     "awaitingAnswer": "بانتظار إجابتك — تبويب اسألني",
     "dependsOn": "يعتمد على",
     "assign": "إسناد",
-    "priority": "الأولوية {{level}}/5"
+    "priority": "الأولوية {{level}}/5",
+    "dismissConfirm": "استبعاد هذه المهمة؟ ستغادر اللوحة(يُحفظ السجل).",
+    "dismissFailed": "تعذّر استبعاد المهمة — قد لا تزال على اللوحة."
   },
   "queueComposer": {
     "recording": "● يسجّل — انقر إيقاف للتفريغ النصي",
@@ -1523,7 +1537,8 @@
     "goalPlaceholder": "توجيه طويل الأمد يُحقن في كل توجيه",
     "descriptionPlaceholder": "ما وظيفة هذا الوكيل",
     "namePlaceholder": "Stanley",
-    "saveChanges": "حفظ التغييرات"
+    "saveChanges": "حفظ التغييرات",
+    "unsavedWarning": "لديك تغييرات غير محفوظة على هذا الوكيل. هل تريد تجاهلها؟"
   },
   "updateToast": {
     "downloaded": "تم تنزيل التحديث v{{version}}",
@@ -1553,6 +1568,30 @@
     "switchTitle": "التبديل إلى {{path}}(يعيد تحميل التطبيق)",
     "openingNote": "جارٍ فتح {{name}} — سيعاد تحميل التطبيق…",
     "chooseFolder": "اختر مجلدًا…",
-    "openFailed": "تعذّر فتح ذلك المجلد."
+    "openFailed": "تعذّر فتح ذلك المجلد.",
+    "switchConfirm": "تبديل مساحة العمل؟ سيعاد تحميل التطبيق. تُحفظ بياناتك في ذلك المجلد."
+  },
+  "app": {
+    "autoModeOn": "الوضع التلقائي مفعّل",
+    "autoModeOff": "الوضع التلقائي معطّل",
+    "lightTheme": "سمة فاتحة",
+    "darkTheme": "سمة داكنة",
+    "toggleDarkMode": "تبديل الوضع الداكن",
+    "settings": "الإعدادات",
+    "focusMode": "وضع التركيز",
+    "exitFocusMode": "الخروج من وضع التركيز (Esc)",
+    "toggleFocusMode": "تبديل وضع التركيز",
+    "wakingFloor": "جارٍ إيقاظ المكتب",
+    "wakingDesc": "{{godName}} يدخل الآن. سيظهر الطرف هنا عندما يجلس.",
+    "noAgentSelected": "لم يتم اختيار وكيل",
+    "noAgentDesc": "أنشئ وكيلًا من الشريط أدناه. سيظهر الطرف وشريط الأوامر هنا.",
+    "addAgent": "إضافة وكيل"
+  },
+  "ptyTerminal": {
+    "livePty": "مباشر · طرف {{id}}",
+    "zoomOut": "تصغير (Ctrl -)",
+    "zoomReset": "إعادة التكبير (Ctrl 0)",
+    "zoomIn": "تكبير (Ctrl +)",
+    "exitFocus": "الخروج من وضع التركيز (Esc)"
   }
 }

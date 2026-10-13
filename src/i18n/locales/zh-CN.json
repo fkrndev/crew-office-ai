@@ -112,7 +112,9 @@
     "viewAnswersHistory": "打开包含完整问答历史的任务详情",
     "blockingDownstream": "阻塞 {{count}} 个下游任务",
     "blockingDownstreamPlural": "阻塞 {{count}} 个下游任务",
-    "more": "… 还有 {{count}} 个"
+    "more": "… 还有 {{count}} 个",
+    "sendFailed": "无法发送回答 — 重试。",
+    "dismissFailed": "无法移除 — 重试。"
   },
   "agentStrip": {
     "privateNote": "私人笔记 · {{name}}",
@@ -160,7 +162,8 @@
     "terminalTip": "在 {{cwd}} 中打开你的系统终端应用 —— 位于该智能体文件夹中的普通 shell，与该智能体自己的终端相互独立。",
     "openIde": "打开 IDE",
     "ide": "IDE",
-    "openTerminalAria": "在该智能体的文件夹中打开系统终端"
+    "openTerminalAria": "在该智能体的文件夹中打开系统终端",
+    "killAria": "停止 {{name}}"
   },
   "settingsHero": {
     "sponsoredBy": "赞助方",
@@ -1035,7 +1038,8 @@
     "shardxAutomation": "ShardX 自动化",
     "shardxProject": "自动化项目",
     "shardxPick": "选择项目",
-    "shardxNoProjects": "启动器中还没有自动化项目 — 请在启动器的 Automation 标签页中创建。"
+    "shardxNoProjects": "启动器中还没有自动化项目 — 请在启动器的 Automation 标签页中创建。",
+    "persistFailed": "无法保存"
   },
   "webhooksSection": {
     "summaryNone": "无",
@@ -1179,7 +1183,13 @@
     "ideTip": "打开 IDE：浏览并编辑 {{name}} 工作区中的文件，并将他们未提交的更改作为差异查看。",
     "openIdeAria": "打开 IDE",
     "openTerminalTip": "在 {{cwd}} 中打开你的系统终端应用 —— 位于该智能体文件夹中的普通 shell，与该智能体自己的终端相互独立。",
-    "openTerminalAria": "在该智能体的文件夹中打开系统终端"
+    "openTerminalAria": "在该智能体的文件夹中打开系统终端",
+    "focusTitle": "MUNDER DIFFLIN · 专注模式",
+    "restoringTeam": "正在恢复你的团队…",
+    "restorableTitle": "{{name}} — 可从上次会话恢复",
+    "dismissTitle": "移除 {{name}} — 从恢复列表中永久删除",
+    "dismissAria": "移除 {{name}}",
+    "privateNote": "私人备注"
   },
   "memoryPanel": {
     "pill": "🧠 记忆",
@@ -1268,7 +1278,9 @@
     "uncapped": "无上限",
     "preserved": "保留的工作树（{{count}}）",
     "preservedIntro": "已完成工人的工作树中保留着未整合的工作——保留（绝不自动丢弃），并在工作合入其基础分支后自动回收。",
-    "keptAgo": "{{age}} 前保留"
+    "keptAgo": "{{age}} 前保留",
+    "stopConfirm": "停止此 worker?其终端将关闭,进行中的工作会停止。",
+    "stopFailed": "无法停止 worker"
   },
   "memoryGraph": {
     "topics": "主题",
@@ -1371,7 +1383,9 @@
     "awaitingAnswer": "等待你的回答——「问我」标签页",
     "dependsOn": "依赖",
     "assign": "分配",
-    "priority": "优先级 {{level}}/5"
+    "priority": "优先级 {{level}}/5",
+    "dismissConfirm": "移除此任务?它将离开看板(历史保留)。",
+    "dismissFailed": "无法移除任务 — 它可能仍在看板上。"
   },
   "queueComposer": {
     "recording": "● 录音中——点击停止转写",
@@ -1523,7 +1537,8 @@
     "goalPlaceholder": "每次提示注入的长期指令",
     "descriptionPlaceholder": "这个 agent 的用途",
     "namePlaceholder": "Stanley",
-    "saveChanges": "保存更改"
+    "saveChanges": "保存更改",
+    "unsavedWarning": "你有未保存的 agent 更改。要丢弃吗?"
   },
   "updateToast": {
     "downloaded": "更新 v{{version}} 已下载",
@@ -1553,6 +1568,30 @@
     "switchTitle": "切换到 {{path}}(重新加载应用)",
     "openingNote": "正在打开 {{name}} — 应用将重新加载…",
     "chooseFolder": "选择文件夹…",
-    "openFailed": "无法打开该文件夹。"
+    "openFailed": "无法打开该文件夹。",
+    "switchConfirm": "切换工作区?应用将重新加载。该文件夹中的数据会保留。"
+  },
+  "app": {
+    "autoModeOn": "自动模式开",
+    "autoModeOff": "自动模式关",
+    "lightTheme": "浅色主题",
+    "darkTheme": "深色主题",
+    "toggleDarkMode": "切换深色模式",
+    "settings": "设置",
+    "focusMode": "专注模式",
+    "exitFocusMode": "退出专注模式 (Esc)",
+    "toggleFocusMode": "切换专注模式",
+    "wakingFloor": "正在唤醒工作区",
+    "wakingDesc": "{{godName}} 正在就位。终端会在这里出现。",
+    "noAgentSelected": "未选择 agent",
+    "noAgentDesc": "从下方栏 spawn 一个 agent。终端和命令栏会出现在这里。",
+    "addAgent": "添加 agent"
+  },
+  "ptyTerminal": {
+    "livePty": "实时 · 终端 {{id}}",
+    "zoomOut": "缩小 (Ctrl -)",
+    "zoomReset": "重置缩放 (Ctrl 0)",
+    "zoomIn": "放大 (Ctrl +)",
+    "exitFocus": "退出专注模式 (Esc)"
   }
 }

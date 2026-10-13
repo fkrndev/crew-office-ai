@@ -72,6 +72,22 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
 
   const preset = providerPreset(provider);
 
+  // Dirty check — any field that differs from the agent's current values.
+  // Without this, clicking the backdrop or pressing Esc silently drops edits.
+  const dirty =
+    name !== agent.name ||
+    character !== agent.character ||
+    accent !== agent.accent ||
+    provider !== inferAgentProvider(agent.command, agent.provider) ||
+    model !== agent.model ||
+    description !== agent.description ||
+    (goal ?? '') !== (agent.goal ?? '');
+
+  const requestClose = (): void => {
+    if (dirty && !window.confirm(t('editAgent.unsavedWarning'))) return;
+    onClose();
+  };
+
   const save = () => {
     const trimmedName = name.trim() || agent.name;
     const trimmedDescription = description.trim() || 'a fresh harness';
@@ -95,7 +111,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
 
   return (
     <div
-      onClick={onClose}
+      onClick={requestClose}
       style={{
         position: 'fixed', inset: 0,
         background: 'rgba(26, 19, 32, 0.6)',
@@ -299,7 +315,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-              <PixelButton variant="ghost" size="md" onClick={onClose}>{t('common.cancel')}</PixelButton>
+              <PixelButton variant="ghost" size="md" onClick={requestClose}>{t('common.cancel')}</PixelButton>
               <div style={{ flex: 1 }} />
               <PixelButton variant="primary" size="md" onClick={save}>{t('editAgent.saveChanges')}</PixelButton>
             </div>
