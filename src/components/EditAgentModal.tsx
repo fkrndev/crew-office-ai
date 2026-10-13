@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { SpritePortrait } from './SpritePortrait';
@@ -31,6 +32,7 @@ export interface EditAgentModalProps {
  */
 export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
   const updateAgent = useStore((s) => s.updateAgent);
+  const { t } = useTranslation();
   const [config, setConfig] = useState<HarnessConfig | null>(null);
 
   const [name, setName] = useState(agent.name);
@@ -105,7 +107,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
           one job — describe an agent — and a tall narrow dialog next to a wide
           one reads as two unrelated screens. */}
       <div onClick={(e) => e.stopPropagation()} style={{ width: 940, maxWidth: '95vw' }}>
-        <PixelPanel variant="dialog" title="EDIT AGENT" style={{ padding: 16 }} noPadding>
+        <PixelPanel variant="dialog" title={t('editAgent.title')} style={{ padding: 16 }} noPadding>
           <div style={{
             display: 'flex', flexDirection: 'column', gap: 14,
             padding: 16, maxHeight: '86vh', overflowY: 'auto'
@@ -119,18 +121,18 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               gap: 16, alignItems: 'start', minHeight: 260
             }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
-            <Section label="Identity" hint="name · character · color">
-              <Row label="Name">
+            <Section label={t('addAgent.sections.identity.label')} hint={t('addAgent.sections.identity.hint')}>
+              <Row label={t('addAgent.name')}>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Stanley"
+                  placeholder={t('editAgent.namePlaceholder')}
                   style={inputStyle}
                   autoFocus
                 />
               </Row>
 
-              <Row label="Character">
+              <Row label={t('addAgent.character')}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {OFFICE_CAST.map((c) => {
                     const active = character === c.name;
@@ -164,7 +166,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                 </div>
               </Row>
 
-              <Row label="Color">
+              <Row label={t('addAgent.color')}>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {ACCENTS.map((a) => (
                     <button
@@ -186,8 +188,8 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               </Row>
             </Section>
 
-            <Section label="Engine" hint="provider · model · next restart">
-              <Row label="Provider">
+            <Section label={t('addAgent.sections.engine.label')} hint={t('editAgent.engineHint')}>
+              <Row label={t('editAgent.provider')}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {AGENT_PROVIDER_PRESETS.map((p) => {
                     const active = provider === p.id;
@@ -217,14 +219,14 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               </Row>
 
               {preset.supportsModel && (
-                <Row label="Model">
+                <Row label={t('editAgent.model')}>
                   {modelsForProvider(provider).length === 0 ? (
                     // Catalog-empty providers (hermes, openclaw, kimi…)
                     // take a freeform --model string; empty = CLI default.
                     <input
                       value={model ?? ''}
                       onChange={(e) => setModel(e.target.value.trim() || undefined)}
-                      placeholder="CLI default"
+                      placeholder={t('fullscreenTerminal.cliDefault')}
                       style={{ padding: '4px 8px', fontFamily: 'var(--cth-font-mono)', fontSize: 12, border: '1px solid var(--cth-ink-300)', background: 'var(--cth-cream-50)', color: 'var(--cth-ink-900)' }}
                     />
                   ) : (
@@ -232,7 +234,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                     {(() => {
                       const known = modelsForProvider(provider);
                       return model && !known.some((m) => m.id === model)
-                        ? [...known, { id: model, label: `${model} (current)` }]
+                        ? [...known, { id: model, label: t('editAgent.modelCurrent', { model }) }]
                         : known;
                     })().map((m) => {
                       const active = (model ?? '') === (m.id ?? '');
@@ -241,7 +243,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                           key={m.label}
                           type="button"
                           onClick={() => setModel(m.id)}
-                          title={m.id ?? 'CLI default model'}
+                          title={m.id ?? t('editAgent.modelDefaultTitle')}
                           style={{
                             padding: '3px 8px 1px',
                             background: active ? `var(--cth-${accent}-light)` : 'var(--cth-cream-100)',
@@ -262,27 +264,27 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               )}
 
               <span style={{ fontSize: 12, color: 'var(--cth-ink-500)', lineHeight: '16px' }}>
-                Engine changes are saved for the next restart. Use Command Center → Floor to restart a live session onto a new provider/model now.
+                {t('editAgent.engineNote')}
               </span>
             </Section>
 
               </div>
               <div style={{ minWidth: 0 }}>
-            <Section label="Briefing" hint="description · goal">
-              <Row label="Description">
+            <Section label={t('addAgent.sections.briefing.label')} hint={t('addAgent.sections.briefing.hint')}>
+              <Row label={t('editAgent.description')}>
                 <input
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="what is this agent for"
+                  placeholder={t('editAgent.descriptionPlaceholder')}
                   style={inputStyle}
                 />
               </Row>
 
-              <Row label="Goal (optional)">
+              <Row label={t('editAgent.goalLabel')}>
                 <textarea
                   value={goal}
                   onChange={(e) => setGoal(e.target.value)}
-                  placeholder="long-running directive injected on every prompt"
+                  placeholder={t('editAgent.goalPlaceholder')}
                   rows={4}
                   style={{ ...inputStyle, fontFamily: 'var(--cth-font-ui)', resize: 'vertical', minHeight: 200 }}
                 />
@@ -292,9 +294,9 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-              <PixelButton variant="ghost" size="md" onClick={onClose}>cancel</PixelButton>
+              <PixelButton variant="ghost" size="md" onClick={onClose}>{t('common.cancel')}</PixelButton>
               <div style={{ flex: 1 }} />
-              <PixelButton variant="primary" size="md" onClick={save}>save changes</PixelButton>
+              <PixelButton variant="primary" size="md" onClick={save}>{t('editAgent.saveChanges')}</PixelButton>
             </div>
           </div>
         </PixelPanel>

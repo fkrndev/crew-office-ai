@@ -47,7 +47,7 @@ describe('McpDefaultsSettings ShardX setup card', () => {
       expect(cth.calls.some((c) => c.method === 'shardxStatus')).toBe(true);
     });
     expect(screen.getByText('Launcher running')).toBeTruthy();
-    expect(screen.getByText('MCP bridge installed')).toBeTruthy();
+    expect(screen.getByText('Browser bridge installed')).toBeTruthy();
     expect(screen.getByText('API token saved')).toBeTruthy();
   });
 

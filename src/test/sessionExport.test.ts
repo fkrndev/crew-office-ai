@@ -46,8 +46,8 @@ describe('buildSessionExport', () => {
     const md = buildSessionExport(undefined, null, [], '');
     expect(md).toContain('# Session export — unknown-agent');
     expect(md).not.toContain('## Usage');
-    expect(md).not.toContain('## Hive mail');
-    expect(md).not.toContain('## Terminal tail');
+    expect(md).not.toContain('## Inbox');
+    expect(md).not.toContain('## Recent terminal output');
   });
 
   it('mail renders oldest→newest (backend returns newest-first)', () => {

@@ -42,7 +42,7 @@ async function spawnWith(opts: { checkShardx?: boolean; shardxProfile?: string }
   fireEvent.change(screen.getByPlaceholderText('/path/to/your/project'), {
     target: { value: 'C:/repo-a' }
   });
-  fireEvent.click(screen.getByText('spawn'));
+  fireEvent.click(screen.getByText('create'));
 }
 
 describe('AddAgentModal MCP extras', () => {

@@ -35,6 +35,7 @@
  * goes through the existing `openExternal` opener.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Icon } from '@/components/Icon';
 import { summarizeReleaseNotes } from '@shared/releaseNotes';
 import { extractDropHtml } from '@shared/releaseDrop';
@@ -56,6 +57,7 @@ const GITHUB_REPO_URL = 'https://github.com/chaitanyagiri/munder-difflin';
 const GITHUB_RELEASES_URL = `${GITHUB_REPO_URL}/releases/latest`;
 
 export function UpdateToast() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<ToastStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -183,14 +185,14 @@ export function UpdateToast() {
         <Icon name="sparkle" />
         <span style={{ fontSize: 13, color: 'var(--cth-ink-900)', fontWeight: 600 }}>
           {status.state === 'downloaded'
-            ? `Update v${status.version} downloaded`
-            : `v${status.version} is available`}
+            ? t('updateToast.downloaded', { version: status.version })
+            : t('updateToast.available', { version: status.version })}
         </span>
       </div>
       <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-700)' }}>
         {status.state === 'downloaded'
-          ? 'Restart Munder Difflin whenever you like to apply it — nothing restarts on its own.'
-          : 'This install can’t update itself — grab the new build from the releases page.'}
+          ? t('updateToast.downloadedBody')
+          : t('updateToast.manualBody')}
       </span>
 
       {notes.length > 0 && (
@@ -199,7 +201,7 @@ export function UpdateToast() {
             fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
             color: 'var(--cth-ink-500)', textTransform: 'uppercase'
           }}>
-            What’s new
+            {t('updateToast.whatsNew')}
           </div>
           {/* The digest is already capped at ~280 chars; the clamp is the second
               belt, for the day a release body defeats the parser. */}
@@ -223,7 +225,7 @@ export function UpdateToast() {
               href={status.state === 'available-manual' ? status.url : GITHUB_RELEASES_URL}
               onClick={(e) => { e.preventDefault(); openRelease(); }}
               style={linkStyle}
-            >Read more</a>
+            >{t('updateToast.readMore')}</a>
           </div>
         </div>
       )}
@@ -233,18 +235,18 @@ export function UpdateToast() {
           onClick={() => setStatus(null)}
           style={{ ...buttonStyle, background: 'var(--cth-cream-100)' }}
         >
-          later
+          {t('updateToast.later')}
         </button>
         {status.state === 'downloaded' ? (
           <button onClick={restart} disabled={busy} style={buttonStyle}>
-            {busy ? 'restarting…' : 'restart to update'}
+            {busy ? t('updateToast.restarting') : t('updateToast.restartToUpdate')}
           </button>
         ) : (
           <button
             onClick={openRelease}
             style={buttonStyle}
           >
-            {hasDownload ? `download ${status.version}` : 'open releases'}
+            {hasDownload ? t('updateToast.download', { version: status.version }) : t('updateToast.openReleases')}
           </button>
         )}
       </div>

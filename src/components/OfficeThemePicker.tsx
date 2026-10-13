@@ -230,7 +230,7 @@ function ThemeSwitchConfirmModal({
                   {n === 1
                     ? t('officeTheme.deleteCount', { count: n })
                     : t('officeTheme.deleteCountPlural', { count: n })}{' '}
-                  {t('officeTheme.onlyCarries', { god: godName })}
+                  {t('officeTheme.onlyCarries')}
                   {working > 0 && (
                     <span style={{ display: 'block', marginTop: 6, color: 'var(--cth-coral)' }}>
                       ⚠ {working === 1

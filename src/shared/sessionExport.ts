@@ -76,7 +76,7 @@ export function buildSessionExport(
 
   if (messages.length > 0) {
     out.push('');
-    out.push(`## Hive mail (${messages.length})`);
+    out.push(`## Inbox (${messages.length})`);
     out.push('');
     for (const m of [...messages].reverse()) { // newest-first → chronological
       const when = typeof m.created_at === 'string' ? m.created_at : '';
@@ -90,7 +90,7 @@ export function buildSessionExport(
 
   const tail = terminalTail.trim();
   if (tail) {
-    out.push('## Terminal tail');
+    out.push('## Recent terminal output');
     out.push('');
     out.push('```');
     const lines = tail.split('\n');

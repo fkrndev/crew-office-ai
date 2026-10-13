@@ -3,12 +3,11 @@
  *
  * Bahasa Indonesia is the default language; English stays the fallback for
  * any missing key. The user's choice is persisted in localStorage
- * (`cth.language`). With nothing
- * saved the app starts in English, ALWAYS — it deliberately does not read
- * navigator.language. Auto-detect would change the UI out from under every
- * existing user on a non-English machine, who never asked for a translation and
- * may not want a partial one. Nothing moves until someone picks a language in
- * Settings.
+ * (`cth.language`). With nothing saved the app starts in Bahasa Indonesia,
+ * ALWAYS — it deliberately does not read navigator.language. Auto-detect
+ * would change the UI out from under every existing user on a non-Indonesian
+ * machine, who never asked for a translation and may not want a partial one.
+ * Nothing moves until someone picks a language in Settings.
  *
  * Adding a language: drop a `locales/<code>.json` with the exact same key
  * tree as `en.json`, register it in `resources` and `supportedLngs`, and add
@@ -92,7 +91,7 @@ export function setGodName(name: string | undefined | null): void {
   i18n.emit('languageChanged', i18n.language);
 }
 
-/** The saved choice, or the app default. Never the OS locale — see the note above. */
+/** The saved choice, or the app default (Bahasa Indonesia). Never the OS locale — see the note above. */
 function detectLanguage(): string {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);

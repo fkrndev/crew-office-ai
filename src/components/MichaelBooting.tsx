@@ -1,5 +1,5 @@
+import { useTranslation } from 'react-i18next';
 import { PixelPanel } from '@/components/PixelPanel';
-import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 
 /**
  * Loader shown on the empty floor while the god agent is clocking in on
@@ -12,7 +12,7 @@ import { useResolvedGodName } from '@/hooks/useResolvedGodName';
  * rather than assuming the default.
  */
 export function MichaelBooting() {
-  const godName = useResolvedGodName();
+  const { t } = useTranslation();
   return (
     <div style={{
       position: 'absolute', inset: 0,
@@ -20,7 +20,7 @@ export function MichaelBooting() {
       pointerEvents: 'none'
     }}>
       <div style={{ pointerEvents: 'auto', width: 360 }}>
-        <PixelPanel variant="dialog" title="CLOCKING IN" noPadding>
+        <PixelPanel variant="dialog" title={t('booting.title')} noPadding>
           <div style={{
             padding: 20,
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14
@@ -44,8 +44,7 @@ export function MichaelBooting() {
               margin: 0, fontSize: 13, lineHeight: '20px', textAlign: 'center',
               color: 'var(--cth-ink-700)'
             }}>
-              {godName} is settling into the corner office and getting the floor
-              ready. Hang tight…
+              {t('booting.body')}
             </p>
           </div>
         </PixelPanel>

@@ -56,7 +56,7 @@ describe('ShardX live counts', () => {
     }));
     render(<McpDefaultsSettings config={config} />);
     await waitFor(() =>
-      expect(screen.getByText(/fingerprint library empty/i)).toBeTruthy()
+      expect(screen.getByText(/browser profile library empty/i)).toBeTruthy()
     );
   });
 
