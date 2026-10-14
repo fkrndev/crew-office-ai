@@ -12,7 +12,7 @@
 //!   `sum(peak of each closed segment) + peak of the open segment`
 //!
 //! Incremental fold: each pass reads only bytes appended since the last one;
-//! a truncated/rotated file resets the fold. Read-only — never writes.
+//! a truncated/rotated/replaced file resets the fold. Read-only — never writes.
 
 use std::collections::HashMap;
 use std::fs;
@@ -28,13 +28,68 @@ struct Segment {
 /// Float-noise guard — real resets drop by cents, anything below is dust.
 const EPS: f64 = 1e-9;
 
+/// Incremental reader for an append-only JSONL ledger: each `advance` returns
+/// only the COMPLETE lines appended since the last call. A shrunk file, or one
+/// whose first bytes changed (deleted and recreated, rotated, rewritten),
+/// restarts from byte 0 and reports `reset` so the caller drops its fold.
 #[derive(Default)]
-pub struct CostLedgerTotals {
-    /// Bytes of the ledger already folded.
+pub(crate) struct LedgerCursor {
+    /// Bytes of the ledger already consumed.
     offset: u64,
+    /// First (up to 64) bytes of the file as last seen — an append never
+    /// changes them, so a mismatch means the file was replaced.
+    head: Vec<u8>,
     /// Trailing partial line, held as bytes so a multi-byte char split across
     /// a read boundary is never decoded in half.
     tail: Vec<u8>,
+}
+
+pub(crate) struct Advance {
+    pub reset: bool,
+    /// Newly completed lines, separated by a line feed.
+    pub lines: String,
+}
+
+impl LedgerCursor {
+    pub(crate) fn advance(&mut self, path: &Path) -> std::io::Result<Advance> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = fs::File::open(path)?;
+        let size = f.metadata()?.len();
+        let mut stale = size < self.offset;
+        if !stale && self.offset > 0 && !self.head.is_empty() {
+            let mut h = vec![0u8; self.head.len()];
+            stale = f.read_exact(&mut h).is_err() || h != self.head;
+        }
+        if stale {
+            *self = Self::default();
+        }
+        f.seek(SeekFrom::Start(self.offset))?;
+        let mut buf = Vec::new();
+        let n = f.read_to_end(&mut buf)? as u64;
+        if self.head.len() < 64 {
+            let want = 64 - self.head.len();
+            self.head.extend_from_slice(&buf[..want.min(buf.len())]);
+        }
+        self.offset += n;
+        let mut all = std::mem::take(&mut self.tail);
+        all.extend_from_slice(&buf);
+        let lines = match all.iter().rposition(|b| *b == b'\n') {
+            Some(cut) => {
+                self.tail = all[cut + 1..].to_vec();
+                String::from_utf8_lossy(&all[..cut]).into_owned()
+            }
+            None => {
+                self.tail = all;
+                String::new()
+            }
+        };
+        Ok(Advance { reset: stale, lines })
+    }
+}
+
+#[derive(Default)]
+pub struct CostLedgerTotals {
+    cur: LedgerCursor,
     /// "agentId\tsessionId" → fold state.
     seg: HashMap<String, Segment>,
     /// agentId → lifetime usd, recomputed after each pass.
@@ -85,49 +140,23 @@ impl CostLedgerTotals {
     }
 
     fn fold(&mut self, path: &Path) -> std::io::Result<()> {
-        let size = fs::metadata(path)?.len();
-        // Truncated or rotated underneath us: every held segment is suspect.
-        if size < self.offset {
-            self.reset();
+        let adv = self.cur.advance(path)?;
+        // Truncated, rotated or replaced underneath us: every held segment is
+        // suspect.
+        if adv.reset {
+            self.seg.clear();
+            self.totals.clear();
         }
-        if size == self.offset {
-            self.warm = true;
-            return Ok(());
-        }
-        let mut f = fs::File::open(path)?;
-        use std::io::{Read, Seek, SeekFrom};
-        f.seek(SeekFrom::Start(self.offset))?;
-        let mut buf = Vec::new();
-        let n = f.read_to_end(&mut buf)? as u64;
-        self.consume(&buf);
-        self.offset += n;
-        self.recompute();
-        if self.offset >= size {
-            self.warm = true;
-        }
-        Ok(())
-    }
-
-    /// Fold one buffer, holding back any incomplete trailing line.
-    fn consume(&mut self, chunk: &[u8]) {
-        let buf: Vec<u8> = if self.tail.is_empty() {
-            chunk.to_vec()
-        } else {
-            let mut t = self.tail.clone();
-            t.extend_from_slice(chunk);
-            t
-        };
-        let cut = buf.iter().rposition(|b| *b == b'\n');
-        let Some(cut) = cut else {
-            self.tail = buf;
-            return;
-        };
-        self.tail = buf[cut + 1..].to_vec();
-        for line in std::str::from_utf8(&buf[..cut]).unwrap_or("").split('\n') {
+        for line in adv.lines.split('\n') {
             if !line.is_empty() {
                 self.fold_line(line);
             }
         }
+        if adv.reset || !adv.lines.is_empty() {
+            self.recompute();
+        }
+        self.warm = true;
+        Ok(())
     }
 
     fn fold_line(&mut self, line: &str) {
@@ -161,14 +190,6 @@ impl CostLedgerTotals {
         }
         self.totals = next;
     }
-
-    fn reset(&mut self) {
-        self.offset = 0;
-        self.tail.clear();
-        self.seg.clear();
-        self.totals.clear();
-        self.warm = false;
-    }
 }
 
 /// One-shot fold of a ledger already in memory (tests + simple callers).
@@ -179,7 +200,9 @@ pub fn lifetime_usd_from_ledger(text: &str) -> HashMap<String, f64> {
     } else {
         format!("{text}\n")
     };
-    t.consume(s.as_bytes());
+    for line in s.split('\n').filter(|l| !l.is_empty()) {
+        t.fold_line(line);
+    }
     t.recompute();
     t.all()
 }

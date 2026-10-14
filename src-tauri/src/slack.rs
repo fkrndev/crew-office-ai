@@ -13,7 +13,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hmac::{Hmac, Mac};
@@ -203,7 +203,7 @@ impl SlackServer {
         on_message: F,
     ) -> Result<(), String>
     where
-        F: Fn(String, String, String, String, Vec<Value>) + Send + 'static,
+        F: Fn(String, String, String, String, Vec<Value>) + Send + Sync + 'static,
     {
         if signing_secret.is_empty() {
             return Err("missing signing secret".into());
@@ -211,121 +211,178 @@ impl SlackServer {
         if self.is_running() {
             return Err("already running".into());
         }
-        let server = tiny_http::Server::http(("0.0.0.0", port))
+        // Loopback only: the tunnel (misc::start_tunnel / any reverse proxy)
+        // forwards to localhost, so the signed-event handler is never exposed
+        // to the LAN directly.
+        let server = tiny_http::Server::http(("127.0.0.1", port))
             .map_err(|e| format!("failed to bind port {port}: {e}"))?;
         let stop = self.stop.clone();
         stop.store(false, Ordering::Relaxed);
         let channel_id = channel_id.filter(|c| !c.trim().is_empty());
         let handle = std::thread::spawn(move || {
-            let mut bot_user_id: Option<String> = None;
-            let mut threads = FifoSet::new(ACTIVATED_THREADS_MAX);
-            let mut seen = FifoSet::new(SEEN_EVENTS_MAX);
+            let state = Arc::new(Mutex::new(SlackState {
+                bot_user_id: None,
+                threads: FifoSet::new(ACTIVATED_THREADS_MAX),
+                seen: FifoSet::new(SEEN_EVENTS_MAX),
+            }));
+            let on_message = Arc::new(on_message);
+            let secret = Arc::new(signing_secret);
+            let channel_id = Arc::new(channel_id);
+            let inflight = Arc::new(AtomicUsize::new(0));
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(400))
+                let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
                 else {
                     continue;
                 };
-                if req.method().as_str() != "POST" {
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(405));
+                // One worker per connection: a peer that stalls mid-body can
+                // only tie up its own thread, never the accept loop. The cap
+                // bounds how many such threads an unauthenticated peer buys.
+                if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
                     continue;
                 }
-                let mut body = Vec::new();
-                let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
-                if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(413));
-                    continue;
-                }
-                let raw = String::from_utf8_lossy(&body).to_string();
-                // 1) Authenticate over the RAW body BEFORE parsing.
-                let sig = req
-                    .headers()
-                    .iter()
-                    .find(|h| h.field.equiv("x-slack-signature"))
-                    .map(|h| h.value.as_str().to_string())
-                    .unwrap_or_default();
-                let ts = req
-                    .headers()
-                    .iter()
-                    .find(|h| h.field.equiv("x-slack-request-timestamp"))
-                    .map(|h| h.value.as_str().to_string())
-                    .unwrap_or_default();
-                let now_s = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let ts_num: u64 = ts.parse().unwrap_or(0);
-                let fresh = ts_num > 0 && now_s.abs_diff(ts_num) <= REPLAY_WINDOW_SECS;
-                let expected = compute_sig(&signing_secret, &ts, &raw).unwrap_or_default();
-                let given = sig.strip_prefix("v0=").unwrap_or("");
-                let ok = fresh
-                    && !given.is_empty()
-                    && given.len() == expected.len()
-                    && crate::webhook::secret_eq(given, &expected);
-                if !ok {
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(403));
-                    continue;
-                }
-                let Ok(payload) = serde_json::from_str::<Value>(&raw) else {
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(400));
-                    continue;
-                };
-                // 2) url_verification handshake — echo the challenge.
-                if payload["type"].as_str() == Some("url_verification") {
-                    let challenge = payload["challenge"].as_str().unwrap_or("").to_string();
-                    let _ = req.respond(
-                        tiny_http::Response::from_string(
-                            json!({ "challenge": challenge }).to_string(),
-                        )
-                        .with_status_code(200),
-                    );
-                    continue;
-                }
-                // 3) event_callback — learn bot id, then the trigger gate.
-                if payload["type"].as_str() == Some("event_callback") {
-                    if bot_user_id.is_none() {
-                        if let Some(u) = payload["authorizations"]
-                            .as_array()
-                            .and_then(|a| a.first())
-                            .and_then(|a| a["user_id"].as_str())
-                        {
-                            bot_user_id = Some(u.to_string());
-                        }
-                    }
-                    let ev = &payload["event"];
-                    let (trigger, raw_text, files) = should_trigger(
-                        ev,
-                        bot_user_id.as_deref(),
+                let (state, on_message, secret, channel_id, inflight) = (
+                    state.clone(),
+                    on_message.clone(),
+                    secret.clone(),
+                    channel_id.clone(),
+                    inflight.clone(),
+                );
+                std::thread::spawn(move || {
+                    handle_events_request(
+                        req,
+                        &secret,
                         channel_id.as_deref(),
-                        &mut threads,
+                        &state,
+                        on_message.as_ref(),
                     );
-                    if trigger {
-                        let text = strip_leading_mention(&raw_text);
-                        let channel = ev["channel"].as_str().unwrap_or("").to_string();
-                        let ts = ev["ts"].as_str().unwrap_or("").to_string();
-                        let thread_ts = ev["thread_ts"]
-                            .as_str()
-                            .filter(|t| !t.is_empty())
-                            .unwrap_or(&ts)
-                            .to_string();
-                        if (!text.is_empty() || !files.is_empty())
-                            && !channel.is_empty()
-                            && !ts.is_empty()
-                        {
-                            let key = dedup_key(ev);
-                            if !seen.seen(&key) {
-                                on_message(text, channel, ts, thread_ts, files);
-                            }
-                        }
-                    }
-                }
-                // Always 200 — Slack treats it as delivered, no retry storm.
-                let _ = req.respond(tiny_http::Response::from_string("").with_status_code(200));
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                });
             }
         });
         *self.handle.lock().unwrap() = Some(handle);
         *self.url_port.lock().unwrap() = Some(port);
         Ok(())
     }
+}
+
+/// Mutable trigger state shared by the per-connection workers.
+struct SlackState {
+    bot_user_id: Option<String>,
+    threads: FifoSet,
+    seen: FifoSet,
+}
+
+/// Cap on concurrently-served connections (see the accept loop).
+const MAX_INFLIGHT: usize = 32;
+
+/// One Events API request: cheap header gates BEFORE the body is read, then
+/// body → signature over the raw bytes → handshake / trigger.
+fn handle_events_request<F>(
+    mut req: tiny_http::Request,
+    signing_secret: &str,
+    channel_id: Option<&str>,
+    state: &Mutex<SlackState>,
+    on_message: &F,
+) where
+    F: Fn(String, String, String, String, Vec<Value>),
+{
+    let reply = |req: tiny_http::Request, code: u16, body: &str| {
+        let _ = req.respond(tiny_http::Response::from_string(body.to_string()).with_status_code(code));
+    };
+    if req.method().as_str() != "POST" {
+        return reply(req, 405, "");
+    }
+    // Declared size first — refuse an oversized body without reading any of it.
+    if req.body_length().is_some_and(|n| n > MAX_BODY_BYTES) {
+        return reply(req, 413, "");
+    }
+    let header = |req: &tiny_http::Request, name: &'static str| {
+        req.headers()
+            .iter()
+            .find(|h| h.field.equiv(name))
+            .map(|h| h.value.as_str().to_string())
+            .unwrap_or_default()
+    };
+    let sig = header(&req, "x-slack-signature");
+    let ts = header(&req, "x-slack-request-timestamp");
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ts_num: u64 = ts.parse().unwrap_or(0);
+    let fresh = ts_num > 0 && now_s.abs_diff(ts_num) <= REPLAY_WINDOW_SECS;
+    let given = sig.strip_prefix("v0=").unwrap_or("");
+    // No signature / stale timestamp can never authenticate — drop before
+    // spending a read on the body.
+    if !fresh || given.is_empty() {
+        return reply(req, 403, "");
+    }
+    let mut body = Vec::new();
+    let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
+    if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
+        return reply(req, 413, "");
+    }
+    let raw = String::from_utf8_lossy(&body).to_string();
+    // 1) Authenticate over the RAW body BEFORE parsing.
+    let expected = compute_sig(signing_secret, &ts, &raw).unwrap_or_default();
+    let ok = given.len() == expected.len() && crate::webhook::secret_eq(given, &expected);
+    if !ok {
+        return reply(req, 403, "");
+    }
+    let Ok(payload) = serde_json::from_str::<Value>(&raw) else {
+        return reply(req, 400, "");
+    };
+    // 2) url_verification handshake — echo the challenge.
+    if payload["type"].as_str() == Some("url_verification") {
+        let challenge = payload["challenge"].as_str().unwrap_or("").to_string();
+        return reply(req, 200, &json!({ "challenge": challenge }).to_string());
+    }
+    // 3) event_callback — learn bot id, then the trigger gate.
+    if payload["type"].as_str() == Some("event_callback") {
+        let ev = &payload["event"];
+        let dispatch = {
+            let mut st = state.lock().unwrap();
+            if st.bot_user_id.is_none() {
+                if let Some(u) = payload["authorizations"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|a| a["user_id"].as_str())
+                {
+                    st.bot_user_id = Some(u.to_string());
+                }
+            }
+            let bot = st.bot_user_id.clone();
+            let (trigger, raw_text, files) =
+                should_trigger(ev, bot.as_deref(), channel_id, &mut st.threads);
+            let mut out = None;
+            if trigger {
+                let text = strip_leading_mention(&raw_text);
+                let channel = ev["channel"].as_str().unwrap_or("").to_string();
+                let ts = ev["ts"].as_str().unwrap_or("").to_string();
+                let thread_ts = ev["thread_ts"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or(&ts)
+                    .to_string();
+                if (!text.is_empty() || !files.is_empty()) && !channel.is_empty() && !ts.is_empty()
+                {
+                    let key = dedup_key(ev);
+                    if !st.seen.seen(&key) {
+                        out = Some((text, channel, ts, thread_ts, files));
+                    }
+                }
+            }
+            out
+        };
+        // Outside the state lock — on_message does hive IO.
+        if let Some((text, channel, ts, thread_ts, files)) = dispatch {
+            on_message(text, channel, ts, thread_ts, files);
+        }
+    }
+    // Always 200 — Slack treats it as delivered, no retry storm.
+    reply(req, 200, "")
 }
 
 /// Post a reply into a Slack thread via chat.postMessage — a raw HTTPS POST
@@ -347,6 +404,9 @@ pub fn post_slack_reply(
     }
     let body = json!({ "channel": channel, "thread_ts": thread_ts, "text": text });
     let mut resp = ureq::post("https://slack.com/api/chat.postMessage")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
         .header("content-type", "application/json; charset=utf-8")
         .header("authorization", &format!("Bearer {bot_token}"))
         .send_json(&body)
@@ -414,8 +474,8 @@ impl SlackReplyServer {
         on_replied: R,
     ) -> Result<u16, String>
     where
-        G: Fn() -> Option<String> + Send + 'static,
-        R: Fn(String) + Send + 'static,
+        G: Fn() -> Option<String> + Send + Sync + 'static,
+        R: Fn(String) + Send + Sync + 'static,
     {
         if self.is_running() {
             return Err("already running".into());
@@ -429,95 +489,122 @@ impl SlackReplyServer {
             .unwrap_or(preferred_port);
         let stop = self.stop.clone();
         stop.store(false, Ordering::Relaxed);
-        let session_token = self.token.clone();
+        let session_token = Arc::new(self.token.clone());
+        let bot_token = Arc::new(bot_token);
+        let on_replied = Arc::new(on_replied);
+        let inflight = Arc::new(AtomicUsize::new(0));
         let handle = std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(400))
+                let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
                 else {
                     continue;
                 };
-                let respond = |req: tiny_http::Request, code: u16, body: &str| {
-                    let _ = req.respond(
-                        tiny_http::Response::from_string(body.to_string())
-                            .with_status_code(code)
-                            .with_header(
-                                "Content-Type: application/json"
-                                    .parse::<tiny_http::Header>()
-                                    .unwrap(),
-                            ),
-                    );
-                };
-                // Defense in depth: even bound loopback-only, refuse any
-                // non-loopback peer.
-                let remote = req
-                    .remote_addr()
-                    .map(|a| a.ip().to_string())
-                    .unwrap_or_default();
-                let loopback = {
-                    let a = remote.strip_prefix("::ffff:").unwrap_or(&remote);
-                    a == "::1" || a.starts_with("127.")
-                };
-                if !loopback {
-                    respond(req, 403, "");
+                // Per-connection worker (a slow body or a slow Slack POST must
+                // not stall every other agent's reply), capped.
+                if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
                     continue;
                 }
-                if req.method().as_str() != "POST" || req.url().split('?').next() != Some("/reply")
-                {
-                    respond(req, 404, "");
-                    continue;
-                }
-                let given = req
-                    .headers()
-                    .iter()
-                    .find(|h| h.field.equiv("x-md-reply-token"))
-                    .map(|h| h.value.as_str().to_string())
-                    .unwrap_or_default();
-                if !crate::webhook::secret_eq(&given, &session_token) {
-                    respond(req, 401, "");
-                    continue;
-                }
-                let mut body = Vec::new();
-                let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
-                if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
-                    respond(req, 413, "");
-                    continue;
-                }
-                let Ok(p) = serde_json::from_slice::<Value>(&body) else {
-                    respond(req, 400, r#"{"ok":false,"error":"bad json"}"#);
-                    continue;
-                };
-                let Some(token) = bot_token() else {
-                    respond(req, 503, r#"{"ok":false,"error":"no bot token"}"#);
-                    continue;
-                };
-                let (channel, thread_ts, text) = (
-                    p["channel"].as_str().unwrap_or(""),
-                    p["thread_ts"].as_str().unwrap_or(""),
-                    p["text"].as_str().unwrap_or(""),
+                let (session_token, bot_token, on_replied, inflight) = (
+                    session_token.clone(),
+                    bot_token.clone(),
+                    on_replied.clone(),
+                    inflight.clone(),
                 );
-                if channel.is_empty() || thread_ts.is_empty() || text.is_empty() {
-                    respond(
-                        req,
-                        400,
-                        r#"{"ok":false,"error":"channel, thread, text required"}"#,
-                    );
-                    continue;
-                }
-                let thread_owned = thread_ts.to_string();
-                match post_slack_reply(&token, channel, thread_ts, text) {
-                    Ok(()) => {
-                        on_replied(thread_owned);
-                        respond(req, 200, r#"{"ok":true}"#);
-                    }
-                    Err(e) => {
-                        respond(req, 502, &json!({ "ok": false, "error": e }).to_string());
-                    }
-                }
+                std::thread::spawn(move || {
+                    handle_reply_request(req, &session_token, &*bot_token, &*on_replied);
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                });
             }
         });
         *self.handle.lock().unwrap() = Some(handle);
         *self.port.lock().unwrap() = Some(port);
         Ok(port)
+    }
+}
+
+/// One loopback reply-rail request (peer + token gate, then the post).
+fn handle_reply_request<G, R>(
+    mut req: tiny_http::Request,
+    session_token: &str,
+    bot_token: &G,
+    on_replied: &R,
+) where
+    G: Fn() -> Option<String>,
+    R: Fn(String),
+{
+    let respond = |req: tiny_http::Request, code: u16, body: &str| {
+        let _ = req.respond(
+            tiny_http::Response::from_string(body.to_string())
+                .with_status_code(code)
+                .with_header(
+                    "Content-Type: application/json"
+                        .parse::<tiny_http::Header>()
+                        .unwrap(),
+                ),
+        );
+    };
+    // Defense in depth: even bound loopback-only, refuse any
+    // non-loopback peer.
+    let remote = req
+        .remote_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    let loopback = {
+        let a = remote.strip_prefix("::ffff:").unwrap_or(&remote);
+        a == "::1" || a.starts_with("127.")
+    };
+    if !loopback {
+        return respond(req, 403, "");
+    }
+    if req.method().as_str() != "POST" || req.url().split('?').next() != Some("/reply") {
+        return respond(req, 404, "");
+    }
+    let given = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("x-md-reply-token"))
+        .map(|h| h.value.as_str().to_string())
+        .unwrap_or_default();
+    if !crate::webhook::secret_eq(&given, session_token) {
+        return respond(req, 401, "");
+    }
+    if req.body_length().is_some_and(|n| n > MAX_BODY_BYTES) {
+        return respond(req, 413, "");
+    }
+    let mut body = Vec::new();
+    let mut take = req.as_reader().take((MAX_BODY_BYTES + 1) as u64);
+    if take.read_to_end(&mut body).is_err() || body.len() > MAX_BODY_BYTES {
+        return respond(req, 413, "");
+    }
+    let Ok(p) = serde_json::from_slice::<Value>(&body) else {
+        return respond(req, 400, r#"{"ok":false,"error":"bad json"}"#);
+    };
+    let Some(token) = bot_token() else {
+        return respond(req, 503, r#"{"ok":false,"error":"no bot token"}"#);
+    };
+    let (channel, thread_ts, text) = (
+        p["channel"].as_str().unwrap_or(""),
+        p["thread_ts"].as_str().unwrap_or(""),
+        p["text"].as_str().unwrap_or(""),
+    );
+    if channel.is_empty() || thread_ts.is_empty() || text.is_empty() {
+        return respond(
+            req,
+            400,
+            r#"{"ok":false,"error":"channel, thread, text required"}"#,
+        );
+    }
+    let thread_owned = thread_ts.to_string();
+    match post_slack_reply(&token, channel, thread_ts, text) {
+        Ok(()) => {
+            on_replied(thread_owned);
+            respond(req, 200, r#"{"ok":true}"#);
+        }
+        Err(e) => {
+            respond(req, 502, &json!({ "ok": false, "error": e }).to_string());
+        }
     }
 }
 
@@ -545,7 +632,13 @@ fn sanitize_filename(name: Option<&str>, tag: &str) -> String {
         .collect();
     let safe = safe.trim_start_matches('.');
     let safe = if safe.is_empty() { "file" } else { safe };
-    let safe = &safe[..safe.len().min(200)];
+    // ≤200 BYTES, cut on a char boundary — the name is all Unicode
+    // alphanumerics, so a raw byte slice can land mid-codepoint and panic.
+    let mut end = safe.len().min(200);
+    while !safe.is_char_boundary(end) {
+        end -= 1;
+    }
+    let safe = &safe[..end];
     format!("{tag}-{safe}")
 }
 
@@ -668,6 +761,18 @@ mod tests {
 
     fn ev(channel: &str, ts: &str, ty: &str, text: &str) -> Value {
         json!({"channel": channel, "ts": ts, "type": ty, "text": text})
+    }
+
+    #[test]
+    fn sanitize_filename_truncates_on_char_boundary() {
+        // 3-byte chars: a byte slice at 200 lands mid-codepoint (200 % 3 != 0).
+        let long = "文".repeat(150) + ".txt";
+        let out = sanitize_filename(Some(&long), "abcd1234");
+        assert!(out.starts_with("abcd1234-"));
+        assert!(out.len() <= "abcd1234-".len() + 200);
+        assert!(out.ends_with('文'));
+        assert_eq!(sanitize_filename(Some("../../.hidden name.txt"), "t"), "t-hidden_name.txt");
+        assert_eq!(sanitize_filename(None, "t"), "t-file");
     }
 
     #[test]

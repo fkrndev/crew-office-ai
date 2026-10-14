@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
+import { useEscape } from '@/hooks/useEscape';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
 
 /**
@@ -32,6 +33,8 @@ export function TaskDetailOverlay() {
     timer.current = setInterval(() => { void refresh(); }, POLL_MS);
     return () => { if (timer.current) clearInterval(timer.current); };
   }, [taskDetailId, refresh]);
+
+  useEscape(taskDetailId ? closeTaskDetail : null);
 
   if (!taskDetailId) return null;
   const task = tasks.find((t) => t.id === taskDetailId);

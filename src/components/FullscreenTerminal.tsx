@@ -22,6 +22,7 @@ import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChange
 import { useAppTheme, toggleAppTheme } from '@/design/theme';
 import type { HarnessConfig } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
+import { isComposingKey } from '@shared/imeGuard';
 
 /** Roster rail width. A fixed 232px is right on a 14" laptop but reads as a
  *  sliver on a 27" display, where names truncate for no reason — so it tracks
@@ -153,6 +154,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   const restorableAgents = useStore(s => s.restorableAgents);
   const fullscreenAgentId = useStore(s => s.fullscreenAgentId);
   const setFullscreen = useStore(s => s.setFullscreen);
+  const leaveFocusForNow = useStore(s => s.leaveFocusForNow);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
   const addAgentOpen = useStore(s => s.addAgentOpen);
@@ -246,20 +248,27 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
     return () => { cancelAnimationFrame(raf); clearTimeout(late); };
   }, [rosterKey, focusedPtyId]);
 
-  // Esc exits fullscreen
+  // Esc exits fullscreen — but never while the terminal itself has focus: Esc is
+  // the TUI's interrupt/cancel key (Claude Code stops a turn with it), and eating
+  // it here threw the user out of focus mode instead of stopping the agent.
+  // Modals (Settings, Add/Edit agent, Quit…) stop the key in the capture phase
+  // before it gets here, so `defaultPrevented` covers them too.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        // A modal above fullscreen owns the interaction until it closes. Without
-        // this guard, Esc from the Add Agent form unexpectedly exits fullscreen.
-        if (addAgentOpen || editAgentOpen) return;
-        e.preventDefault();
-        setFullscreen(null);
-      }
+      if (e.key !== 'Escape' || e.defaultPrevented || isComposingKey(e)) return;
+      // A modal above fullscreen owns the interaction until it closes. Without
+      // this guard, Esc from the Add Agent form unexpectedly exits fullscreen.
+      if (addAgentOpen || editAgentOpen) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('.xterm')) return;
+      e.preventDefault();
+      // Leaving with Esc is for this session only — the "open in focus mode"
+      // preference is only ever rewritten by the explicit toggle button.
+      leaveFocusForNow();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [addAgentOpen, editAgentOpen, setFullscreen]);
+  }, [addAgentOpen, editAgentOpen, leaveFocusForNow]);
 
   // Focus mode is pointing at something we cannot render. Re-home to another live
   // agent rather than dropping the user out; leave only when nothing is left.

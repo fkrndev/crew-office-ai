@@ -149,7 +149,8 @@ impl ProxyBridge {
             if let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
                 let mut line = serde_json::to_string(&json!({
                     "agent_id": agent, "event": "Stop",
-                    "payload": { "session_id": session }
+                    "payload": { "session_id": session },
+                    "token": crate::hooks::hook_token(),
                 }))
                 .unwrap_or_default();
                 line.push('\n');
@@ -167,8 +168,10 @@ impl ProxyBridge {
                 obj.insert("session_id".into(), json!(self.session_id));
             }
         }
+        // The hook socket requires the per-launch token on every envelope.
         self.emit(json!({
-            "agent_id": self.agent_id, "event": event, "payload": p
+            "agent_id": self.agent_id, "event": event, "payload": p,
+            "token": crate::hooks::hook_token(),
         }));
     }
 

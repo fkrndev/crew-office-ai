@@ -12,6 +12,7 @@ import {
 } from '@shared/engineAvailability';
 import type { ToolStatus } from '@shared/toolCatalog';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
+import { examplePath } from '@shared/platformLabels';
 
 export interface OnboardingWizardProps {
   onComplete: (config: HarnessConfig) => void;
@@ -379,7 +380,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                   <input
                     value={home}
                     onChange={(e) => setHome(e.target.value)}
-                    placeholder={t('onboarding.home.placeholder')}
+                    placeholder={examplePath('HarnessAgents')}
                     style={inputStyle}
                   />
                   <PixelButton variant="secondary" size="md" onClick={pickHome}>

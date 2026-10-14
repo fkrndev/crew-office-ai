@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { useEffect, useRef, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { useEscape } from '@/hooks/useEscape';
 
 /** Renderer-side closing-time view state. Mirrors the main process's
  *  ClosingTimeEvent phases, plus a local 'error' for a failed start. */
@@ -19,22 +20,47 @@ export interface QuitWarningModalProps {
    *  the "wrapping up the floor" progress view. */
   closing?: ClosingTimeState | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  /** Kill every agent and quit now. A rejection is shown and the buttons come back. */
+  onConfirm: () => void | Promise<unknown>;
   /** Start the graceful shutdown (the third button). */
-  onClosingTime?: () => void;
+  onClosingTime?: () => void | Promise<unknown>;
 }
+
+/** How long "killing…" may stand before the buttons come back: a successful quit
+ *  takes the window with it, so reaching this means the exit did not happen. */
+const QUIT_SETTLE_MS = 6000;
 
 export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClosingTime }: QuitWarningModalProps) {
   const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const { t } = useTranslation();
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
 
   const confirm = async () => {
     setBusy(true);
-    await onConfirm();
-    // No need to clear busy — the app is quitting.
+    setLocalError(null);
+    try {
+      await onConfirm();
+      // The app is quitting; if it somehow is not, don't leave the dialog dead.
+      settleTimer.current = setTimeout(() => setBusy(false), QUIT_SETTLE_MS);
+    } catch (e) {
+      setLocalError(t('quit.quitFailed', { error: e instanceof Error ? e.message : String(e) }));
+      setBusy(false);
+    }
+  };
+
+  const startClosing = async () => {
+    if (!onClosingTime) return;
+    setBusy(true);
+    setLocalError(null);
+    try { await onClosingTime(); } finally { setBusy(false); }
   };
 
   const inClosingTime = !!closing && closing.phase !== 'error';
+  // Esc = "keep them running" — but never while a graceful shutdown is underway
+  // or a quit is in flight; there the explicit buttons are the only way out.
+  useEscape(inClosingTime || busy ? null : onCancel);
 
   return (
     <div
@@ -115,6 +141,18 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                   )}
                 </div>
 
+                {localError && (
+                  <div role="alert" style={{
+                    padding: 8,
+                    background: 'var(--cth-coral-light)',
+                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                    fontSize: 12, lineHeight: '18px',
+                    color: 'var(--cth-ink-900)'
+                  }}>
+                    {localError}
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                   {closing!.phase !== 'complete' && (
                     <>
@@ -163,18 +201,21 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                   fontSize: 12, lineHeight: '18px',
                   color: 'var(--cth-ink-700)'
                 }}>
-                  <span dangerouslySetInnerHTML={{ __html: t('quit.tip') }} />
+                  {/* <Trans>, not innerHTML: the god name is user-editable. Only the
+                      <strong> in the translation becomes an element; markup in the
+                      name is neither parsed into elements nor executed. */}
+                  <Trans i18nKey="quit.tip" components={{ strong: <strong /> }} />
                 </div>
 
-                {closing?.phase === 'error' && (
-                  <div style={{
+                {(closing?.phase === 'error' || localError) && (
+                  <div role="alert" style={{
                     padding: 8,
                     background: 'var(--cth-coral-light)',
                     boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
                     fontSize: 12, lineHeight: '18px',
                     color: 'var(--cth-ink-900)'
                   }}>
-                    {closing.error ?? t('quit.errorFallback')}
+                    {localError ?? closing?.error ?? t('quit.errorFallback')}
                   </div>
                 )}
 
@@ -183,7 +224,7 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                     {t('quit.keepRunning')}
                   </PixelButton>
                   {onClosingTime && (
-                    <PixelButton variant="primary" size="md" onClick={onClosingTime} disabled={busy}>
+                    <PixelButton variant="primary" size="md" onClick={startClosing} disabled={busy}>
                       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                         <Icon name="clock" /> {t('quit.closingTime')}
                       </span>

@@ -9,14 +9,18 @@
 //!
 //! Durability rules, verbatim priorities:
 //!   1. Never lose a roster — every write first copies the previous file into
-//!      `roster-backups/`, which is append-only, never pruned.
-//!   2. Never write a truncated file — temp + rename.
+//!      `roster-backups/`; only the newest `KEEP_BACKUPS` are retained so the
+//!      folder can't grow without bound (every write adds one).
+//!   2. Never write a truncated file — unique temp + rename.
 //!   3. Never let an empty write erase a full roster — the empty-guard below.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+
+/// Backups retained in `roster-backups/` (newest wins).
+const KEEP_BACKUPS: usize = 20;
 
 /// Renderer-owned snapshot; the inner agent shape stays opaque here (the
 /// store owns it — repeating it would couple every agent-field change).
@@ -90,6 +94,42 @@ impl RosterStore {
             self.backup_dir()
                 .join(format!("roster-{ts}-{reason}-{}.json", *seq)),
         );
+        drop(seq);
+        self.prune_backups(KEEP_BACKUPS);
+    }
+
+    /// Drop all but the newest `keep` backups. Order is the epoch-ms stamp in
+    /// the name (then the per-run sequence); unparseable names sort oldest.
+    fn prune_backups(&self, keep: usize) {
+        let Ok(rd) = fs::read_dir(self.backup_dir()) else {
+            return;
+        };
+        let key = |name: &str| -> (u64, u64) {
+            let mut parts = name.trim_end_matches(".json").split('-');
+            let ts = parts.nth(1).and_then(|t| t.parse().ok()).unwrap_or(0);
+            let seq = name
+                .trim_end_matches(".json")
+                .rsplit('-')
+                .next()
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            (ts, seq)
+        };
+        let mut files: Vec<(u64, u64, PathBuf)> = rd
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("roster-"))
+            .map(|e| {
+                let (ts, seq) = key(&e.file_name().to_string_lossy());
+                (ts, seq, e.path())
+            })
+            .collect();
+        if files.len() <= keep {
+            return;
+        }
+        files.sort();
+        for (_, _, path) in &files[..files.len() - keep] {
+            let _ = fs::remove_file(path);
+        }
     }
 
     /// Write the roster, backing up the previous contents first.
@@ -125,13 +165,13 @@ impl RosterStore {
             "queues": snap.get("queues").filter(|q| q.is_object()).cloned().unwrap_or(serde_json::json!({})),
             "selectedId": snap.get("selectedId").filter(|s| s.is_string()).cloned().unwrap_or(serde_json::Value::Null),
         });
-        let tmp = self.roster_path().with_extension("tmp");
-        fs::write(
-            &tmp,
-            serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?,
+        crate::hive::atomic_write_file(
+            &self.roster_path(),
+            serde_json::to_string_pretty(&body)
+                .map_err(|e| e.to_string())?
+                .as_bytes(),
         )
         .map_err(|e| e.to_string())?;
-        fs::rename(&tmp, self.roster_path()).map_err(|e| e.to_string())?;
         *wrote = true;
         Ok(())
     }
@@ -185,6 +225,19 @@ mod tests {
         st2.write(&snap(1)).unwrap();
         st2.write(&snap(0)).unwrap();
         assert_eq!(st2.read().unwrap()["agents"].as_array().unwrap().len(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backups_are_pruned_to_the_newest_few() {
+        let (st, dir) = store("prune");
+        for i in 1..=(KEEP_BACKUPS + 15) {
+            st.write(&snap(i % 3 + 1)).unwrap();
+        }
+        let n = std::fs::read_dir(dir.join("roster-backups")).unwrap().count();
+        assert_eq!(n, KEEP_BACKUPS);
+        // The roster itself is intact.
+        assert!(st.read().is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -162,6 +162,11 @@ pub fn update_simulate(
     version: Option<String>,
     notes: Option<String>,
 ) -> Result<bool, String> {
+    // Registered in release builds too — but a spoofed "update available"
+    // banner is a dev-only affordance.
+    if !cfg!(debug_assertions) {
+        return Err("update:simulate is only available in dev builds".into());
+    }
     let v = version.unwrap_or_else(|| "9.9.9".into());
     emit(
         &app,

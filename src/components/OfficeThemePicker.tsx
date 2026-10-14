@@ -6,6 +6,7 @@ import { disposeTerminal } from './terminalPool';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { useEscape } from '@/hooks/useEscape';
 import type { ThemeId } from '@/scene/office/themeRegistry';
 
 // TV-show office themes (Phase 1 = the switch flow infra). Only `office` has a
@@ -13,14 +14,16 @@ import type { ThemeId } from '@/scene/office/themeRegistry';
 // until their content lands (Phase 2). `built: false` shows a "soon" tag and a
 // fallback note on switch, but the destructive switch flow still runs so the
 // whole pipeline (modal → delete cast → persist → re-seat) is exercisable now.
-interface ThemeMeta { id: ThemeId; label: string; blurb: string; built: boolean; swatch: string; }
+// Show titles are proper nouns and stay as-is; the one-line blurbs are
+// translated (officeTheme.blurbs.<id>).
+interface ThemeMeta { id: ThemeId; label: string; built: boolean; swatch: string; }
 const THEME_META: ThemeMeta[] = [
-  { id: 'office',        label: 'The Office',         blurb: 'Dunder Mifflin — the original floor', built: true,  swatch: '#6b5a4a' },
-  { id: 'friends',       label: 'Friends',            blurb: 'Central Perk coffee house',           built: false, swatch: '#9a5a32' },
-  { id: 'brooklyn99',    label: 'Brooklyn Nine-Nine', blurb: 'The 99th precinct bullpen',           built: true,  swatch: '#3a5a7a' },
-  { id: 'siliconvalley', label: 'Silicon Valley',     blurb: 'The Hacker Hostel',                   built: false, swatch: '#4a6a4a' },
-  { id: 'got',           label: 'Game of Thrones',    blurb: 'The Red Keep throne room',            built: false, swatch: '#6a2630' },
-  { id: 'hogwarts',      label: 'Harry Potter',       blurb: 'Hogwarts great hall',                 built: false, swatch: '#39305a' },
+  { id: 'office',        label: 'The Office',         built: true,  swatch: '#6b5a4a' },
+  { id: 'friends',       label: 'Friends',            built: false, swatch: '#9a5a32' },
+  { id: 'brooklyn99',    label: 'Brooklyn Nine-Nine', built: true,  swatch: '#3a5a7a' },
+  { id: 'siliconvalley', label: 'Silicon Valley',     built: false, swatch: '#4a6a4a' },
+  { id: 'got',           label: 'Game of Thrones',    built: false, swatch: '#6a2630' },
+  { id: 'hogwarts',      label: 'Harry Potter',       built: false, swatch: '#39305a' },
 ];
 
 /** Settings "Office Theme" section: an experimental flag toggle + a 6-card
@@ -118,7 +121,9 @@ export function OfficeThemePicker({ config }: { config: HarnessConfig }) {
       {/* Theme picker grid (only when the flag is on) */}
       {enabled && (
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-          {THEME_META.map((theme) => {
+          {/* Unbuilt themes are hidden: picking one wipes the cast and then only
+              shows the office map, so it is a destructive no-op for the user. */}
+          {THEME_META.filter((theme) => theme.built).map((theme) => {
             const isCurrent = theme.id === current;
             return (
               <button
@@ -156,7 +161,7 @@ export function OfficeThemePicker({ config }: { config: HarnessConfig }) {
                     )}
                   </span>
                   <span style={{ fontSize: 11, lineHeight: '14px', color: 'var(--cth-ink-500)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {theme.blurb}
+                    {t(`officeTheme.blurbs.${theme.id}`)}
                   </span>
                 </span>
               </button>
@@ -197,6 +202,7 @@ function ThemeSwitchConfirmModal({
   onConfirm: () => void;
 }) {
   const { t } = useTranslation();
+  useEscape(busy ? null : onCancel);
   const n = agents.length;
   const working = agents.filter((a) => a.status && !['idle', 'success', 'error'].includes(a.status)).length;
   const godName = useStore.getState().agents.find((a) => a.isGod)?.name ?? 'the orchestrator';

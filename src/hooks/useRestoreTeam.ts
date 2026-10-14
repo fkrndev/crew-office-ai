@@ -3,6 +3,7 @@ import { useStore, type Agent } from '@/store/store';
 import { buildSpawnCommand, inferAgentProvider, tokenizeCommand, type HarnessConfig } from '@/store/config';
 import { roleForHiveSpawn } from '@shared/agentRole';
 import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
+import i18n from '@/i18n';
 
 /** "Restore team" — respawn every worker from the previous session.
  *
@@ -22,15 +23,19 @@ let autoRestoring = false;
  *  component: `useRestoreTeam` is mounted from both the floor strip and the
  *  fullscreen rail, and without this each of them would kick off its own. */
 let autoStarted = false;
+/** True while the "Restore N agents?" question is on screen. The previous
+ *  session's team used to respawn on its own 2.5s after launch with only a tiny
+ *  ✕ to stop it — N CLI processes (and their API spend) the user never asked
+ *  for. Now the boot only ASKS; nothing spawns until Restore is pressed. */
+let restorePrompt = false;
 const listeners = new Set<() => void>();
 
-/** How long to wait after boot before restoring on our own.
+/** How long to wait after boot before asking.
  *
  *  App.tsx reconciles the persisted roster against the PTYs actually alive in
- *  the main process, and that is an async round trip. Firing before it lands
+ *  the main process, and that is an async round trip. Asking before it lands
  *  would read a restorable list that still contains agents whose terminals are
- *  already running, and try to spawn duplicates of them. The delay is also the
- *  window in which you can hit a dismiss ✕ if you don't want an agent back. */
+ *  already running, and offer to spawn duplicates of them. */
 export const AUTO_RESTORE_DELAY_MS = 2500;
 
 function emit(): void {
@@ -47,12 +52,22 @@ function subscribe(listener: () => void): () => void {
 const getRestoring = (): boolean => restoring;
 const getNote = (): string | null => note;
 const getAutoRestoring = (): boolean => autoRestoring;
+const getRestorePrompt = (): boolean => restorePrompt;
+
+/** "Skip" — the agents stay on the restorable list (the Restore team button and
+ *  per-agent restore keep working); only this session's question goes away. */
+export function dismissRestorePrompt(): void {
+  restorePrompt = false;
+  emit();
+}
 
 export interface RestoreTeamState {
   restoring: boolean;
   /** True when the run in flight was started automatically at boot, not by a
    *  click. Drives the "restoring your team…" banner. */
   autoRestoring: boolean;
+  /** The boot-time "Restore N agents?" question is pending. */
+  restorePrompt: boolean;
   /** Outcome of the last run ("restored 3 · 1 failed — …"), or null. */
   restoreNote: string | null;
   restoreTeam: () => Promise<void>;
@@ -66,6 +81,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
   const isRestoring = useSyncExternalStore(subscribe, getRestoring, getRestoring);
   const restoreNote = useSyncExternalStore(subscribe, getNote, getNote);
   const isAutoRestoring = useSyncExternalStore(subscribe, getAutoRestoring, getAutoRestoring);
+  const isRestorePrompt = useSyncExternalStore(subscribe, getRestorePrompt, getRestorePrompt);
 
   /** Respawn every worker from the previous session with its ORIGINAL agent id,
    *  cwd, model and command — the hive workspace (memory.md, inbox, registry
@@ -73,6 +89,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
   const restoreTeam = async (): Promise<void> => {
     if (restoring) return;
     restoring = true;
+    restorePrompt = false; // answering the question (or clicking the button) closes it
     note = null;
     emit();
     const prevSel = useStore.getState().selectedId;
@@ -161,7 +178,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
                 archived: false,
                 status: 'idle',
                 // Surface the worktree fallback on the floor card; otherwise normal.
-                action: worktreeGone ? 'worktree gone — using base repo' : 'starting up',
+                action: i18n.t(worktreeGone ? 'agentStatus.worktreeGone' : 'agentStatus.startingUp'),
                 // The worktree is no longer on disk — drop it so this agent is treated
                 // as a plain base-cwd agent going forward (a future restore won't keep
                 // re-probing a dead path).
@@ -183,7 +200,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
           } else {
             // Leave it restorable so the user can retry — but record WHY so the
             // outcome is shown on the floor, not buried in the devtools console.
-            failures.push(`${a.name}: ${res.error ?? 'spawn failed'}`);
+            failures.push(`${a.name}: ${res.error ?? i18n.t('restoreNote.spawnFailed')}`);
             console.error('[restore] spawn failed for', a.id, res.error);
           }
         } catch (e) {
@@ -203,22 +220,23 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       restoring = false;
       // ALWAYS surface a result so the button can never look inert.
       const parts: string[] = [];
-      if (restored) parts.push(`restored ${restored}`);
-      if (alreadyLive) parts.push(`${alreadyLive} already live`);
-      if (failures.length) parts.push(`${failures.length} failed — ${failures.join('; ')}`);
-      note = parts.length ? parts.join(' · ') : 'nothing to restore';
+      if (restored) parts.push(i18n.t('restoreNote.restored', { n: restored }));
+      if (alreadyLive) parts.push(i18n.t('restoreNote.alreadyLive', { n: alreadyLive }));
+      if (failures.length) parts.push(i18n.t('restoreNote.failed', { n: failures.length, details: failures.join('; ') }));
+      note = parts.length ? parts.join(' · ') : i18n.t('restoreNote.nothing');
       emit();
     }
   };
 
-  // Restore the previous session's team on open, without waiting for a click.
+  // Offer to restore the previous session's team on open (the question is
+  // rendered by App.tsx; nothing spawns until the user presses Restore).
   //
   // Deliberately driven by a store SUBSCRIPTION rather than a plain timer: the
   // restorable list is empty on the first render and only fills once App.tsx's
   // PTY reconcile resolves, so a timer started at mount would look at an empty
   // list, decide there was nothing to do, and never look again.
   //
-  // Only ever fires for agents already on the restorable list — i.e. ones that
+  // Only ever offers agents already on the restorable list — i.e. ones that
   // had a terminal open when the app last quit. Archived agents (closed tabs)
   // are never touched.
   useEffect(() => {
@@ -232,12 +250,11 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
         timer = null;
         if (autoStarted || restoring) return;
         if (!useStore.getState().restorableAgents.length) return;
-        // Latch BEFORE the await so the other mount point's timer, which may
-        // fire in this same tick, sees it.
+        // Latch first so the other mount point's timer, which may fire in this
+        // same tick, does not raise a second question.
         autoStarted = true;
-        autoRestoring = true;
+        restorePrompt = true;
         emit();
-        void restoreTeam().finally(() => { autoRestoring = false; emit(); });
       }, AUTO_RESTORE_DELAY_MS);
     };
 
@@ -249,5 +266,5 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.onboardingComplete]);
 
-  return { restoring: isRestoring, autoRestoring: isAutoRestoring, restoreNote, restoreTeam };
+  return { restoring: isRestoring, autoRestoring: isAutoRestoring, restorePrompt: isRestorePrompt, restoreNote, restoreTeam };
 }

@@ -17,7 +17,9 @@ import { isCompactionCommand } from '@shared/providerAutomation';
 import { preferredAgentRole } from '@shared/agentRole';
 import { isInboxNudge } from '@shared/hiveNudge';
 import { refocusAfterRemoval, focusOnLoad, restoreFocus } from './focusMode';
-import { chooseRosterSource } from './rosterSource';
+import { relativeTo } from '@shared/pathUtil';
+import { chooseRosterSource, ROSTER_STORAGE_KEYS } from './rosterSource';
+import i18n from '@/i18n';
 
 export type ToolKind =
   | 'Read' | 'Edit' | 'Write' | 'Bash' | 'WebFetch' | 'WebSearch'
@@ -228,7 +230,10 @@ interface State {
   renameAgent: (id: string, name: string) => Promise<{ ok: boolean; error?: string }>;
   setAgentNote: (id: string, note: string) => void;
   pushFeed: (id: string, line: string) => void;
-  addAgent: (agent: Agent) => void;
+  /** `select: false` for spawns the user did not just ask for (god boot, a
+   *  main-initiated/voice hire): the current selection is kept unless it points
+   *  at nothing. Default (omitted) is the user-initiated hire — select it. */
+  addAgent: (agent: Agent, opts?: { select?: boolean }) => void;
   removeAgent: (id: string) => void;
   /** Archive an agent (its terminal was closed): move it from the active roster
    *  into `archivedAgents` with its PTY cleared. Retained + flagged, NOT deleted. */
@@ -315,6 +320,9 @@ interface State {
   finishPendingHire: () => void;
   clearPendingHires: () => void;
   setFullscreen: (id: string | null) => void;
+  /** Leave focus mode (Esc) WITHOUT rewriting the stored preference: the next
+   *  launch still opens in focus mode, but this session stays out of it. */
+  leaveFocusForNow: () => void;
   /** Move focus mode WITHOUT touching the preference. For the paths that re-home
    *  a focused agent that went away: the app is following the user, not being
    *  told what the user wants. `setFullscreen` is the explicit toggle. */
@@ -344,14 +352,15 @@ interface State {
 
 const LS_SIDEBAR_WIDTH = 'cth.sidebarWidth';
 const LS_SIDEBAR_TAB = 'cth.sidebarTab';
-const LS_AGENTS = 'cth.agents';
-const LS_ARCHIVED = 'cth.archivedAgents';
-const LS_RESTORABLE = 'cth.restorableAgents';
-const LS_SELECTED = 'cth.selectedId';
-const LS_QUEUES = 'cth.messageQueues';
+const [LS_AGENTS, LS_ARCHIVED, LS_RESTORABLE, LS_SELECTED, LS_QUEUES] = ROSTER_STORAGE_KEYS;
 /** Which hive this origin's roster keys were last written for. See rosterSource.ts. */
 const LS_ROSTER_HOME = 'cth.rosterHome';
 const LS_FOCUS_MODE = 'cth.prefersFocusMode';
+/** True after the user left focus mode with Esc: restoreFocusMode stands down for
+ *  the rest of the session (the stored preference is untouched). */
+let focusLeftThisSession = false;
+/** Most recent feed lines kept per agent. */
+const FEED_CAP = 200;
 
 // Fields that are large or transient — not worth persisting across reloads.
 // contextTokens/contextLimit describe a LIVE session; persisting them showed a
@@ -502,7 +511,7 @@ function loadPersistedAgents(): Agent[] {
       ...a,
       progress: 0,
       status: 'idle',
-      action: 'reconnecting…',
+      action: i18n.t('agentStatus.reconnecting'),
       currentStation: 'desk',
       carrying: undefined,
       recentTextTs: Date.now(),
@@ -760,8 +769,10 @@ export const useStore = create<State>((set, get) => ({
       return { agents };
     }),
   pushFeed: (id, line) =>
-    set((s) => ({ feeds: { ...s.feeds, [id]: [...(s.feeds[id] ?? []), line] } })),
-  addAgent: (agent) =>
+    // Capped: a chatty agent otherwise grows this array (and every subscriber's
+    // diff) without bound for the whole session.
+    set((s) => ({ feeds: { ...s.feeds, [id]: [...(s.feeds[id] ?? []), line].slice(-FEED_CAP) } })),
+  addAgent: (agent, opts) =>
     set((s) => {
       // Idempotent by id: a MAIN-initiated spawn broadcast (hive:agentSpawned, e.g.
       // a voice hire) and a renderer-initiated hire (AddAgentModal) can both call
@@ -787,14 +798,17 @@ export const useStore = create<State>((set, get) => ({
       const archivedAgents = s.archivedAgents.filter((a) => a.id !== agent.id);
       // A live (re)spawn also consumes any restorable entry for the same id.
       const restorableAgents = s.restorableAgents.filter((a) => a.id !== agent.id);
-      persistAgents(agents, agent.id);
+      const keepSelection =
+        opts?.select === false && !!s.selectedId && s.agents.some((a) => a.id === s.selectedId);
+      const selectedId = keepSelection ? s.selectedId : agent.id;
+      persistAgents(agents, selectedId);
       persistArchived(archivedAgents);
       if (restorableAgents.length !== s.restorableAgents.length) persistRestorable(restorableAgents);
       return {
         agents,
         archivedAgents,
         restorableAgents,
-        selectedId: agent.id,
+        selectedId,
         feeds: { ...s.feeds, [agent.id]: s.feeds[agent.id] ?? [] }
       };
     }),
@@ -820,7 +834,7 @@ export const useStore = create<State>((set, get) => ({
         archived: true,
         ptyId: undefined,
         status: 'idle',
-        action: 'archived',
+        action: i18n.t('agentStatus.archived'),
         carrying: undefined,
         currentStation: undefined
       };
@@ -1003,11 +1017,19 @@ export const useStore = create<State>((set, get) => ({
     // you never silently changes how the app opens next time. Every non-explicit
     // mover goes through `refocusFullscreen` instead.
     try { window.localStorage.setItem(LS_FOCUS_MODE, id ? '1' : '0'); } catch { /* noop */ }
+    focusLeftThisSession = false;
     set({ fullscreenAgentId: id, prefersFocusMode: !!id });
+  },
+  leaveFocusForNow: () => {
+    focusLeftThisSession = true;
+    set({ fullscreenAgentId: null });
   },
   refocusFullscreen: (id) => set({ fullscreenAgentId: id }),
   restoreFocusMode: () =>
     set((s) => {
+      // The user pressed Esc this session — the preference stays, but don't
+      // bounce them back in on the next roster change.
+      if (focusLeftThisSession) return s;
       const id = restoreFocus(s.prefersFocusMode, s.fullscreenAgentId, s.agents, s.selectedId);
       return id === s.fullscreenAgentId ? s : { fullscreenAgentId: id };
     }),
@@ -1016,7 +1038,7 @@ export const useStore = create<State>((set, get) => ({
     // Resolve the OWNING agent here rather than in each caller: a terminal link
     // or a Files-tab click often has nothing selected, and the IDE would
     // otherwise fall back to the selection and open the wrong workspace.
-    const owner = s.agents.find((a) => absPath === a.cwd || absPath.startsWith(a.cwd + '/'));
+    const owner = s.agents.find((a) => relativeTo(a.cwd, absPath) !== null);
     set({ ideInitialFile: absPath, ideOpen: true, ideAgentId: owner?.id ?? null });
   },
   // Closing CLEARS the target: the id is scoped to one IDE session, and a stale

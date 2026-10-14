@@ -84,6 +84,17 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
 }
 
 // ─── Small helpers ───────────────────────────────────────────────────────────
+/// A doc id is a single path segment under `docs/` — `[A-Za-z0-9_-]{1,64}`
+/// (gen_id emits 16 hex). Anything else (`..`, separators, drive prefixes,
+/// absolute paths) would let a renderer-supplied id walk out of the store.
+pub fn is_valid_doc_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn gen_id() -> String {
     // crypto.randomBytes(8).toString('hex') → 16 hex chars.
     uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
@@ -580,6 +591,9 @@ pub fn ingest(kg_root: &Path, input: &IngestInput) -> Result<IngestOutcome, Stri
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(gen_id);
+    if !is_valid_doc_id(&doc_id) {
+        return Err("invalid doc id".to_string());
+    }
     let doc_dir = docs_dir.join(&doc_id);
     fs::create_dir_all(&doc_dir).map_err(|e| format!("create doc dir: {e}"))?;
 
@@ -787,7 +801,7 @@ pub fn list(kg_root: &Path) -> Vec<KgMeta> {
 
 /// Full record for one artifact: { meta, text } or None.
 pub fn get_doc(kg_root: &Path, doc_id: &str) -> Option<(KgMeta, String)> {
-    if doc_id.is_empty() {
+    if !is_valid_doc_id(doc_id) {
         return None;
     }
     let doc_dir = kg_root.join("docs").join(doc_id);
@@ -803,14 +817,18 @@ pub fn get_doc(kg_root: &Path, doc_id: &str) -> Option<(KgMeta, String)> {
 /// Delete one artifact's folder and drop its lines from the index.
 pub fn remove_doc(kg_root: &Path, doc_id: &str) -> bool {
     let _guard = KG_LOCK.lock().unwrap();
-    if doc_id.is_empty() {
+    if !is_valid_doc_id(doc_id) {
         return false;
     }
     let doc_dir = kg_root.join("docs").join(doc_id);
     if !doc_dir.exists() {
         return false;
     }
-    let _ = fs::remove_dir_all(&doc_dir);
+    // A failed delete must not report success (or drop the index lines of a
+    // doc that is still on disk).
+    if fs::remove_dir_all(&doc_dir).is_err() {
+        return false;
+    }
     let idx_path = kg_root.join("index.jsonl");
     if let Ok(raw) = fs::read_to_string(&idx_path) {
         let kept: String = raw
@@ -1103,5 +1121,38 @@ mod tests {
         assert!(search(&root, "anything", None).is_empty());
         assert!(list(&root).is_empty());
         assert!(get_doc(&root, "nope").is_none());
+    }
+
+    #[test]
+    fn doc_ids_cannot_traverse_out_of_the_store() {
+        for ok in ["abc123", "A_b-9", &"a".repeat(64), "0123456789abcdef"] {
+            assert!(is_valid_doc_id(ok), "{ok}");
+        }
+        for bad in ["", "..", ".", "../x", "a/b", "a\\b", "C:\\Windows", "/etc", "a b", "é", &"a".repeat(65), "a.b", "x\0"] {
+            assert!(!is_valid_doc_id(bad), "{bad:?}");
+        }
+        let tmp = TmpDir::new("traverse");
+        let root = tmp.0.join("knowledge");
+        // A sibling dir the traversal would otherwise delete / read.
+        let victim = tmp.0.join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("meta.json"), "{}").unwrap();
+        fs::write(victim.join("keep.txt"), "x").unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        assert!(!remove_doc(&root, "../../victim"));
+        assert!(!remove_doc(&root, ".."));
+        assert!(victim.join("keep.txt").exists());
+        assert!(get_doc(&root, "../../victim").is_none());
+        // ingest refuses a hostile caller-supplied id and creates nothing.
+        let err = ingest(
+            &root,
+            &IngestInput {
+                id: Some("../../victim2".into()),
+                text: Some("hello".into()),
+                ..Default::default()
+            },
+        );
+        assert!(err.is_err());
+        assert!(!tmp.0.join("victim2").exists());
     }
 }

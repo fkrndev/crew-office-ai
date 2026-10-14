@@ -61,6 +61,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     flash(snap?.paused ? t('agentControl.flashResumed') : t('agentControl.flashPaused'));
   };
   const halt = async () => {
+    if (!window.confirm(t('agentControl.haltConfirm'))) return;
     const s = await window.cth.controlHalt(agentId);
     if (s) setSnap(s);
     flash(t('agentControl.flashHalt'));

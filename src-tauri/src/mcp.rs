@@ -183,10 +183,79 @@ pub fn build_default_mcp_servers(
     out
 }
 
+/// Env-var prefix for MCP secrets handed to the agent process out-of-band.
+/// Namespaced so a keychain `DATABASE_URL` never lands in the agent's own
+/// shell env under a name the project's tooling would pick up.
+pub const MCP_SECRET_ENV_PREFIX: &str = "MUNDER_MCP_";
+
+/// Move every keychain-resolved MCP env value out of `servers` so the file
+/// written to disk (claude `settings.json` / hermes `config.yaml`) carries a
+/// `${MUNDER_MCP_<KEY>}` reference instead of the secret. Returns the
+/// `(var, value)` pairs the caller must add to the SPAWNED PROCESS env —
+/// both claude and hermes expand `${VAR}` in MCP server config from their own
+/// environment. Literal catalog defaults (SHARDX_API, …) and unresolved
+/// (empty) secrets are left untouched: an unresolved secret must still fail
+/// loudly rather than expand to a literal `${…}` string.
+pub fn externalize_mcp_secrets(
+    servers: &mut BTreeMap<String, McpServerSpec>,
+) -> HashMap<String, String> {
+    let mut secrets = HashMap::new();
+    for (name, spec) in servers.iter_mut() {
+        let Some(entry) = name.strip_prefix("munder-").and_then(catalog_entry) else {
+            continue;
+        };
+        for (k, hint) in entry.env {
+            if !hint.is_empty() {
+                continue;
+            }
+            if let Some(v) = spec.env.get_mut(*k) {
+                if v.is_empty() {
+                    continue;
+                }
+                let var = format!("{MCP_SECRET_ENV_PREFIX}{k}");
+                let value = std::mem::replace(v, format!("${{{var}}}"));
+                secrets.insert(var, value);
+            }
+        }
+    }
+    secrets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn externalize_replaces_secret_values_with_env_refs() {
+        let mut m = build_default_mcp_servers(
+            "C:/w",
+            Path::new("C:/harness"),
+            &HashMap::new(),
+            &["shardx".to_string(), "github-token".to_string(), "trello".to_string()],
+            &[],
+            &|k| match k {
+                "SHARDX_TOKEN" => Some("tok-SECRET-1".to_string()),
+                "GITHUB_PERSONAL_ACCESS_TOKEN" => Some("ghp_SECRET2".to_string()),
+                "TRELLO_API_KEY" => Some("trelloKEY3".to_string()),
+                _ => None, // TRELLO_TOKEN unresolved
+            },
+        );
+        let secrets = externalize_mcp_secrets(&mut m);
+        let json = serde_json::to_string(&m).unwrap();
+        for s in ["tok-SECRET-1", "ghp_SECRET2", "trelloKEY3"] {
+            assert!(!json.contains(s), "{s} leaked into {json}");
+        }
+        assert_eq!(m["munder-shardx"].env["SHARDX_TOKEN"], "${MUNDER_MCP_SHARDX_TOKEN}");
+        assert_eq!(secrets["MUNDER_MCP_SHARDX_TOKEN"], "tok-SECRET-1");
+        assert_eq!(secrets["MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN"], "ghp_SECRET2");
+        assert_eq!(secrets["MUNDER_MCP_TRELLO_API_KEY"], "trelloKEY3");
+        // Literal defaults stay literal; unresolved secrets stay empty (no ref).
+        assert_eq!(m["munder-shardx"].env["SHARDX_API"], "http://127.0.0.1:40325");
+        assert_eq!(m["munder-trello"].env["TRELLO_TOKEN"], "");
+        assert!(!secrets.contains_key("MUNDER_MCP_TRELLO_TOKEN"));
+        assert_eq!(secrets.len(), 3);
+    }
 
     fn no_secret(_: &str) -> Option<String> {
         None

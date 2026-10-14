@@ -36,7 +36,7 @@ import { useRtl } from '@/i18n/useDirection';
  */
 interface TriggerHistoryApi {
   listTriggerHistory?: () => Promise<TriggerHistoryEntry[]>;
-  onTriggerHistoryUpdated?: (cb: () => void) => () => void;
+  onTriggerHistory?: (cb: () => void) => () => void;
   decideTriggerHistory?: (input: {
     id: string;
     decision: 'approved' | 'rejected';
@@ -355,16 +355,14 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+// The organisation (teammate messaging) section is not offered: there is no
+// transport, so its list could only ever be empty. Add it back here (and the
+// switcher below reappears on its own) when the transport ships.
 const SECTIONS: { key: Source; labelKey: string; blurbKey: string }[] = [
   {
     key: 'webhook',
     labelKey: 'triggerHistory.sectionWebhooks',
     blurbKey: 'triggerHistory.sectionWebhooksBlurb'
-  },
-  {
-    key: 'org',
-    labelKey: 'triggerHistory.sectionOrg',
-    blurbKey: 'triggerHistory.sectionOrgBlurb'
   }
 ];
 
@@ -391,7 +389,7 @@ export function TriggerHistoryTab() {
   useEffect(() => {
     load();
     // Same shape as onMissionsUpdated: subscribe, get an unsubscribe back.
-    const off = api().onTriggerHistoryUpdated?.(load);
+    const off = api().onTriggerHistory?.(load);
     return () => { if (typeof off === 'function') off(); };
   }, [load]);
 
@@ -454,7 +452,7 @@ export function TriggerHistoryTab() {
       background: 'var(--cth-paper-200)'
     }}>
       {/* Section switcher — the panel is too narrow to stack both lists. */}
-      <div style={{
+      {SECTIONS.length > 1 && <div style={{
         display: 'flex', flexShrink: 0,
         background: 'var(--cth-cream-200)', boxShadow: 'inset 0 -1px 0 var(--cth-ink-300)'
       }}>
@@ -486,7 +484,7 @@ export function TriggerHistoryTab() {
             </button>
           );
         })}
-      </div>
+      </div>}
 
       <div style={{
         flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden',

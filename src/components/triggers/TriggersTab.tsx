@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { SchedulesSection } from './SchedulesSection';
 import { ContextSection } from './ContextSection';
 import { WebhooksSection } from './WebhooksSection';
-import { OrgSection } from './OrgSection';
+
 import { Muted, Scroll, TriggerCard } from './ui';
 
 /**
@@ -22,7 +22,7 @@ export function TriggersTab() {
   const [schedulesSummary, setSchedulesSummary] = useState('');
   const [contextSummary, setContextSummary] = useState('');
   const [webhooksSummary, setWebhooksSummary] = useState('');
-  const [orgSummary, setOrgSummary] = useState('');
+
 
   return (
     <Scroll>
@@ -53,14 +53,9 @@ export function TriggersTab() {
       >
         <WebhooksSection onSummary={setWebhooksSummary} />
       </TriggerCard>
-
-      <TriggerCard
-        title={t('triggersTab.organisation')}
-        blurb={t('triggersTab.organisationBlurb')}
-        summary={orgSummary}
-      >
-        <OrgSection onSummary={setOrgSummary} />
-      </TriggerCard>
+      {/* Organisation (teammate messaging) card removed: there is no transport yet,
+          so an org key could be saved but would never reach anyone. OrgSection.tsx
+          is kept for when it ships. */}
     </Scroll>
   );
 }

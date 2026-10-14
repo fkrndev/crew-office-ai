@@ -85,7 +85,8 @@
     "stopAfterStepTip": "Biarkan ia menyelesaikan langkah yang sedang berjalan, lalu berhenti. Proses dan sesinya tetap hidup, jadi restart & lanjutkan bisa mengangkatnya kembali. Untuk mengakhiri proses sepenuhnya, pakai tombol X.",
     "stopAfterStepAria": "Hentikan agen ini setelah langkah saat ini",
     "steerTip": "Menyerahkan catatan ke agen di batas giliran berikutnya. Tidak mengganggu apa yang sedang ia kerjakan, dan tidak ada yang diketik ke terminalnya.",
-    "steerAria": "Kirim catatan ke agen ini"
+    "steerAria": "Kirim catatan ke agen ini",
+    "haltConfirm": "Hentikan agen ini? Ia berhenti dari apa yang sedang dikerjakan sekarang."
   },
   "agentCard": {
     "boss": "BOS",
@@ -137,7 +138,8 @@
     "terminal": "terminal",
     "git": "git",
     "messages": "pesan",
-    "traces": "trace"
+    "traces": "trace",
+    "resizeTitle": "Seret untuk mengubah ukuran · klik dua kali untuk reset"
   },
   "toolWaterfall": {
     "fresh": "input {{tokens}} tok",
@@ -163,7 +165,10 @@
     "openIde": "Buka IDE",
     "ide": "IDE",
     "openTerminalAria": "Buka terminal sistem di folder agen ini",
-    "killAria": "Hentikan {{name}}"
+    "killAria": "Hentikan {{name}}",
+    "editTip": "Edit {{name}}: nama dan wajahnya, engine yang dipakai, dan arahan yang menjelaskan tugasnya.",
+    "editAria": "Edit agen ini",
+    "editLabel": "edit"
   },
   "settingsHero": {
     "sponsoredBy": "Disponsori oleh",
@@ -200,7 +205,15 @@
     "cantUndo": "Ini tidak bisa dibatalkan.",
     "switching": "mengganti…",
     "deleteSwitch": "hapus {{count}} & ganti",
-    "notBuiltWarning": "Tema ini ({{label}}) belum dibuat — office-mu akan terlihat sama, tapi agent-mu tetap dihapus. Pilih tema yang sudah ada, atau pindah setelah tema ini rilis."
+    "notBuiltWarning": "Tema ini ({{label}}) belum dibuat — office-mu akan terlihat sama, tapi agent-mu tetap dihapus. Pilih tema yang sudah ada, atau pindah setelah tema ini rilis.",
+    "blurbs": {
+      "office": "Dunder Mifflin — lantai aslinya",
+      "friends": "Kedai kopi Central Perk",
+      "brooklyn99": "Ruang kerja detektif Distrik 99",
+      "siliconvalley": "Hacker Hostel",
+      "got": "Ruang takhta Red Keep",
+      "hogwarts": "Aula besar Hogwarts"
+    }
   },
   "settings": {
     "title": "PENGATURAN",
@@ -349,11 +362,7 @@
       "mode": "Mode",
       "webhooksHint": "Pemanggil melakukan POST ke URL webhook dengan secret-nya di header x-md-webhook-secret. Masing-masing memeriksa body terhadap JSON schema-nya sendiri — edit itu di tab Pemicu di Command Center {{godName}}, tempat riwayat semua yang masuk juga tersimpan.",
       "organisation": "Organisasi",
-      "orgKey": "Kunci organisasi",
-      "orgKeyDesc": "Cara instalasi milik rekan tim mengalamatkan milikmu.",
-      "apiKey": "Kunci API",
-      "orgKeyPlaceholder": "tempel kunci organisasimu",
-      "orgConfigOnly": "Baru konfigurasi untuk sekarang. Layanan pesan organisasi belum ada, jadi kunci di sini tidak memulai transpor apa pun — ia disimpan, ditampilkan di tab Pemicu, dan menunggu."
+      "apiKey": "Kunci API"
     },
     "voice": {
       "freeFlow": "Free Flow",
@@ -364,7 +373,7 @@
       "model": "Model",
       "fast": "whisper-large-v3-turbo (cepat)",
       "accurate": "whisper-large-v3 (akurat)",
-      "freeFlowHint": "Dua cara mendikte: klik tombol mic di atas Kirim di composer antrean (klik untuk merekam, klik lagi untuk transkripsi), atau — saat melihat terminal agen mana pun — tahan Option (⌥) untuk bicara dan lepas untuk transkripsi. Apa pun caranya, teksnya masuk ke draf composer untuk kamu tinjau sebelum dikirim. macOS akan meminta izin mikrofon saat pertama kali kamu merekam.",
+      "freeFlowHint": "Dua cara mendikte: klik tombol mic di atas Kirim di composer antrean (klik untuk merekam, klik lagi untuk transkripsi), atau — saat melihat terminal agen mana pun — tahan {{altKey}} untuk bicara dan lepas untuk transkripsi. Apa pun caranya, teksnya masuk ke draf composer untuk kamu tinjau sebelum dikirim. {{micNote}}",
       "realtime": "Realtime {{godName}}",
       "voiceChat": "Chat suara dengan {{godName}}",
       "voiceChatDesc": "Bicara dengan orkestrator secara real time. Aktifkan dari tab {{godName}}; pilih mikrofon dan speaker yang dipakai loop suara di sini.",
@@ -385,7 +394,9 @@
       "5m": "5 menit",
       "10m": "10 menit",
       "never": "Nonaktif (tidak pernah)",
-      "idleDisconnectDesc": "Berapa lama sesi suara tetap terbuka tanpa percakapan sebelum tertutup otomatis. Batas pengeluaran tetap menghentikan sesi yang lepas kendali meski ini nonaktif."
+      "idleDisconnectDesc": "Berapa lama sesi suara tetap terbuka tanpa percakapan sebelum tertutup otomatis. Batas pengeluaran tetap menghentikan sesi yang lepas kendali meski ini nonaktif.",
+      "micNoteMac": "macOS akan meminta izin mikrofon saat pertama kali kamu merekam.",
+      "micNoteOther": "Sistem kamu mungkin meminta izin mikrofon saat pertama kali merekam — izinkan."
     },
     "saved": "Tersimpan",
     "saving": "Menyimpan…",
@@ -443,7 +454,7 @@
     "engine": "engine:",
     "apply": "terapkan",
     "confirmRestartEngine": "Ini me-restart {{name}}; percakapan di engine lain tidak bisa dilanjutkan.",
-    "restartFailed": "Restart gagal.",
+    "restartFailed": "Gagal memulai ulang.",
     "archived": "DIARSIPKAN ({{count}})",
     "showClosed": "tampilkan agen yang ditutup",
     "hideClosed": "sembunyikan agen yang ditutup",
@@ -489,7 +500,14 @@
     "openIssue": "Issue GitHub #{{num}}: {{title}}",
     "deliveryResumeAria": "Lanjutkan pengiriman otomatis untuk seluruh lantai",
     "deliveryHoldAria": "Tahan pengiriman otomatis untuk seluruh lantai",
-    "openIdeAria": "Buka IDE"
+    "openIdeAria": "Buka IDE",
+    "forgetArchivedConfirm": "Lupakan agen terarsip \"{{name}}\"? Agen ini dihapus permanen dari daftar.",
+    "fetchIssuesFailed": "Gagal mengambil isu.",
+    "resumeDifferentProvider": "Tidak dapat melanjutkan sesi melalui penyedia yang berbeda.",
+    "resumeNoSessionId": "Tidak ada ID sesi yang tercatat; proses saat ini dibiarkan berjalan.",
+    "resumeNoTranscript": "Transkrip sesi tidak ditemukan; proses saat ini dibiarkan berjalan.",
+    "couldNotStop": "Tidak dapat menghentikan proses saat ini.",
+    "resumeRefused": "Pelanjutan ditolak; tidak ada sesi pengganti yang diterima."
   },
   "addAgent": {
     "title": "TAMBAH AGEN",
@@ -605,7 +623,13 @@
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
     "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama.",
     "needsKey": "⚠ {{provider}} butuh API key — isi di Pengaturan → AI Engines",
-    "needsShardx": "⚠ butuh setup shardx — jalankan Pengaturan → MCP → Set up"
+    "needsShardx": "⚠ butuh setup shardx — jalankan Pengaturan → MCP → Set up",
+    "hireSkipped": "Melewati {{n}} berkas tidak valid: {{errors}}",
+    "spawnFailed": "gagal menjalankan agen",
+    "statusResumeMissing": "sesi tidak ditemukan — mulai baru",
+    "statusStarting": "sedang memulai",
+    "removeProjectTitle": "Hapus {{name}} dari daftar ini. Folder aslinya tidak disentuh.",
+    "removeProjectAria": "Hapus {{name}} dari daftar proyek"
   },
   "onboarding": {
     "titles": {
@@ -1418,15 +1442,19 @@
     "removeFromQueue": "Hapus dari antrean",
     "ffNoKeyTitle": "Dikte butuh kunci API Groq gratis. Klik tanda info untuk langkahnya.",
     "ffStopTranscribe": "Berhenti & transkripsikan",
-    "ffTitle": "Free Flow — dikte ke antrean. Klik, atau tahan Option (⌥).",
+    "ffTitle": "Free Flow — dikte ke antrean. Klik, atau tahan {{altKey}}.",
     "stop": "berhenti",
     "ffHowEnable": "Bagaimana cara mengaktifkan dikte?",
     "ffSetupTitle": "Siapkan dikte",
     "ffSetupIntro": "Bicara saja daripada mengetik. Groq yang mentranskripsi, dan paket gratis mereka menanggungnya — tanpa kartu, tanpa biaya.",
     "ffCreateKey": "Buat kunci gratis di",
     "ffPasteKey": "Tempel ke Pengaturan → Suara → Kunci API Groq",
-    "ffClickOrHold": "Klik suara, atau tahan tombol Option kanan untuk bicara",
-    "ffHoldHint": "Tahan SAJA sebentar untuk mulai; lepas untuk transkripsi ke composer, tempat kamu bisa mengedit sebelum mengirim. Tombol Option mana pun bisa, dan kombo Option+tombol tetap sampai ke terminal tanpa tersentuh."
+    "ffClickOrHold": "Klik suara, atau tahan tombol {{altKey}} kanan untuk bicara",
+    "ffHoldHint": "Tahan SAJA sebentar untuk mulai; lepas untuk transkripsi ke composer, tempat kamu bisa mengedit sebelum mengirim. Tombol {{altKey}} mana pun bisa, dan kombo {{altKey}}+tombol tetap sampai ke terminal tanpa tersentuh.",
+    "imagePasteFailed": "Tidak dapat membaca gambar yang ditempel: {{error}}",
+    "clearAllConfirm": "Hapus semua {{n}} pesan dalam antrean?",
+    "closePickerTitle": "Tutup pemilih yang dibuka agen ini agar pesan dalam antrean dapat terkirim",
+    "recoverPromptTitle": "Pindahkan teks sisa di prompt agen ini ke kotak ini agar pesan dalam antrean dapat terkirim"
   },
   "idePanel": {
     "workspace": "workspace {{name}}",
@@ -1462,7 +1490,10 @@
     "copyPath": "salin path",
     "saveTitle": "Simpan (Cmd/Ctrl+S)",
     "saved": "tersimpan",
-    "save": "simpan"
+    "save": "simpan",
+    "nothingOpen": "tidak ada yang terbuka",
+    "nothingOpenHint": "Pilih berkas dari pohon untuk diedit, atau berkas yang berubah untuk dibandingkan.",
+    "loading": "memuat…"
   },
   "gitPanes": {
     "jumpConfirm": "Pindahkan repo ke {{sha}} (\"{{subject}}\")?\n\nIni membuat HEAD detached. Otomatis diblokir jika tree kotor atau ada agen yang sedang berjalan.",
@@ -1495,7 +1526,9 @@
     "viewSourceTitle": "Buka markup SVG di editor",
     "viewSource": "lihat sumber",
     "loading": "memuat gambar…",
-    "decodeFailed": "tidak bisa mendekode gambar ini — file mungkin rusak atau salah nama"
+    "decodeFailed": "tidak bisa mendekode gambar ini — file mungkin rusak atau salah nama",
+    "copyPathTitle": "Salin path absolut",
+    "copyPath": "salin path"
   },
   "quit": {
     "title": "KELUAR SEKARANG?",
@@ -1522,7 +1555,8 @@
     "workersConfirmedDone": "{{acked}} / {{total}} WORKER KONFIRMASI — MENUNGGU ORKESTRATOR",
     "noWorkers": "TIDAK ADA WORKER DI FLOOR — MENUNGGU ORKESTRATOR",
     "timeoutNote": "Ini lumayan lama (mungkin agent sedang di tengah compaction atau panggilan tool dalam). Tunggu, atau paksa keluar dan terima kehilangan data.",
-    "errorFallback": "Waktu tutup tidak bisa dimulai."
+    "errorFallback": "Waktu tutup tidak bisa dimulai.",
+    "quitFailed": "Tidak dapat keluar: {{error}}"
   },
   "editAgent": {
     "title": "EDIT AGENT",
@@ -1579,19 +1613,109 @@
     "toggleDarkMode": "Ganti tema gelap/terang",
     "settings": "Pengaturan",
     "focusMode": "Mode fokus",
-    "exitFocusMode": "Keluar mode fokus (Esc)",
+    "exitFocusMode": "Keluar mode fokus",
     "toggleFocusMode": "Ganti mode fokus",
     "wakingFloor": "FLOOR BANGUN",
     "wakingDesc": "{{godName}} sedang masuk. Terminal akan muncul di sini setelah ia duduk.",
     "noAgentSelected": "BELUM ADA AGENT DIPILIH",
     "noAgentDesc": "Spawn agent dari strip di bawah. Terminal dan command bar akan muncul di sini.",
-    "addAgent": "tambah agent"
+    "addAgent": "tambah agent",
+    "productName": "Agent Office",
+    "emptyFloorTitle": "LANTAI KOSONG",
+    "emptyFloorBody": "Belum ada agen di lantai. Buat satu untuk melihat output claude yang sebenarnya mengalir di sini.",
+    "loadFailedTitle": "GAGAL MEMULAI",
+    "loadFailedBody": "Aplikasi tidak dapat membaca pengaturannya, jadi belum bisa dibuka.",
+    "retry": "coba lagi",
+    "hireFailed": "Tidak dapat mengimpor agen: {{error}}",
+    "hireInvalid": "manifes tidak valid"
   },
   "ptyTerminal": {
     "livePty": "langsung · terminal {{id}}",
     "zoomOut": "Perkecil (Ctrl -)",
     "zoomReset": "Reset zoom (Ctrl 0)",
     "zoomIn": "Perbesar (Ctrl +)",
-    "exitFocus": "Keluar mode fokus (Esc)"
+    "exitFocus": "Keluar mode fokus",
+    "linkHint": "{{modifier}}+klik untuk membuka"
+  },
+  "notice": {
+    "queueDropped": "Pesan ke {{agent}} tidak dapat dikirim dan dibuang: \"{{text}}\"",
+    "sendFailed": "Tidak dapat mengirim: {{error}}"
+  },
+  "realtime": {
+    "micDenied": "izin mikrofon ditolak — izinkan akses mikrofon untuk berbicara dengan {{godName}}",
+    "micNotFound": "mikrofon tidak ditemukan — periksa perangkat input kamu"
+  },
+  "updateBadge": {
+    "latestTitle": "Kamu memakai versi terbaru.",
+    "latestBody": "v{{version}} adalah rilis terbaru. Baru saja diperiksa."
+  },
+  "agentHold": {
+    "needsRestart": "mulai ulang aplikasi: build ini belum mendukung kontrol 1:1",
+    "couldNotSet": "tidak dapat mengatur penahanan",
+    "endTip": "Akhiri 1:1. {{godName}} bisa memberi {{name}} pekerjaan lagi.",
+    "startTip": "Ajak {{name}} ke samping. {{godName}} berhenti mengirim pekerjaan sampai kamu mengakhirinya. Berbeda dengan dua tombol lain di sini, ini tidak menahan agen: mereka terus berjalan dan terus menjawabmu.",
+    "endAria": "Akhiri 1:1 dan lepas agen ini ke {{godName}}",
+    "startAria": "Ajak agen ini ke samping untuk 1:1",
+    "failed": "1:1 gagal",
+    "active": "dalam 1:1",
+    "label": "1:1"
+  },
+  "releaseDrop": {
+    "releaseNotes": "catatan rilis",
+    "esc": "esc",
+    "closeAria": "Tutup catatan rilis",
+    "closeTitle": "Tutup (Esc)"
+  },
+  "codeEditor": {
+    "copyPathTitle": "Salin path absolut",
+    "copyPath": "salin path",
+    "saveTitleMac": "Simpan (Cmd-S)",
+    "saveTitleOther": "Simpan (Ctrl-S)",
+    "saved": "tersimpan",
+    "error": "galat",
+    "save": "simpan",
+    "openInIde": "Buka di IDE",
+    "loading": "memuat…"
+  },
+  "restorePrompt": {
+    "title": "Pulihkan sesi terakhir",
+    "question": "Pulihkan {{n}} agen dari sesi terakhir? ({{names}})",
+    "restore": "pulihkan",
+    "skip": "lewati"
+  },
+  "agentStatus": {
+    "usingTool": "memakai {{tool}}",
+    "compacting": "memadatkan konteks",
+    "resumed": "dilanjutkan",
+    "thinking": "berpikir",
+    "idle": "menganggur",
+    "readingInbox": "membaca kotak masuk",
+    "runningFloor": "mengelola lantai kerja",
+    "startingUp": "sedang memulai",
+    "revived": "dihidupkan kembali setelah tidur",
+    "breakerArmed": "pemutus aktif",
+    "awaiting": "menunggu",
+    "waitingOnYou": "menunggu Anda",
+    "waitingOnGod": "menunggu {{godName}}",
+    "reconnecting": "menyambung kembali…",
+    "worktreeGone": "worktree hilang — memakai repo dasar",
+    "processExited": "proses berhenti",
+    "restarting": "memulai ulang",
+    "restartingDots": "memulai ulang…",
+    "recreatingTerminal": "membuat ulang terminal…",
+    "continuing": "melanjutkan…",
+    "switchingTo": "beralih ke {{provider}}…",
+    "archived": "diarsipkan",
+    "blockSummary": "Menunggu balasan Anda",
+    "blockDetail": "Claude menunggu masukan. Periksa terminal untuk melihat perintah persisnya.",
+    "approve": "Setujui",
+    "deny": "Tolak"
+  },
+  "restoreNote": {
+    "restored": "dipulihkan {{n}}",
+    "alreadyLive": "{{n}} sudah berjalan",
+    "failed": "{{n}} gagal — {{details}}",
+    "nothing": "tidak ada yang perlu dipulihkan",
+    "spawnFailed": "gagal memulai"
   }
 }

@@ -33,7 +33,10 @@ import { freeflowRecorder } from './recorder';
 const ARM_MS = 320;
 
 function isOptionKey(e: KeyboardEvent): boolean {
-  return e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Alt' || e.key === 'AltGraph';
+  // AltGr (Windows/Linux layouts) arrives as code AltRight + key AltGraph and is
+  // how people type @ { } [ ] — it must never arm a recording.
+  if (e.key === 'AltGraph') return false;
+  return e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Alt';
 }
 
 /** Install the hold-Option-to-talk gesture for as long as the component is

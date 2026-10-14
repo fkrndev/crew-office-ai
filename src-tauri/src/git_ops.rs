@@ -119,7 +119,43 @@ pub fn worktree_has_unintegrated_work(cwd: &Path) -> Option<bool> {
         return Some(true);
     }
     let ab = ahead_behind(cwd)?;
-    Some(ab["ahead"].as_u64().unwrap_or(0) > 0)
+    if ab["ahead"].as_u64().unwrap_or(0) > 0 {
+        return Some(true);
+    }
+    // No upstream reports ahead=0, which proves nothing for a DETACHED head:
+    // its commits live only in this worktree's HEAD. Keep it unless some ref
+    // already contains HEAD (fails safe — any doubt says "has work").
+    if ab["hasUpstream"].as_bool() != Some(true) {
+        return Some(detached_head_unreferenced(cwd).unwrap_or(true));
+    }
+    Some(false)
+}
+
+/// True when HEAD is detached AND no branch/remote/tag ref contains it —
+/// i.e. deleting the worktree would orphan its commits. A branch HEAD is
+/// always referenced (the branch survives the worktree). `None` = unknown.
+fn detached_head_unreferenced(cwd: &Path) -> Option<bool> {
+    let repo = git2::Repository::discover(cwd).ok()?;
+    let head = repo.head().ok()?;
+    if head.is_branch() {
+        return Some(false);
+    }
+    let oid = head.target()?;
+    for r in repo.references().ok()?.flatten() {
+        let Ok(n) = r.name() else { continue };
+        if !(n.starts_with("refs/heads/")
+            || n.starts_with("refs/remotes/")
+            || n.starts_with("refs/tags/"))
+        {
+            continue;
+        }
+        if let Some(t) = r.target() {
+            if t == oid || repo.graph_descendant_of(t, oid).unwrap_or(false) {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
 }
 
 // ─── v0.3.4 port: history / compare / checkout plumbing ─────────────────────
@@ -517,7 +553,15 @@ pub fn add_worktree(
         if let Ok(br) = repo.branch(b, &commit, false) {
             return add_wt_with_ref(&repo, &name, wt_path, &br.into_reference());
         }
-        // Branch exists / -b failed → upstream falls back to plain add.
+        // Branch already exists (a respawn after teardown): resume ON it, so
+        // the agent's earlier commits stay attached instead of the new
+        // worktree silently landing on the base. If it can't be attached
+        // (checked out elsewhere) → upstream's plain-add fallback below.
+        if let Ok(br) = repo.find_branch(b, git2::BranchType::Local) {
+            if let Ok(v) = add_wt_with_ref(&repo, &name, wt_path, &br.into_reference()) {
+                return Ok(v);
+            }
+        }
     }
     if let Ok(r) = repo.resolve_reference_from_short_name(base_rev) {
         if r.is_branch() || r.is_remote() || r.is_tag() {
@@ -691,17 +735,9 @@ pub fn link_worktree_deps(base_dir: &Path, worktree_dir: &Path) -> Result<(), St
     }
     #[cfg(windows)]
     {
-        let st = std::process::Command::new("cmd")
-            .args(["/d", "/s", "/c", "mklink", "/J"])
-            .arg(&wt_nm)
-            .arg(&base_nm)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if st.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&st.stderr).trim().to_string())
-        }
+        // Direct junction syscall (no `cmd /c mklink`): a path with `&`/`%`
+        // in a folder name must never reach cmd.exe's parser.
+        junction::create(&base_nm, &wt_nm).map_err(|e| e.to_string())
     }
     #[cfg(not(windows))]
     {
@@ -977,6 +1013,23 @@ mod tests {
         assert_eq!(s["untracked"].as_u64(), Some(1));
         assert_eq!(s["unstaged"].as_u64(), Some(1));
         assert_eq!(s["clean"].as_bool(), Some(false));
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn detached_unreferenced_head_counts_as_unintegrated() {
+        let d = tmpdir("detached");
+        let repo = init_repo(&d);
+        let first = commit_file(&repo, &d, "a.txt", "one", "init");
+        // Branch HEAD, clean, no upstream → safe to remove.
+        assert_eq!(worktree_has_unintegrated_work(&d), Some(false));
+        // Detached at a commit a branch contains → still safe.
+        repo.set_head_detached(first).unwrap();
+        assert_eq!(worktree_has_unintegrated_work(&d), Some(false));
+        // New commit on the detached head: no ref holds it → must be kept.
+        commit_file(&repo, &d, "b.txt", "two", "orphan");
+        assert_eq!(worktree_has_unintegrated_work(&d), Some(true));
         drop(repo);
         std::fs::remove_dir_all(&d).ok();
     }

@@ -219,10 +219,15 @@ const BARE_AFFIRMATIONS: &[&str] = &[
     "correct",
 ];
 
+/// The provider's standard launch command (shared/agentProvider.ts
+/// defaultCommand) — the ONLY command a voice hire may run; the model never
+/// supplies one.
 fn provider_command(provider: &str) -> &'static str {
     match provider {
         "codex" => "codex",
-        "antigravity" => "antigravity",
+        "grok" => "grok",
+        "kimi" => "kimi",
+        "antigravity" => "agy",
         "gemini" => "gemini",
         "opencode" => "opencode",
         "crush" => "crush",
@@ -230,6 +235,8 @@ fn provider_command(provider: &str) -> &'static str {
         "qwen" => "qwen",
         "copilot" => "copilot",
         "cursor" => "cursor-agent",
+        "hermes" => "hermes chat",
+        "openclaw" => "openclaw tui --local",
         _ => "claude",
     }
 }
@@ -442,17 +449,33 @@ fn resolve_agent(
     Err(format!("I don't see an agent matching \"{}\"", target))
 }
 
-/// Distinct-token confirm: the phrase must carry the verb word or 'confirm';
-/// a bare affirmation never authorizes a destructive op.
+/// Words that turn an otherwise-matching phrase into a refusal ("don't
+/// confirm", "no, cancel that") — the confirm word may appear in them.
+const NEGATIONS: &[&str] = &[
+    "no", "not", "dont", "don", "never", "cancel", "stop", "wait", "nope", "abort", "undo",
+    "nevermind", "without",
+];
+
+/// Distinct-token confirm: the phrase must be a SHORT utterance carrying the
+/// staged action's own verb word or exactly 'confirm'/'confirmed', with no
+/// negation; a bare affirmation (or a long ramble that merely mentions the
+/// word) never authorizes a destructive op.
 fn confirm_accepted(phrase: &str, confirm_word: &str) -> bool {
     let p = norm(phrase);
     if p.is_empty() || BARE_AFFIRMATIONS.contains(&p.as_str()) {
         return false;
     }
     let toks: Vec<&str> = p.split(' ').collect();
+    if toks.len() > MAX_CONFIRM_TOKENS || toks.iter().any(|t| NEGATIONS.contains(t)) {
+        return false;
+    }
     toks.iter()
-        .any(|t| t.starts_with("confirm") || *t == confirm_word)
+        .any(|t| matches!(*t, "confirm" | "confirmed") || *t == confirm_word)
 }
+
+/// A real confirm is a few words ("yes, confirm it"); anything longer is not
+/// an answer to the question that was asked.
+const MAX_CONFIRM_TOKENS: usize = 8;
 
 // ─── pending (single-slot two-phase confirm) ────────────────────────────────
 
@@ -1320,14 +1343,9 @@ fn propose_destructive(
                 "I need a working directory to hire into — none is configured.",
             ));
         }
-        let command = {
-            let v = strv(a, "command");
-            if v.is_empty() {
-                provider_command(&provider).to_string()
-            } else {
-                v
-            }
-        };
+        // Never a model-supplied command line: a voice hire runs the
+        // provider's standard command only.
+        let command = provider_command(&provider).to_string();
         let id = format!("{}-{}", slug(&name), short_id());
         stage(Pending {
             verb: verb.to_string(),
@@ -1337,8 +1355,8 @@ fn propose_destructive(
             commit: CommitSpec::Spawn {
                 spec: VoiceSpawn {
                     id,
-                    cwd,
-                    command,
+                    cwd: cwd.clone(),
+                    command: command.clone(),
                     provider: provider.clone(),
                     name: name.clone(),
                     role: if role.is_empty() {
@@ -1351,10 +1369,12 @@ fn propose_destructive(
             },
         });
         return Ok(pending_result(format!(
-            "You want to hire a new {} agent{}, named {}. To hire, say \"confirm\" or \"spawn\". Say \"cancel\" to stop.",
+            "You want to hire a new {} agent{}, named {}, running \"{}\" in {}. To hire, say \"confirm\" or \"spawn\". Say \"cancel\" to stop.",
             provider,
             if role.is_empty() { "".into() } else { format!(" as {}", role) },
-            name
+            name,
+            command,
+            cwd
         )));
     }
 
@@ -1368,6 +1388,11 @@ fn propose_destructive(
             return Ok(err("There are no scheduled missions to edit."));
         }
         let refr = norm(&first_str(a, &["missionId", "schedule", "label", "target"]));
+        // `contains("")` is true for every string — an empty ref must never
+        // silently pick the first mission.
+        if refr.is_empty() {
+            return Ok(err("Which schedule should I edit?"));
+        }
         let m = missions
             .iter()
             .find(|x| x.id.to_lowercase() == refr)
@@ -1927,6 +1952,33 @@ mod tests {
         assert!(!confirm_accepted("go", "kill"));
         // 'confirmed' contains 'confirm' as a token prefix — accepted.
         assert!(confirm_accepted("i confirm the kill", "kill"));
+    }
+
+    #[test]
+    fn negated_or_rambling_confirms_are_refused() {
+        for phrase in [
+            "don't confirm",
+            "no do not confirm that",
+            "cancel, I do not confirm",
+            "confirmation needed first",
+            "can you confirm what it will do before I say yes to anything at all",
+            "confirming",
+        ] {
+            assert!(!confirm_accepted(phrase, "kill"), "{phrase:?} must NOT confirm");
+        }
+        assert!(confirm_accepted("Confirmed!", "spawn"));
+    }
+
+    #[test]
+    fn voice_hire_uses_the_provider_command_only() {
+        assert_eq!(provider_command("grok"), "grok");
+        assert_eq!(provider_command("kimi"), "kimi");
+        assert_eq!(provider_command("hermes"), "hermes chat");
+        assert_eq!(provider_command("openclaw"), "openclaw tui --local");
+        assert_eq!(provider_command("antigravity"), "agy");
+        assert_eq!(provider_command("cursor"), "cursor-agent");
+        assert_eq!(provider_command("claude"), "claude");
+        assert_eq!(provider_command("unknown"), "claude");
     }
 
     #[test]

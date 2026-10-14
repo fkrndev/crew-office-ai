@@ -24,6 +24,17 @@ export interface FakeBridge {
   emit: (method: string, payload: unknown) => void;
 }
 
+/** Commands whose real backend answer is not `undefined` — the shape the UI
+ *  actually receives after cth.ts's adapters (see src/cth.ts). */
+const DEFAULTS: Record<string, (...args: unknown[]) => unknown> = {
+  // app_force_quit: kills every PTY then exits (Result<bool>).
+  forceQuit: () => true,
+  // hire_drain_pending: Option<String> — null when nothing is parked.
+  drainPendingHires: () => null,
+  // clipboard_image_to_file: {ok,path} | {ok:false,error}.
+  clipboardImageToFile: () => ({ ok: false, error: 'no clipboard image in tests' })
+};
+
 export function fakeBridge(overrides: Record<string, unknown> = {}): FakeBridge {
   const listeners = new Map<string, Set<(e: unknown) => void>>();
   const calls: FakeBridge['calls'] = [];
@@ -34,6 +45,10 @@ export function fakeBridge(overrides: Record<string, unknown> = {}): FakeBridge 
       get(target, prop: string) {
         if (prop in target) return target[prop as keyof FakeBridge];
         if (prop in overrides) return overrides[prop];
+        if (prop in DEFAULTS) return vi.fn(async (...args: unknown[]) => {
+          calls.push({ method: prop, args });
+          return DEFAULTS[prop](...args);
+        });
         // `on*` handlers: register + return unsubscribe.
         if (prop.startsWith('on')) {
           return (cb: (e: unknown) => void) => {

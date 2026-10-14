@@ -616,26 +616,12 @@ impl MemoryPalace {
             };
         }
         let env = self.child_env();
-        // .cmd/.bat shims need cmd /d /s /c (same shell-wrap as pty spawn).
-        let mut cmd = if cfg!(windows)
-            && bin
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "bat" | "cmd"))
-        {
-            let line = std::iter::once(bin.display().to_string())
-                .chain(args.iter().cloned())
-                .map(|a| pty::cmd_quote(&a))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let mut c = Command::new("cmd.exe");
-            c.args(["/d", "/s", "/c", &line]);
-            c
-        } else {
-            let mut c = Command::new(&bin);
-            c.args(args);
-            c
-        };
+        // .cmd/.bat shims: std's Command runs them through cmd.exe itself
+        // WITH batch-safe escaping (and refuses args it cannot escape) —
+        // hand-building a `cmd /c` line here let a search query like
+        // `x" & calc & "` break out of the quoting.
+        let mut cmd = Command::new(&bin);
+        cmd.args(args);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -717,16 +703,7 @@ impl MemoryPalace {
 
     /// Semantic search across the shared palace. Returns the CLI's text output.
     pub fn search(&self, query: &str, wing: Option<&str>, results: u32) -> Value {
-        let mut args = vec![
-            "search".to_string(),
-            query.to_string(),
-            "--results".to_string(),
-            results.to_string(),
-        ];
-        if let Some(w) = wing.filter(|w| !w.is_empty()) {
-            args.push("--wing".to_string());
-            args.push(w.to_string());
-        }
+        let args = search_args(query, wing, results);
         cli_result_json(self.run_cli(&args, Duration::from_millis(READ_TIMEOUT_MS)))
     }
 
@@ -739,6 +716,23 @@ impl MemoryPalace {
         }
         cli_result_json(self.run_cli(&args, Duration::from_millis(READ_TIMEOUT_MS)))
     }
+}
+
+/// `search` argv — options first, then `--`, then the query, so a query that
+/// starts with `-` (or looks like `--wing x`) is a positional, never an option.
+fn search_args(query: &str, wing: Option<&str>, results: u32) -> Vec<String> {
+    let mut args = vec![
+        "search".to_string(),
+        "--results".to_string(),
+        results.to_string(),
+    ];
+    if let Some(w) = wing.filter(|w| !w.is_empty()) {
+        args.push("--wing".to_string());
+        args.push(w.to_string());
+    }
+    args.push("--".to_string());
+    args.push(query.to_string());
+    args
 }
 
 pub struct CliResult {
@@ -757,6 +751,14 @@ fn cli_result_json(r: CliResult) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_query_is_positional_after_double_dash() {
+        let a = search_args("--wing evil", Some("w1"), 5);
+        assert_eq!(a, ["search", "--results", "5", "--wing", "w1", "--", "--wing evil"]);
+        let b = search_args("-h", None, 3);
+        assert_eq!(&b[b.len() - 2..], ["--", "-h"]);
+    }
 
     #[test]
     fn quarantine_stamp_parses_exact_suffix() {

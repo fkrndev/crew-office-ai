@@ -1,10 +1,10 @@
 /**
- * PREREQUISITES â€” the external tools this app needs, and whether you have them.
+ * PREREQUISITES — the external tools this app needs, and whether you have them.
  *
  * Several of the harness's best features are thin wrappers over tools that live
  * OUTSIDE the app bundle: mempalace for semantic memory, uv to install it, git
  * for worktrees, one CLI per agent engine. Every one of them degrades silently
- * when missing â€” which is the right runtime behaviour and a terrible diagnostic
+ * when missing — which is the right runtime behaviour and a terrible diagnostic
  * one, because "off" and "broken" look identical from the floor. This page is the
  * single place that distinguishes them, and the only place that says what each
  * tool actually buys you.
@@ -50,7 +50,7 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
   const copy = () => {
     void navigator.clipboard.writeText(tool.installCommand).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1200); },
-      () => { /* clipboard denied â€” the text is on screen to select by hand */ }
+      () => { /* clipboard denied — the text is on screen to select by hand */ }
     );
   };
   return (
@@ -76,7 +76,7 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
           fontFamily: 'var(--cth-font-mono)', fontSize: 11, color: 'var(--cth-ink-500)',
           wordBreak: 'break-all'
         }}>
-          {tool.path}{tool.detail ? ` Â· ${tool.detail}` : ''}
+          {tool.path}{tool.detail ? ` · ${tool.detail}` : ''}
         </div>
       )}
 
@@ -96,7 +96,7 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
               background: 'var(--cth-cream-200)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
               border: 'none', cursor: 'pointer', color: 'var(--cth-ink-900)'
             }}
-          >{copied ? t('common.copy') + ' âœ“' : t('common.copy')}</button>
+          >{copied ? t('common.copy') + ' ✓' : t('common.copy')}</button>
         </div>
       )}
 
@@ -143,7 +143,7 @@ export function SetupPanel({ onDone }: { onDone?: () => void } = {}) {
     if (missingEssential.length === 0) return;
     requestDispatchSeed(setupPrompt(missingEssential));
     requestCommandCenterTab('floor'); // the dispatch box lives on the monitor tab
-    // This panel lives in a modal now â€” leaving it open would hide the very box
+    // This panel lives in a modal now — leaving it open would hide the very box
     // we just filled in.
     onDone?.();
   };

@@ -610,8 +610,74 @@ pub fn cmd_sanitize(text: &str) -> String {
 /// and `pty:redraw` — upstream TAIL_MAX.
 const TAIL_MAX: usize = 8192;
 
+/// Unique per spawn. The natural-exit waiter compares it against the handle
+/// currently in `st.ptys` so a late waiter from a killed agent can never tear
+/// down a respawned agent that reuses the same pty id.
+static NEXT_SPAWN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Shared, clonable write half of a PTY. Callers clone it out from under the
+/// global `ptys` mutex and write AFTER releasing it — a ConPTY write can block
+/// when the child isn't draining stdin, and must not stall every other lookup.
+#[derive(Clone)]
+pub struct PtyWriter(std::sync::Arc<std::sync::Mutex<Box<dyn Write + Send>>>);
+
+impl PtyWriter {
+    pub fn write(&self, data: &str) -> Result<()> {
+        let mut w = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        w.write_all(data.as_bytes())?;
+        w.flush()?;
+        Ok(())
+    }
+}
+
+/// Write `data` to the PTY `pty_id` without holding the `ptys` map lock across
+/// the (potentially blocking) write. Returns false when the PTY is gone or the
+/// write failed.
+pub fn write_pty(st: &crate::AppState, pty_id: &str, data: &str) -> bool {
+    let w = st.ptys.lock().unwrap().get(pty_id).map(|h| h.writer());
+    w.is_some_and(|w| w.write(data).is_ok())
+}
+
+/// Carry-over UTF-8 decode for the reader thread: append `chunk` to `pending`,
+/// return everything that is valid text (genuinely invalid bytes become U+FFFD)
+/// and leave an INCOMPLETE trailing sequence in `pending` for the next read, so
+/// a multibyte char split across two reads is not mangled into U+FFFD.
+fn decode_utf8_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
+    pending.extend_from_slice(chunk);
+    let mut out = String::new();
+    let mut start = 0;
+    loop {
+        match std::str::from_utf8(&pending[start..]) {
+            Ok(s) => {
+                out.push_str(s);
+                start = pending.len();
+                break;
+            }
+            Err(e) => {
+                let good = start + e.valid_up_to();
+                out.push_str(&String::from_utf8_lossy(&pending[start..good]));
+                match e.error_len() {
+                    Some(n) => {
+                        out.push('\u{FFFD}');
+                        start = good + n;
+                    }
+                    // Incomplete sequence at the end of the buffer — wait for more.
+                    None => {
+                        start = good;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    pending.drain(..start);
+    out
+}
+
 pub struct PtyHandle {
-    writer: Box<dyn Write + Send>,
+    writer: std::sync::Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
+    /// Spawn generation — see `NEXT_SPAWN_GEN`.
+    pub spawn_gen: u64,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     /// Root process id — ensureKilled's taskkill target on Windows.
     pub pid: Option<u32>,
@@ -762,6 +828,8 @@ fn finish<R: tauri::Runtime>(
     let app_reader = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
+        // Bytes of a multibyte char split across two reads.
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -774,7 +842,10 @@ fn finish<R: tauri::Runtime>(
                             .unwrap_or(0),
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let data = decode_utf8_chunk(&mut pending, &buf[..n]);
+                    if data.is_empty() {
+                        continue;
+                    }
                     {
                         let mut t = tail_reader.lock().unwrap();
                         t.push_str(&data);
@@ -812,11 +883,44 @@ fn finish<R: tauri::Runtime>(
     let killer = child.clone_killer();
     let pid = child.process_id();
     let event_id2 = id.to_string();
+    let spawn_gen = NEXT_SPAWN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::thread::spawn(move || {
         let code = match child.wait() {
             Ok(status) => Some(status.exit_code()),
             Err(_) => None,
         };
+        // Is the handle currently registered under this pty id OURS? A killed
+        // agent's waiter can fire after the id was respawned — it must not
+        // remove/unmap/finalize the NEW agent. `Some(true)` = ours (removed
+        // here), `Some(false)` = a newer spawn owns the id, `None` = nothing
+        // registered (an explicit kill already ran the teardown).
+        let ours: Option<bool> = app.try_state::<crate::AppState>().and_then(|st| {
+            let mut ptys = st.ptys.lock().unwrap();
+            match ptys.get(&event_id2).map(|h| h.spawn_gen) {
+                Some(g) if g == spawn_gen => {
+                    ptys.remove(&event_id2);
+                    Some(true)
+                }
+                Some(_) => Some(false),
+                None => {
+                    // Nothing registered under this id: either an explicit
+                    // kill already tore it down, OR the child exited before
+                    // spawn_inner inserted the handle (a ~1ms-lived child).
+                    // Leave a marker — recorded under the ptys lock so it is
+                    // atomic with the "nothing registered" check — so the
+                    // inserter can tell the two apart (see
+                    // `reap_if_already_exited`).
+                    EARLY_EXITS
+                        .lock()
+                        .unwrap()
+                        .insert(event_id2.clone(), (spawn_gen, code));
+                    None
+                }
+            }
+        });
+        if ours == Some(false) {
+            return;
+        }
         let _ = app.emit(
             "pty-exit",
             PtyExitPayload {
@@ -835,41 +939,14 @@ fn finish<R: tauri::Runtime>(
         // explicit kill — session removed, the pty↔agent mapping dropped,
         // broker caps revoked, status stamped — so respawn never reports
         // "already running" for a dead PTY.
-        if let Some(st) = app.try_state::<crate::AppState>() {
-            st.ptys.lock().unwrap().remove(&event_id2);
-            // pendingInstallRelaunch: this was an install PTY — a clean exit
-            // re-arms the renderer's pooled terminal (`pty:relaunch:<id>`) and
-            // re-runs the SAME spawn (same agent id, same resume plan), which
-            // now finds the installed binary. An install PTY carries no
-            // pty→agent mapping, so teardown is skipped — same early return as
-            // upstream.
-            if code == Some(0) {
-                if let Some(pending) = crate::commands::PENDING_INSTALLS
-                    .lock()
-                    .unwrap()
-                    .remove(&event_id2)
-                {
-                    let _ =
-                        app.emit(&format!("pty:relaunch:{event_id2}"), serde_json::json!({}));
-                    let app3 = app.clone();
-                    let mut plan = pending.plan;
-                    plan.pty_id = Some(event_id2.clone());
-                    let _ = crate::commands::spawn_inner(app3, pending.args, plan);
-                    return;
-                }
-            } else {
-                crate::commands::PENDING_INSTALLS
-                    .lock()
-                    .unwrap()
-                    .remove(&event_id2);
-            }
-            // teardownPty(id): agent-keyed cleanup resolves the owning agent
-            // through the map — `event_id2` is a PTY id.
-            crate::commands::teardown_pty_core(&app, &event_id2, "stopped");
+        // (An explicit kill already tore the agent down — nothing left to do.)
+        if ours == Some(true) {
+            finish_natural_exit(&app, &event_id2, code);
         }
     });
     Ok(PtyHandle {
-        writer,
+        writer: std::sync::Arc::new(std::sync::Mutex::new(writer)),
+        spawn_gen,
         killer,
         pid,
         master,
@@ -882,11 +959,100 @@ fn finish<R: tauri::Runtime>(
     })
 }
 
+/// Exits whose waiter found no handle registered, keyed by pty id →
+/// `(spawn_gen, exit code)`. Tiny (one entry per pty id at most); consumed by
+/// `reap_if_already_exited`, and stale entries from explicit kills never match
+/// a later spawn because the generation differs.
+pub(crate) static EARLY_EXITS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, (u64, Option<u32>)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// The lifecycle cleanup for a child that exited on its own (shared by the
+/// waiter thread and the late-insert path):
+///
+/// pendingInstallRelaunch: this was an install PTY — a clean exit re-arms the
+/// renderer's pooled terminal (`pty:relaunch:<id>`) and re-runs the SAME spawn
+/// (same agent id, same resume plan), which now finds the installed binary.
+/// An install PTY carries no pty→agent mapping, so teardown is skipped — same
+/// early return as upstream. Otherwise teardownPty(id): agent-keyed cleanup
+/// resolves the owning agent through the map — `pty_id` is a PTY id.
+pub(crate) fn finish_natural_exit<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    pty_id: &str,
+    code: Option<u32>,
+) {
+    if code == Some(0) {
+        if let Some(pending) = crate::commands::PENDING_INSTALLS
+            .lock()
+            .unwrap()
+            .remove(pty_id)
+        {
+            let _ = app.emit(&format!("pty:relaunch:{pty_id}"), serde_json::json!({}));
+            let mut plan = pending.plan;
+            plan.pty_id = Some(pty_id.to_string());
+            let _ = crate::commands::spawn_inner(app.clone(), pending.args, plan);
+            return;
+        }
+    } else {
+        crate::commands::PENDING_INSTALLS
+            .lock()
+            .unwrap()
+            .remove(pty_id);
+    }
+    crate::commands::teardown_pty_core(app, pty_id, "stopped");
+}
+
+/// Close the spawn-vs-waiter race: `spawn` starts the waiter thread before
+/// the caller can insert the handle into `AppState.ptys` and map it to its
+/// agent. A child that exits within ~1ms runs its teardown first (nothing
+/// registered yet / no mapping yet), and the insert then leaves a dead handle
+/// — respawn would say "already running" forever. Callers invoke this AFTER
+/// the handle is inserted and mapped; if the child already exited, the dead
+/// handle is removed and the same natural-exit cleanup runs now.
+pub(crate) fn reap_if_already_exited<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    pty_id: &str,
+    spawn_gen: u64,
+) {
+    let Some(st) = app.try_state::<crate::AppState>() else {
+        return;
+    };
+    let early = {
+        let mut m = EARLY_EXITS.lock().unwrap();
+        match m.get(pty_id) {
+            Some((g, _)) if *g == spawn_gen => m.remove(pty_id).map(|(_, c)| c),
+            _ => None,
+        }
+    };
+    if let Some(code) = early {
+        {
+            let mut ptys = st.ptys.lock().unwrap();
+            if ptys.get(pty_id).map(|h| h.spawn_gen) == Some(spawn_gen) {
+                ptys.remove(pty_id);
+            } else {
+                return; // already replaced/removed by someone else
+            }
+        }
+        finish_natural_exit(app, pty_id, code);
+        return;
+    }
+    // Narrower window: the waiter ran between the insert and `map_pty` — its
+    // teardown found no mapping, and map_pty then recorded a stale one for a
+    // handle that is already gone.
+    let gone = !st.ptys.lock().unwrap().contains_key(pty_id);
+    if gone && st.agent_for_pty(pty_id).is_some() {
+        crate::commands::teardown_pty_core(app, pty_id, "stopped");
+    }
+}
+
 impl PtyHandle {
     pub fn write(&mut self, data: &str) -> Result<()> {
-        self.writer.write_all(data.as_bytes())?;
-        self.writer.flush()?;
-        Ok(())
+        self.writer().write(data)
+    }
+
+    /// Clonable write half — see `PtyWriter` / `write_pty`.
+    pub fn writer(&self) -> PtyWriter {
+        PtyWriter(self.writer.clone())
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
@@ -926,6 +1092,33 @@ impl PtyHandle {
                 .spawn();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::*;
+
+    #[test]
+    fn multibyte_split_across_reads_is_not_mangled() {
+        let s = "a—b漢😀c";
+        let bytes = s.as_bytes();
+        // Every possible split point must reassemble to the original text.
+        for cut in 0..=bytes.len() {
+            let mut pending = Vec::new();
+            let mut got = decode_utf8_chunk(&mut pending, &bytes[..cut]);
+            got.push_str(&decode_utf8_chunk(&mut pending, &bytes[cut..]));
+            assert_eq!(got, s, "split at {cut}");
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_bytes_become_replacement_and_do_not_stall() {
+        let mut pending = Vec::new();
+        let got = decode_utf8_chunk(&mut pending, b"ok\xFFgo");
+        assert_eq!(got, "ok\u{FFFD}go");
+        assert!(pending.is_empty());
     }
 }
 

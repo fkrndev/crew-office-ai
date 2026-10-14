@@ -225,36 +225,70 @@ impl ConfigStore {
         self.path.parent().unwrap_or(&self.path)
     }
 
+    /// Typed config for this run. A missing file → defaults. A CORRUPT file
+    /// also yields defaults so the app can start, but every WRITER goes through
+    /// `read_raw`, which refuses a corrupt file — so the defaults are never
+    /// persisted over the user's real config (a `.bak` copy is kept).
     pub fn load(&self) -> Config {
-        fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        match self.read_raw() {
+            Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+            Err(e) => {
+                log::warn!("[config] {e:#} — running on defaults, file left untouched");
+                Config::default()
+            }
+        }
     }
 
     /// Raw on-disk JSON, unknown keys preserved (upstream's untyped config
     /// object — the renderer reads keys the typed `Config` doesn't model,
     /// e.g. officeTheme/terminalTheme, and voice settings can write them).
+    /// Read-only callers get `{}` for a missing/corrupt file; writers must use
+    /// `read_raw` so a corrupt file is never treated as empty.
     pub fn raw_value(&self) -> serde_json::Value {
-        fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
+        self.read_raw().unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// The store lock — held across every read-modify-write of config.json.
+    fn lock(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        crate::hive::store_lock(&self.path)
+    }
+
+    /// Raw config for a read-modify-write: missing/empty → `{}`; unparseable
+    /// or non-object → Err (copy kept as `config.json.bak`), never `{}`.
+    fn read_raw(&self) -> Result<serde_json::Value> {
+        let v = crate::hive::read_json_strict(&self.path, serde_json::json!({}))?;
+        if v.is_null() {
+            return Ok(serde_json::json!({}));
+        }
+        if !v.is_object() {
+            anyhow::bail!("{} is not a JSON object", self.path.display());
+        }
+        Ok(v)
+    }
+
+    fn write_raw(&self, raw: &serde_json::Value) -> Result<()> {
+        if let Some(p) = self.path.parent() {
+            fs::create_dir_all(p)?;
+        }
+        crate::hive::atomic_write_file(&self.path, serde_json::to_string_pretty(raw)?.as_bytes())?;
+        Ok(())
     }
 
     /// Merge a top-level patch into the raw file without dropping unknown
     /// keys (upstream `writeConfig(patch)` semantics), then return the
     /// reloaded typed Config.
     pub fn patch_raw(&self, patch: &serde_json::Map<String, serde_json::Value>) -> Result<Config> {
-        let mut raw = self.raw_value();
-        if !raw.is_object() {
-            raw = serde_json::json!({});
+        {
+            let l = self.lock();
+            let _g = crate::hive::lock_store(&l);
+            let mut raw = self.read_raw()?;
+            if let Some(dst) = raw.as_object_mut() {
+                for (k, v) in patch {
+                    dst.insert(k.clone(), v.clone());
+                }
+            }
+            self.write_raw(&raw)?;
         }
-        let dst = raw.as_object_mut().unwrap();
-        for (k, v) in patch {
-            dst.insert(k.clone(), v.clone());
-        }
-        fs::write(&self.path, serde_json::to_string_pretty(&raw)?)?;
         Ok(self.load())
     }
 
@@ -274,21 +308,16 @@ impl ConfigStore {
         &self,
         patch: &serde_json::Map<String, serde_json::Value>,
     ) -> std::result::Result<(Config, serde_json::Value), String> {
-        let mut raw = self.raw_value();
-        if !raw.is_object() {
-            raw = serde_json::json!({});
-        }
+        let l = self.lock();
+        let _g = crate::hive::lock_store(&l);
+        let mut raw = self.read_raw().map_err(|e| format!("{e:#}"))?;
         if let Some(dst) = raw.as_object_mut() {
             for (k, v) in patch {
                 dst.insert(k.clone(), v.clone());
             }
         }
         let cfg: Config = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
-        if let Some(p) = self.path.parent() {
-            fs::create_dir_all(p).map_err(|e| e.to_string())?;
-        }
-        fs::write(&self.path, serde_json::to_string_pretty(&raw).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        self.write_raw(&raw).map_err(|e| format!("{e:#}"))?;
         Ok((cfg, raw))
     }
 
@@ -297,27 +326,18 @@ impl ConfigStore {
     /// themes…) drops, which is exactly what makes the relaunch land on
     /// onboarding instead of resurrecting the wiped setup.
     pub fn reset(&self) -> Result<()> {
-        if let Some(p) = self.path.parent() {
-            fs::create_dir_all(p)?;
-        }
-        fs::write(
-            &self.path,
-            serde_json::to_string_pretty(&Config::default())?,
-        )?;
-        Ok(())
+        let l = self.lock();
+        let _g = crate::hive::lock_store(&l);
+        self.write_raw(&serde_json::to_value(Config::default())?)
     }
 
     /// Serialize the typed config but merge it over the raw file so keys the
     /// struct doesn't model survive a save round-trip — upstream's
     /// `writeConfig` writes the whole parsed object, unknown keys included.
     pub fn save(&self, cfg: &Config) -> Result<()> {
-        if let Some(p) = self.path.parent() {
-            fs::create_dir_all(p)?;
-        }
-        let mut merged = self.raw_value();
-        if !merged.is_object() {
-            merged = serde_json::json!({});
-        }
+        let l = self.lock();
+        let _g = crate::hive::lock_store(&l);
+        let mut merged = self.read_raw()?;
         if let (Some(dst), Some(src)) = (
             merged.as_object_mut(),
             serde_json::to_value(cfg)?.as_object().cloned(),
@@ -326,7 +346,54 @@ impl ConfigStore {
                 dst.insert(k, v);
             }
         }
-        fs::write(&self.path, serde_json::to_string_pretty(&merged)?)?;
-        Ok(())
+        self.write_raw(&merged)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("oa-config-{tag}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn corrupt_config_is_never_overwritten_with_defaults() {
+        let d = dir("corrupt");
+        let store = ConfigStore::new(d.clone());
+        fs::write(d.join("config.json"), "{ \"autoMode\": tru").unwrap();
+        // The app still starts on defaults...
+        assert!(!store.load().auto_mode);
+        // ...but no writer may replace the user's file with them.
+        assert!(store.save(&Config::default()).is_err());
+        assert!(store.update(&serde_json::Map::new()).is_err());
+        assert!(store.patch_raw(&serde_json::Map::new()).is_err());
+        assert_eq!(
+            fs::read_to_string(d.join("config.json")).unwrap(),
+            "{ \"autoMode\": tru"
+        );
+        assert!(d.join("config.json.bak").exists());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn update_preserves_unknown_keys_and_missing_file_is_fine() {
+        let d = dir("update");
+        let store = ConfigStore::new(d.clone());
+        let mut patch = serde_json::Map::new();
+        patch.insert("onboardingComplete".into(), serde_json::json!(true));
+        patch.insert("autoMode".into(), serde_json::json!(true));
+        let (cfg, raw) = store.update(&patch).unwrap();
+        assert!(cfg.auto_mode);
+        assert_eq!(raw["onboardingComplete"], true);
+        let mut cfg2 = store.load();
+        cfg2.god_name = "Zed".into();
+        store.save(&cfg2).unwrap();
+        assert_eq!(store.raw_value()["onboardingComplete"], true);
+        assert_eq!(store.load().god_name, "Zed");
+        fs::remove_dir_all(&d).ok();
     }
 }

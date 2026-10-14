@@ -26,6 +26,21 @@ declare global {
     hiveMessages(...args: any[]): Promise<any>;
     hiveInbox(id: string): Promise<any>;
     hiveAgentDirectory(): Promise<any>;
+    /** Kills every PTY then exits the app (`app_force_quit`). */
+    forceQuit(): Promise<boolean>;
+    /** Graceful shutdown — resolves the live worker count; rejects on failure. */
+    startClosingTime(): Promise<number>;
+    /** `hire_drain_pending`: the parked deep-link manifest URL, or null. */
+    drainPendingHires(): Promise<string | null>;
+    /** `hire_fetch`: resolve a manifest URL into a validated manifest. */
+    hireFetch(url: string): Promise<{ ok: boolean; manifest?: any; consentRequired?: string[] }>;
+    /** Deep link arrived while running; payload is the manifest URL. */
+    onHirePending(cb: (src: string) => void): () => void;
+    /** `clipboard_image_to_file`: write a pasted PNG (base64 / data URL) to a temp
+     *  file and resolve its absolute path. */
+    clipboardImageToFile(base64: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+    /** Cached harness-home read (null until the first async prime lands). */
+    harnessHomeSync(): string | null;
     onHiveMessage(cb: (e: HiveRouteEvent) => void): () => void;
     onHiveDeliver(cb: (e: any) => void): () => void;
     onPtyData(id: string, cb: (data: string) => void): () => void;

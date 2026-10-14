@@ -85,7 +85,8 @@
     "stopAfterStepTip": "Let it finish the step it is on, then stop. The process and its session survive, so Restart and Continue can pick it back up. To end the process outright, use the X.",
     "stopAfterStepAria": "Stop this agent after the current step",
     "steerTip": "Hands the agent a note at its next turn boundary. It does not interrupt what it is doing now, and nothing is typed into its terminal.",
-    "steerAria": "Send this agent a note"
+    "steerAria": "Send this agent a note",
+    "haltConfirm": "Halt this agent? It stops what it is doing right now."
   },
   "agentCard": {
     "boss": "BOSS",
@@ -137,7 +138,8 @@
     "terminal": "terminal",
     "git": "git",
     "messages": "messages",
-    "traces": "traces"
+    "traces": "traces",
+    "resizeTitle": "Drag to resize · double-click to reset"
   },
   "toolWaterfall": {
     "fresh": "input {{tokens}} tok",
@@ -163,7 +165,10 @@
     "openIde": "Open the IDE",
     "ide": "IDE",
     "openTerminalAria": "Open a system terminal in this agent's folder",
-    "killAria": "Stop {{name}}"
+    "killAria": "Stop {{name}}",
+    "editTip": "Edit {{name}}: their name and face, which engine they run on, and the briefing that tells them what they are for.",
+    "editAria": "Edit this agent",
+    "editLabel": "edit"
   },
   "settingsHero": {
     "sponsoredBy": "Sponsored by",
@@ -200,7 +205,15 @@
     "cantUndo": "This can't be undone.",
     "switching": "switching…",
     "deleteSwitch": "delete {{count}} & switch",
-    "notBuiltWarning": "This theme ({{label}}) is not built yet — your office will look the same, but your agents are still deleted. Pick a built theme, or switch after it ships."
+    "notBuiltWarning": "This theme ({{label}}) is not built yet — your office will look the same, but your agents are still deleted. Pick a built theme, or switch after it ships.",
+    "blurbs": {
+      "office": "Dunder Mifflin — the original floor",
+      "friends": "Central Perk coffee house",
+      "brooklyn99": "The 99th precinct bullpen",
+      "siliconvalley": "The Hacker Hostel",
+      "got": "The Red Keep throne room",
+      "hogwarts": "Hogwarts great hall"
+    }
   },
   "settings": {
     "title": "SETTINGS",
@@ -349,11 +362,7 @@
       "mode": "Mode",
       "webhooksHint": "Callers POST to a webhook's URL with its secret in the x-md-webhook-secret header. Each one checks bodies against its own JSON schema — edit that in the Triggers tab of {{godName}}'s Command Center, where the history of everything that arrived lives too.",
       "organisation": "Organisation",
-      "orgKey": "Organisation key",
-      "orgKeyDesc": "How a teammate's install addresses yours.",
-      "apiKey": "API key",
-      "orgKeyPlaceholder": "paste your organisation key",
-      "orgConfigOnly": "Configuration only for now. The organisation messaging service does not exist yet, so a key here starts no transport — it is saved, shown in the Triggers tab, and waits."
+      "apiKey": "API key"
     },
     "voice": {
       "freeFlow": "Free Flow",
@@ -364,7 +373,7 @@
       "model": "Model",
       "fast": "whisper-large-v3-turbo (fast)",
       "accurate": "whisper-large-v3 (accurate)",
-      "freeFlowHint": "Two ways to dictate: click the mic button above Send in the queue composer (click to record, click again to transcribe), or — while viewing any agent's terminal — hold Option (⌥) to talk and release to transcribe. Either way the text lands in the composer draft for you to review before sending. macOS will ask for microphone permission the first time you record.",
+      "freeFlowHint": "Two ways to dictate: click the mic button above Send in the queue composer (click to record, click again to transcribe), or — while viewing any agent's terminal — hold {{altKey}} to talk and release to transcribe. Either way the text lands in the composer draft for you to review before sending. {{micNote}}",
       "realtime": "Realtime {{godName}}",
       "voiceChat": "Voice chat with {{godName}}",
       "voiceChatDesc": "Talk to the orchestrator in real time. Toggle it on from {{godName}}'s tab; choose which microphone and speaker the voice loop uses here.",
@@ -385,7 +394,9 @@
       "5m": "5 minutes",
       "10m": "10 minutes",
       "never": "Off (never)",
-      "idleDisconnectDesc": "How long the voice session stays open with no talking before it auto-closes. The spend cap still stops a runaway session even when this is off."
+      "idleDisconnectDesc": "How long the voice session stays open with no talking before it auto-closes. The spend cap still stops a runaway session even when this is off.",
+      "micNoteMac": "macOS will ask for microphone permission the first time you record.",
+      "micNoteOther": "Your system may ask for microphone permission the first time you record — allow it."
     },
     "saved": "Saved",
     "saving": "Saving…",
@@ -489,7 +500,14 @@
     "openIssue": "GitHub Issue #{{num}}: {{title}}",
     "deliveryResumeAria": "Resume automatic delivery for the whole floor",
     "deliveryHoldAria": "Hold automatic delivery for the whole floor",
-    "openIdeAria": "Open the IDE"
+    "openIdeAria": "Open the IDE",
+    "forgetArchivedConfirm": "Forget the archived agent \"{{name}}\"? It is removed from the list for good.",
+    "fetchIssuesFailed": "Failed to fetch issues.",
+    "resumeDifferentProvider": "Cannot resume a session through a different provider.",
+    "resumeNoSessionId": "No recorded session ID; current process was left running.",
+    "resumeNoTranscript": "Session transcript not found; current process was left running.",
+    "couldNotStop": "Could not stop the current process.",
+    "resumeRefused": "Resume was refused; no replacement session was accepted."
   },
   "addAgent": {
     "title": "ADD AGENT",
@@ -605,7 +623,13 @@
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
     "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account.",
     "needsKey": "⚠ {{provider}} needs an API key — set one in Settings → AI Engines",
-    "needsShardx": "⚠ shardx setup needed — run Settings → MCP → Set up"
+    "needsShardx": "⚠ shardx setup needed — run Settings → MCP → Set up",
+    "hireSkipped": "Skipped {{n}} invalid file(s): {{errors}}",
+    "spawnFailed": "spawn failed",
+    "statusResumeMissing": "session not found — fresh start",
+    "statusStarting": "starting up",
+    "removeProjectTitle": "Remove {{name}} from this list. The folder itself is left alone.",
+    "removeProjectAria": "Remove {{name}} from the project list"
   },
   "onboarding": {
     "titles": {
@@ -1418,15 +1442,19 @@
     "removeFromQueue": "Remove from queue",
     "ffNoKeyTitle": "Dictation needs a free Groq API key. Click the info mark for the steps.",
     "ffStopTranscribe": "Stop & transcribe",
-    "ffTitle": "Free Flow — dictate into the queue. Click, or hold Option (⌥).",
+    "ffTitle": "Free Flow — dictate into the queue. Click, or hold {{altKey}}.",
     "stop": "stop",
     "ffHowEnable": "How do I enable dictation?",
     "ffSetupTitle": "Set up dictation",
     "ffSetupIntro": "Speak instead of typing. Groq transcribes it, and their free tier covers this — no card, no cost.",
     "ffCreateKey": "Create a free key at",
     "ffPasteKey": "Paste it into Settings → Voice → Groq API key",
-    "ffClickOrHold": "Click voice, or hold the right Option key to talk",
-    "ffHoldHint": "Hold it ALONE for a moment to start; release to transcribe into the composer, where you can edit before sending. Either Option key works, and Option+key combos still reach the terminal untouched."
+    "ffClickOrHold": "Click voice, or hold the right {{altKey}} key to talk",
+    "ffHoldHint": "Hold it ALONE for a moment to start; release to transcribe into the composer, where you can edit before sending. Either {{altKey}} key works, and {{altKey}}+key combos still reach the terminal untouched.",
+    "imagePasteFailed": "Could not read the pasted image: {{error}}",
+    "clearAllConfirm": "Clear all {{n}} queued messages?",
+    "closePickerTitle": "Close the picker this agent has open so queued messages can be delivered",
+    "recoverPromptTitle": "Move the leftover text on this agent's prompt into this box so queued messages can be delivered"
   },
   "idePanel": {
     "workspace": "{{name}}'s workspace",
@@ -1462,7 +1490,10 @@
     "copyPath": "copy path",
     "saveTitle": "Save (Cmd/Ctrl+S)",
     "saved": "saved",
-    "save": "save"
+    "save": "save",
+    "nothingOpen": "nothing open",
+    "nothingOpenHint": "Pick a file from the tree to edit, or a changed file to diff.",
+    "loading": "loading…"
   },
   "gitPanes": {
     "jumpConfirm": "Jump the repo to {{sha}} (\"{{subject}}\")?\n\nThis detaches HEAD. Blocked automatically if the tree is dirty or an agent is mid-run.",
@@ -1495,7 +1526,9 @@
     "viewSourceTitle": "Open the SVG markup in the editor",
     "viewSource": "view source",
     "loading": "loading image…",
-    "decodeFailed": "could not decode this image — the file may be corrupt or misnamed"
+    "decodeFailed": "could not decode this image — the file may be corrupt or misnamed",
+    "copyPathTitle": "Copy absolute path",
+    "copyPath": "copy path"
   },
   "editAgent": {
     "title": "EDIT AGENT",
@@ -1555,7 +1588,8 @@
     "workersConfirmedDone": "{{acked}} / {{total}} WORKERS CONFIRMED — WAITING FOR THE ORCHESTRATOR",
     "noWorkers": "NO WORKERS ON THE FLOOR — WAITING FOR THE ORCHESTRATOR",
     "timeoutNote": "This is taking a while (an agent may be mid-compaction or deep in a tool call). Keep waiting, or force quit and accept the data loss.",
-    "errorFallback": "Closing time could not start."
+    "errorFallback": "Closing time could not start.",
+    "quitFailed": "Could not quit: {{error}}"
   },
   "hivePicker": {
     "title": "SELECT A WORKSPACE",
@@ -1579,19 +1613,109 @@
     "toggleDarkMode": "Toggle dark mode",
     "settings": "Settings",
     "focusMode": "Focus mode",
-    "exitFocusMode": "Exit focus mode (Esc)",
+    "exitFocusMode": "Exit focus mode",
     "toggleFocusMode": "Toggle focus mode",
     "wakingFloor": "WAKING THE FLOOR",
     "wakingDesc": "{{godName}} is clocking in. The terminal will land here once it is seated.",
     "noAgentSelected": "NO AGENT SELECTED",
     "noAgentDesc": "Spawn an agent from the strip below. The terminal and command bar will land here.",
-    "addAgent": "add agent"
+    "addAgent": "add agent",
+    "productName": "Agent Office",
+    "emptyFloorTitle": "EMPTY FLOOR",
+    "emptyFloorBody": "No agents on the floor yet. Spawn one to see real claude output stream in here.",
+    "loadFailedTitle": "COULD NOT START",
+    "loadFailedBody": "The app could not read its settings, so it cannot open yet.",
+    "retry": "retry",
+    "hireFailed": "Could not import the agent: {{error}}",
+    "hireInvalid": "the manifest is not valid"
   },
   "ptyTerminal": {
     "livePty": "live · terminal {{id}}",
     "zoomOut": "Zoom out (Ctrl -)",
     "zoomReset": "Reset zoom (Ctrl 0)",
     "zoomIn": "Zoom in (Ctrl +)",
-    "exitFocus": "Exit focus mode (Esc)"
+    "exitFocus": "Exit focus mode",
+    "linkHint": "{{modifier}}+click to open"
+  },
+  "notice": {
+    "queueDropped": "Message to {{agent}} could not be delivered and was dropped: \"{{text}}\"",
+    "sendFailed": "Could not send: {{error}}"
+  },
+  "realtime": {
+    "micDenied": "microphone permission denied — allow mic access to talk to {{godName}}",
+    "micNotFound": "no microphone found — check your input device"
+  },
+  "updateBadge": {
+    "latestTitle": "You are on the latest version.",
+    "latestBody": "v{{version}} is the newest release. Checked just now."
+  },
+  "agentHold": {
+    "needsRestart": "restart the app: this build's preload predates the 1:1 control",
+    "couldNotSet": "could not set the hold",
+    "endTip": "End the 1:1. {{godName}} can hand {{name}} work again.",
+    "startTip": "Take {{name}} aside. {{godName}} stops sending them work until you end it. Unlike the two buttons here, this does not restrain the agent: they keep running and keep answering you.",
+    "endAria": "End the 1:1 and release this agent to {{godName}}",
+    "startAria": "Take this agent aside for a 1:1",
+    "failed": "1:1 failed",
+    "active": "in 1:1",
+    "label": "1:1"
+  },
+  "releaseDrop": {
+    "releaseNotes": "release notes",
+    "esc": "esc",
+    "closeAria": "Close release notes",
+    "closeTitle": "Close (Esc)"
+  },
+  "codeEditor": {
+    "copyPathTitle": "Copy absolute path",
+    "copyPath": "copy path",
+    "saveTitleMac": "Save (Cmd-S)",
+    "saveTitleOther": "Save (Ctrl-S)",
+    "saved": "saved",
+    "error": "error",
+    "save": "save",
+    "openInIde": "Open in the IDE",
+    "loading": "loading…"
+  },
+  "restorePrompt": {
+    "title": "Restore last session",
+    "question": "Restore {{n}} agent(s) from your last session? ({{names}})",
+    "restore": "restore",
+    "skip": "skip"
+  },
+  "agentStatus": {
+    "usingTool": "using {{tool}}",
+    "compacting": "compacting context",
+    "resumed": "resumed",
+    "thinking": "thinking",
+    "idle": "idle",
+    "readingInbox": "reading inbox",
+    "runningFloor": "running the floor",
+    "startingUp": "starting up",
+    "revived": "revived after sleep",
+    "breakerArmed": "breaker armed",
+    "awaiting": "awaiting",
+    "waitingOnYou": "waiting on you",
+    "waitingOnGod": "waiting on {{godName}}",
+    "reconnecting": "reconnecting…",
+    "worktreeGone": "worktree gone — using base repo",
+    "processExited": "process exited",
+    "restarting": "restarting",
+    "restartingDots": "restarting…",
+    "recreatingTerminal": "recreating terminal…",
+    "continuing": "continuing…",
+    "switchingTo": "switching to {{provider}}…",
+    "archived": "archived",
+    "blockSummary": "Waiting for your reply",
+    "blockDetail": "Claude is waiting for input. Check the terminal for the exact prompt.",
+    "approve": "Approve",
+    "deny": "Deny"
+  },
+  "restoreNote": {
+    "restored": "restored {{n}}",
+    "alreadyLive": "{{n}} already live",
+    "failed": "{{n}} failed — {{details}}",
+    "nothing": "nothing to restore",
+    "spawnFailed": "spawn failed"
   }
 }

@@ -6,6 +6,7 @@ import { SpritePortrait } from './SpritePortrait';
 import { ProviderLogo } from './ProviderLogo';
 import { useStore, type Agent } from '@/store/store';
 import { OFFICE_CAST, type OfficeCharacterName } from '@/scene/office/cast';
+import { useEscape } from '@/hooks/useEscape';
 import { type AccentColorName } from '@/design/tokens';
 import {
   type AgentProvider,
@@ -87,6 +88,9 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
     if (dirty && !window.confirm(t('editAgent.unsavedWarning'))) return;
     onClose();
   };
+
+  // Esc = the backdrop click: same unsaved-changes confirm.
+  useEscape(requestClose);
 
   const save = () => {
     const trimmedName = name.trim() || agent.name;

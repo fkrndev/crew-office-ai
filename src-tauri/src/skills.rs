@@ -635,6 +635,18 @@ fn resolve_source_url(url: &str) -> Option<String> {
         .filter(|s| s.contains("/tree/") || parse_github_source_url(s).is_some())
 }
 
+/// A listing entry's path relative to the skill folder. `strip_prefix`, not a
+/// byte slice: a non-ASCII path whose prefix length lands mid-codepoint must
+/// not panic the installer.
+fn rel_under(path: &str, base: &str) -> String {
+    match path.strip_prefix(base) {
+        Some(r) if !base.is_empty() && !r.trim_start_matches('/').is_empty() => {
+            r.trim_start_matches('/').to_string()
+        }
+        _ => path.to_string(),
+    }
+}
+
 /// Download one skill folder into the user's Claude skills directory.
 /// Structured refusals, never throws — "not installable" and "install
 /// failed" are different answers.
@@ -674,14 +686,14 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
     // half-installed skill an agent would then load.
     let mut files: Vec<(String, String)> = Vec::new();
     let mut total = 0u64;
-    let base_len = skill_path.trim_start_matches('/').len();
+    let base = skill_path.trim_start_matches('/').to_string();
     fn walk(
         api: &dyn Fn(&str) -> String,
         path: &str,
         depth: usize,
         files: &mut Vec<(String, String)>,
         total: &mut u64,
-        base_len: usize,
+        base: &str,
     ) -> std::result::Result<(), String> {
         if depth > MAX_DEPTH {
             return Err("the folder nests deeper than this installer will follow".into());
@@ -697,7 +709,7 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
                 return Err("that skill has more files than this installer will fetch".into());
             }
             if it.kind == "dir" {
-                walk(api, &it.path, depth + 1, files, total, base_len)?;
+                walk(api, &it.path, depth + 1, files, total, base)?;
                 continue;
             }
             // Only regular files — symlink/submodule entries are skipped.
@@ -711,16 +723,11 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
             if *total > MAX_TOTAL_BYTES {
                 return Err("that skill is larger than this installer will fetch".into());
             }
-            let rel = if base_len > 0 && it.path.len() > base_len {
-                it.path[base_len..].trim_start_matches('/').to_string()
-            } else {
-                it.path.clone()
-            };
-            files.push((rel, durl));
+            files.push((rel_under(&it.path, base), durl));
         }
         Ok(())
     }
-    walk(&api, &skill_path, 0, &mut files, &mut total, base_len)?;
+    walk(&api, &skill_path, 0, &mut files, &mut total, &base)?;
     if files.is_empty() {
         return Err("No files found at that source.".into());
     }
@@ -730,27 +737,32 @@ pub fn install_skill(entry_url: &str, entry_name: &str) -> std::result::Result<S
     // every `parent_canon` carries \\?\ and starts_with always fails.
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     let dest_canon = dest.canonicalize().unwrap_or(dest.clone());
-    for (rel, url) in &files {
-        let target = dest.join(rel);
-        // Post-resolution containment — the only check that survives a
-        // crafted path.
-        let parent_canon = target
-            .parent()
-            .map(|p| {
-                let _ = fs::create_dir_all(p);
-                p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
-            })
-            .unwrap_or_default();
-        if !parent_canon.starts_with(&dest_canon) && parent_canon != dest_canon {
-            let _ = fs::remove_dir_all(&dest);
-            return Err(format!("refusing to write outside the skill folder: {rel}"));
+    // ANY failure from here on (network, containment, disk) removes the
+    // partial folder — an agent must never load a half-installed skill.
+    let written = (|| -> std::result::Result<(), String> {
+        for (rel, url) in &files {
+            let target = dest.join(rel);
+            // Post-resolution containment — the only check that survives a
+            // crafted path.
+            let parent_canon = target
+                .parent()
+                .map(|p| {
+                    let _ = fs::create_dir_all(p);
+                    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+                })
+                .unwrap_or_default();
+            if !parent_canon.starts_with(&dest_canon) && parent_canon != dest_canon {
+                return Err(format!("refusing to write outside the skill folder: {rel}"));
+            }
+            let mut resp = ureq::get(url).call().map_err(|e| e.to_string())?;
+            let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
+            fs::write(&target, body).map_err(|e| e.to_string())?;
         }
-        let mut resp = ureq::get(url).call().map_err(|e| e.to_string())?;
-        let body = resp.body_mut().read_to_vec().map_err(|e| e.to_string())?;
-        if let Err(e) = fs::write(&target, body) {
-            let _ = fs::remove_dir_all(&dest);
-            return Err(e.to_string());
-        }
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_dir_all(&dest);
+        return Err(e);
     }
     Ok(dest.display().to_string())
 }
@@ -800,6 +812,19 @@ pub fn uninstall_skill(skill_path: &str, cwds: &[String]) -> std::result::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rel_under_never_byte_slices() {
+        assert_eq!(rel_under("skills/pdf/SKILL.md", "skills/pdf"), "SKILL.md");
+        assert_eq!(rel_under("skills/pdf/a/b.md", "skills/pdf"), "a/b.md");
+        // base not a prefix / empty base → the path itself
+        assert_eq!(rel_under("other/x.md", "skills/pdf"), "other/x.md");
+        assert_eq!(rel_under("x.md", ""), "x.md");
+        // Same byte length as the base but different (multi-byte) content —
+        // the old `path[base_len..]` panicked on a char boundary here.
+        assert_eq!(rel_under("技能/文件.md", "skills/pdf"), "技能/文件.md");
+        assert_eq!(rel_under("技能/文件.md", "技能"), "文件.md");
+    }
 
     #[test]
     fn frontmatter_inline_and_block_scalar() {

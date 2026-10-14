@@ -28,30 +28,40 @@ fn read_live_flag(app: &AppHandle) -> bool {
 }
 
 // ─── realtime:hasKey / realtime:mintToken (realtime.ts) ─────────────────────
-// MAIN-only OpenAI BYOK key (the same `apikey:openai` keyring ref upstream
-// uses). hasKey reports presence only; mintToken decrypts once to mint a
+// MAIN-only OpenAI BYOK key — the SAME slot Settings writes through
+// provider_key_set("openai") (PROVIDER_KEY_OPENAI, keychain with DPAPI-file
+// fallback), with upstream's raw `apikey:openai` ref as a legacy fallback.
+// hasKey reports presence only; mintToken decrypts once to mint a
 // SHORT-LIVED ephemeral client secret — only the token + session config
 // cross IPC, the real key is never returned or logged.
 
-const OPENAI_KEY_REF: &str = "apikey:openai";
+const OPENAI_KEY_SLOT: &str = "PROVIDER_KEY_OPENAI";
+const OPENAI_KEY_LEGACY_REF: &str = "apikey:openai";
 const REALTIME_MODEL: &str = "gpt-realtime-2.1";
 const CLIENT_SECRETS_URL: &str = "https://api.openai.com/v1/realtime/client_secrets";
 const LEGACY_SESSIONS_URL: &str = "https://api.openai.com/v1/realtime/sessions";
 
+fn openai_key(app: &AppHandle) -> Option<String> {
+    let dir = state(app).config_store.dir().to_path_buf();
+    crate::misc::secret_get_persist(OPENAI_KEY_SLOT, &dir)
+        .or_else(|| crate::misc::secret_get(OPENAI_KEY_LEGACY_REF))
+        .filter(|k| !k.trim().is_empty())
+}
+
 /// realtime:hasKey — boolean presence only; gates the voice toggle.
 #[tauri::command(async)]
-pub fn realtime_has_key(_app: AppHandle) -> Result<bool, String> {
-    Ok(crate::misc::secret_get(OPENAI_KEY_REF).is_some())
+pub fn realtime_has_key(app: AppHandle) -> Result<bool, String> {
+    Ok(openai_key(&app).is_some())
 }
 
 /// realtime:mintToken — GA client_secrets shape first, legacy sessions
 /// fallback on 404; both response shapes normalized to {value, expires_at}.
 #[tauri::command(async)]
-pub fn realtime_mint_token(_app: AppHandle, model: Option<String>) -> Result<Value, String> {
+pub fn realtime_mint_token(app: AppHandle, model: Option<String>) -> Result<Value, String> {
     let model = model
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| REALTIME_MODEL.into());
-    let Some(key) = crate::misc::secret_get(OPENAI_KEY_REF) else {
+    let Some(key) = openai_key(&app) else {
         return Ok(json!({
             "ok": false,
             "error": "no OpenAI API key set — add one in Settings → Voice",

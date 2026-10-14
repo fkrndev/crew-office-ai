@@ -74,7 +74,7 @@ describe('App after onboarding completes', () => {
       hiveRegistry: async () => [],
       hiveTasks: async () => [],
       hiveBoard: async () => '',
-      drainPendingHires: async () => []
+      drainPendingHires: async () => null
     });
   });
 

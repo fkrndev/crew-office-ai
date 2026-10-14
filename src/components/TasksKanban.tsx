@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatDateTime } from '@shared/dateFormat';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
@@ -331,7 +332,7 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
   onAssign: () => void;
   onClose: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const rtl = useRtl();
   const col = COLUMNS.find((c) => c.key === task.status) ?? COLUMNS[0];
   // Belt + suspenders: parseTasks normalizes these, but the ledger is a
@@ -376,7 +377,7 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
                 : <span style={{ fontSize: 11, color: 'var(--cth-ink-300)' }}>{t('kanban.unassigned')}</span>}
               <PriorityDots level={Math.max(1, Math.min(5, task.priority))} />
               <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-display)' }}>
-                {isNaN(created.getTime()) ? '' : created.toLocaleString()}
+                {formatDateTime(created, i18n.language)}
               </span>
             </div>
 

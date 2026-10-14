@@ -4,3 +4,5 @@ src-tauri/target
 *.log
 
 vitest.config.ts.timestamp-*.mjs
+
+src-tauri/permissions/

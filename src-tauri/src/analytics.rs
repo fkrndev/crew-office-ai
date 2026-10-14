@@ -117,6 +117,18 @@ fn dnt_set() -> bool {
     }
 }
 
+/// Every allowlisted prop is an enum label or a version/bucket string — never
+/// free text. The renderer can name any allowlisted key, so the VALUE is held
+/// to a short, conservative charset (alphanumerics + `._-+<>`): a path, a
+/// message or an identifier can't ride out through `provider`/`reason`/`via`.
+fn safe_prop_value(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 32
+        && v
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+' | b'<' | b'>'))
+}
+
 /// `os` / `arch` in the vocabulary TELEMETRY.md promises (darwin/win32/linux,
 /// arm64/x64) — Rust's std::env::consts names are mapped, never sent raw.
 fn os_name() -> &'static str {
@@ -230,7 +242,7 @@ impl Analytics {
         properties.insert("$process_person_profile".into(), json!(false));
         properties.insert("$ip".into(), Value::Null);
         for (k, v) in props {
-            if allowed.contains(&k.as_str()) && v.is_string() {
+            if allowed.contains(&k.as_str()) && v.as_str().is_some_and(safe_prop_value) {
                 properties.insert(k.clone(), v.clone());
             }
         }
@@ -591,6 +603,30 @@ mod tests {
             .contains(&"surface"));
         assert!(event_allowlist("rm_rf").is_none());
         assert!(!RENDERER_MESSAGE_SURFACES.contains(&"hive"));
+    }
+
+    #[test]
+    fn prop_values_are_short_labels_only() {
+        for ok in ["claude", "cli_missing", "node-then-npm", "0.4.6-beta.1", "<5m", "30m-2h", "8h+", "agent_launched"] {
+            assert!(safe_prop_value(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            &"a".repeat(33),
+            "C:\\Users\\bob\\secret.txt",
+            "hello world",
+            "a/b",
+            "bob@example.com",
+            "x\ny",
+            "é",
+            "'; drop",
+        ] {
+            assert!(!safe_prop_value(bad), "{bad:?}");
+        }
+        // every real producer value passes
+        for b in [duration_bucket(0), duration_bucket(10 * 60_000), duration_bucket(u64::MAX)] {
+            assert!(safe_prop_value(b));
+        }
     }
 
     #[test]

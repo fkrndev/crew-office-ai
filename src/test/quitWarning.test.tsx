@@ -8,6 +8,7 @@ import { vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { installFakeBridge } from './fakeBridge';
 import { QuitWarningModal } from '@/components/QuitWarningModal';
+import { setGodName } from '@/i18n';
 
 describe('QuitWarningModal', () => {
   it('shows the live count and fires onConfirm on force quit', async () => {
@@ -49,6 +50,48 @@ describe('QuitWarningModal', () => {
 
     fireEvent.click(screen.getByText('force quit now'));
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+  });
+
+  it('a rejected force-quit shows the error and re-enables the buttons (never stuck on killing…)', async () => {
+    installFakeBridge();
+    const onConfirm = vi.fn().mockRejectedValue(new Error('pty teardown failed'));
+    render(<QuitWarningModal ptyCount={2} onCancel={() => {}} onConfirm={onConfirm} />);
+
+    fireEvent.click(screen.getByText('kill all & quit'));
+    await waitFor(() => expect(screen.getByText(/pty teardown failed/)).toBeTruthy());
+    // Back to a pressable button, not a permanent "killing…".
+    expect(screen.queryByText('killing…')).toBeNull();
+    expect((screen.getByText('kill all & quit').closest('button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Esc cancels in the warning view, but not while closing-time is running', () => {
+    installFakeBridge();
+    const onCancel = vi.fn();
+    const { rerender } = render(<QuitWarningModal ptyCount={1} onCancel={onCancel} onConfirm={() => {}} />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <QuitWarningModal
+        ptyCount={1}
+        closing={{ phase: 'progress', acked: 0, total: 1 }}
+        onCancel={onCancel}
+        onConfirm={() => {}}
+      />
+    );
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('the tip renders the god name as TEXT — markup in a renamed god never becomes elements', async () => {
+    installFakeBridge();
+    // The live god name reaches the string through i18n's default variables.
+    setGodName('<img src=x onerror=alert(1)>Boss');
+    const { container } = render(<QuitWarningModal ptyCount={1} onCancel={() => {}} onConfirm={() => {}} />);
+    await waitFor(() => expect(container.textContent).toMatch(/Boss/));
+    expect(container.querySelector('img')).toBeNull();
+    // The legit emphasis from the translation still renders.
+    expect(container.querySelector('strong')?.textContent).toBe('closing time');
   });
 
   it('complete phase removes the action buttons — the app exits on its own', () => {

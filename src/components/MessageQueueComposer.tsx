@@ -9,6 +9,7 @@ import type { TerminalAutomationBlock } from './terminalAutomation';
 import { freeflowRecorder, useFreeflow } from '@/freeflow/recorder';
 import { useTerminalFontSize } from './terminalFontSize';
 import { isComposingKey } from '@shared/imeGuard';
+import { altKeyLabel } from '@shared/platformLabels';
 import { useRtl } from '@/i18n/useDirection';
 
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -109,14 +110,24 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
 
   // Paste a screenshot (no path → persist the native clipboard image to a temp
   // file) or paste files copied from the OS file manager (carry a real path).
-  const onPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+  const notify = (text: string) =>
+    window.dispatchEvent(new CustomEvent('cth:notice', { detail: { text } }));
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(e.clipboardData?.items ?? []);
-    const hasImage = items.some((it) => it.kind === 'file' && it.type.startsWith('image/'));
-    if (hasImage) {
-      e.preventDefault();
-      const res = await window.cth.saveClipboardImage();
-      if (res.ok) addAttachments([res.file]);
-      return;
+    const imageItem = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    // Text riding along with the image (copied from a web page) keeps the normal
+    // text paste — swallowing it lost the text and did nothing for the image.
+    if (imageItem && !e.clipboardData?.getData('text/plain')) {
+      const blob = imageItem.getAsFile();
+      if (blob) {
+        // A file copied from the OS file manager still carries its real path.
+        const real = window.cth.pathForFile(blob);
+        e.preventDefault();
+        if (real) { addAttachments([{ path: real, name: blob.name }]); return; }
+        void pasteImage(blob);
+        return;
+      }
     }
     const files = Array.from(e.clipboardData?.files ?? []);
     if (files.length) {
@@ -127,6 +138,28 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
         e.preventDefault();
         addAttachments(atts);
       }
+    }
+  };
+
+  /** A screenshot has no path. The backend writes it to a temp PNG and returns
+   *  that path, which is then attached exactly like a dropped/picked file. */
+  const pasteImage = async (blob: Blob) => {
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error ?? new Error('read failed'));
+        r.readAsDataURL(blob);
+      });
+      const res = await window.cth.clipboardImageToFile(dataUrl);
+      if (!res?.ok || !res.path) {
+        notify(t('queueComposer.imagePasteFailed', { error: res?.error ?? '' }));
+        return;
+      }
+      const name = res.path.split(/[\\/]/).pop() || 'pasted-image.png';
+      addAttachments([{ path: res.path, name }]);
+    } catch (err) {
+      notify(t('queueComposer.imagePasteFailed', { error: err instanceof Error ? err.message : String(err) }));
     }
   };
 
@@ -254,8 +287,8 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
               if (discarded.trim()) setText(text ? `${text}\n${discarded}` : discarded);
             }}
             title={block === 'picker'
-              ? "Close the picker this agent has open so queued messages can be delivered"
-              : "Move the leftover text on this agent's prompt into this box so queued messages can be delivered"}
+              ? t('queueComposer.closePickerTitle')
+              : t('queueComposer.recoverPromptTitle')}
             style={{
               border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
               fontFamily: 'var(--cth-font-ui)', fontSize: 12,
@@ -265,7 +298,9 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
         )}
         {queue.length > 1 && (
           <button
-            onClick={() => clearQueue(agent.id)}
+            onClick={() => {
+              if (window.confirm(t('queueComposer.clearAllConfirm', { n: queue.length }))) clearQueue(agent.id);
+            }}
             title={t('queueComposer.clearAllTitle')}
             style={{
               marginLeft: 'auto', flexShrink: 0, whiteSpace: 'nowrap',
@@ -585,7 +620,7 @@ function FreeFlowButton({ agentId, hasGroqKey }: { agentId: string; hasGroqKey: 
     ? t('queueComposer.ffNoKeyTitle')
     : recording ? t('queueComposer.ffStopTranscribe')
     : transcribing ? t('queueComposer.transcribing')
-    : t('queueComposer.ffTitle');
+    : t('queueComposer.ffTitle', { altKey: altKeyLabel() });
 
   /** Same placement rule as RealtimeMichaelToggle's hint: prefer above (the
    *  composer sits low in the panel), flip below only when there is no room, and
@@ -706,11 +741,11 @@ function FreeFlowButton({ agentId, hasGroqKey }: { agentId: string; hasGroqKey: 
                   >console.groq.com/keys</a>
                 </li>
                 <li>{t('queueComposer.ffPasteKey')}</li>
-                <li>{t('queueComposer.ffClickOrHold')}</li>
+                <li>{t('queueComposer.ffClickOrHold', { altKey: altKeyLabel() })}</li>
               </ol>
 
               <span style={{ color: 'var(--cth-ink-500)' }}>
-                {t('queueComposer.ffHoldHint')}
+                {t('queueComposer.ffHoldHint', { altKey: altKeyLabel() })}
               </span>
 
               <button

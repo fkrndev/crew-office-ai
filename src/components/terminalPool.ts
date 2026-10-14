@@ -92,6 +92,10 @@ export interface TerminalEntry {
 const pool = new Map<string, TerminalEntry>();
 
 import { parseHexColor, oscColorBody, isDarkBackground } from './termColor';
+import { isAbsolutePath, joinPath } from '@shared/pathUtil';
+import { isComposingKey } from '@shared/imeGuard';
+import { linkModifierLabel } from '@shared/platformLabels';
+import i18n from '@/i18n';
 
 type ThemeMap = Record<string, string>;
 
@@ -138,7 +142,9 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
     lineHeight: 1.0,
     cursorBlink: true,
     cursorStyle: 'block',
-    scrollback: 100000,
+    // Per pooled terminal (one per live agent, all kept alive): 100k lines each
+    // was hundreds of MB across a full floor. 20k is still ~hours of TUI output.
+    scrollback: 20000,
     // Guarantee legible text no matter what colors a running program sets.
     // When a program paints a coloured cell background (e.g. a git-diff add line
     // with a green bg, or a yellow-highlighted line) while leaving the default
@@ -205,6 +211,9 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   entry.unsub.push(window.cth.onPtyExit(ptyId, ({ exitCode, signal }) => {
     entry.exited = true;
     term.writeln(`\r\n\x1b[2m─ process exited (code ${exitCode}${signal ? `, signal ${signal}` : ''}) ─\x1b[0m`);
+    // The CLI is gone: show the agent as disconnected ('ghost') instead of
+    // whatever idle/working state it died in — nothing else will ever update it.
+    markAgentForPty(ptyId, { status: 'ghost', action: i18n.t('agentStatus.processExited'), carrying: undefined, currentStation: 'desk' });
   }));
   // A first-time engine-CLI install just finished and the agent is auto
   // restart-and-continuing into THIS same pty (main re-ran the spawn). Re-arm the
@@ -214,6 +223,7 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   entry.unsub.push(window.cth.onPtyRelaunch(ptyId, () => {
     entry.exited = false;
     try { term.reset(); } catch { /* not yet open */ }
+    markAgentForPty(ptyId, { status: 'idle', action: i18n.t('agentStatus.restarting') });
   }));
 
   // ── Copy / paste ──────────────────────────────────────────────────────────
@@ -234,28 +244,32 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
     if (text) void window.cth.copyToClipboard(text);
     return true;
   };
-  /** Paste the clipboard into the terminal.
+  /** Paste the clipboard into the terminal (Ctrl+Shift+V / right-click; a plain
+   *  Ctrl+V is xterm's native paste event, which carries its data synchronously).
    *
-   *  The read is SYNCHRONOUS on purpose. Dictation tools (muesli.works, Wispr
-   *  Flow, …) "type" by stashing the clipboard, writing the transcript, sending
-   *  the paste key, and restoring the old clipboard immediately after. The async
-   *  read this used to do came back a tick or two later — after the restore — so
-   *  the terminal pasted the text that had been on the clipboard BEFORE, and the
-   *  words the user had just spoken were dropped. Reading inside the keydown
-   *  handler closes that window entirely.
-   *
-   *  Falls back to the async read if the sync bridge is unavailable (an older
-   *  preload), so this degrades to the previous behaviour rather than to nothing. */
+   *  This read used to be synchronous (a loopback XHR) so dictation tools
+   *  (muesli.works, Wispr Flow, …) that stash the clipboard, write the transcript,
+   *  send the paste key and restore the old clipboard could not slip in between.
+   *  That server is gone — it answered clipboard reads for any origin — so the read
+   *  is now the async command, issued inside the keydown handler to keep the window
+   *  as short as it can be. The sync cache is only the fallback (it can be a poll
+   *  stale), and a tool that restores within a millisecond can still win the race. */
   const pasteClipboard = (): void => {
     if (entry.exited) return;
-    try {
-      const text = window.cth.readClipboardSync?.();
-      if (typeof text === 'string') { if (text) term.paste(text); return; }
-    } catch { /* fall through to the async path */ }
-    void window.cth.readClipboard().then((t) => { if (t) term.paste(t); });
+    // Authoritative async read first; the sync cache can be a poll stale (or
+    // still empty before its first fill), so it is only the fallback.
+    const cached = (): string => {
+      try { return window.cth.readClipboardSync?.() || ''; } catch { return ''; }
+    };
+    void window.cth.readClipboard()
+      .then((t) => { const text = t || cached(); if (text) term.paste(text); })
+      .catch(() => { const text = cached(); if (text) term.paste(text); });
   };
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
+    // Mid-composition keys (CJK/IME candidate selection) belong to the IME —
+    // never remap them into pty sequences.
+    if (isComposingKey(ev)) return true;
     // Keys xterm would encode in a way the TUI cannot read. Checked BEFORE the
     // Ctrl/Cmd gate below, because Shift+Enter holds neither: without this it
     // fell straight through to xterm's default, which sends the same bare CR as
@@ -931,12 +945,12 @@ const mdStatCache = new Map<string, { isFile: boolean; path: string }>();
 function resolvePathCandidate(ptyId: string, raw: string): string | null {
   const p = stripPathToken(raw);
   if (!isPathToken(p)) return null;
-  if (p.startsWith('~/') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p)) return p;
+  if (isAbsolutePath(p)) return p;
   // relative → resolve against the owning agent's cwd. Async store import keeps
   // this module usable in the node test harness (no zustand/react at load).
   const cwd = storeApi?.getState().agents.find((a) => a.ptyId === ptyId)?.cwd ?? null;
   if (!cwd) return null;
-  return `${cwd}/${p.replace(/^\.\//, '')}`;
+  return joinPath(cwd, p);
 }
 
 // The store is loaded lazily via dynamic import (resolved once, cached): a
@@ -944,14 +958,23 @@ function resolvePathCandidate(ptyId: string, raw: string): string | null {
 // pure automation helpers that share this file's import graph.
 interface MdStoreShape {
   getState: () => {
-    agents: Array<{ ptyId?: string; cwd: string }>;
+    agents: Array<{ id: string; ptyId?: string; cwd: string }>;
     openFileInIde: (absPath: string) => void;
+    updateAgent: (id: string, patch: Record<string, unknown>) => void;
   };
 }
 let storeApi: MdStoreShape | null = null;
 void import('@/store/store')
   .then((m) => { storeApi = (m as unknown as { useStore: MdStoreShape }).useStore; })
   .catch(() => { /* store unavailable (tests) — link provider stays inert */ });
+
+/** Patch the agent that owns `ptyId` (a no-op until the store has loaded or when
+ *  the pty belongs to no agent). */
+function markAgentForPty(ptyId: string, patch: Record<string, unknown>): void {
+  const st = storeApi?.getState();
+  const owner = st?.agents.find((a) => a.ptyId === ptyId);
+  if (st && owner) st.updateAgent(owner.id, patch);
+}
 
 /** Act on a verified path. `reveal` also takes any directory that reaches here:
  *  the IDE needs a file. A miss is silent by design — the token is agent output
@@ -977,7 +1000,41 @@ async function activatePath(abs: string, action: PathAction): Promise<void> {
   storeApi?.getState().openFileInIde(hit.path);
 }
 
+/** Hover hint for the terminal links. A plain click on a path/URL goes to the
+ *  TUI and only Ctrl/Cmd+click opens it, which is invisible until told — so say
+ *  it where the pointer is. Built inside `term.element` with `xterm-hover`
+ *  (xterm's documented recipe) so the tooltip never swallows mouse events. */
+function linkHoverHint(term: Terminal): { show: (e: MouseEvent) => void; hide: () => void } {
+  let tip: HTMLDivElement | null = null;
+  const hide = () => { tip?.remove(); tip = null; };
+  const show = (e: MouseEvent) => {
+    const host = term.element;
+    if (!host) return;
+    hide();
+    const rect = host.getBoundingClientRect();
+    tip = document.createElement('div');
+    tip.className = 'xterm-hover';
+    tip.textContent = i18n.t('ptyTerminal.linkHint', { modifier: linkModifierLabel() });
+    Object.assign(tip.style, {
+      position: 'absolute',
+      left: `${Math.max(0, e.clientX - rect.left)}px`,
+      top: `${Math.max(0, e.clientY - rect.top - 26)}px`,
+      zIndex: '20',
+      padding: '2px 6px',
+      font: '12px/16px var(--cth-font-ui, sans-serif)',
+      color: 'var(--cth-ink-900, #1a1320)',
+      background: 'var(--cth-cream-100, #fff8e7)',
+      boxShadow: 'inset 0 0 0 1px var(--cth-ink-700, #333)',
+      pointerEvents: 'none',
+      whiteSpace: 'nowrap'
+    });
+    host.appendChild(tip);
+  };
+  return { show, hide };
+}
+
 function registerMarkdownLinkProvider(term: Terminal, ptyId: string): void {
+  const hint = linkHoverHint(term);
   try {
     term.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
@@ -1001,10 +1058,14 @@ function registerMarkdownLinkProvider(term: Terminal, ptyId: string): void {
             links!.push({
               range, text: url,
               decorations: { underline: true, pointerCursor: true },
+              hover: (event: MouseEvent) => hint.show(event),
+              leave: () => hint.hide(),
+              dispose: () => hint.hide(),
               activate: (event: MouseEvent | undefined) => {
                 // ⌘/Ctrl+click only, like the path links: a plain click must
                 // keep going to the TUI.
                 if (event && !(event.metaKey || event.ctrlKey)) return;
+                hint.hide();
                 // The URL is agent output. It reaches nothing but the opener,
                 // which is https-only and re-checks in the main process.
                 void window.cth.openExternal?.(url).catch(() => { /* opener refused */ });
@@ -1018,9 +1079,13 @@ function registerMarkdownLinkProvider(term: Terminal, ptyId: string): void {
           links!.push({
             range, text: span.raw,
             decorations: { underline: true, pointerCursor: true },
+            hover: (event: MouseEvent) => hint.show(event),
+            leave: () => hint.hide(),
+            dispose: () => hint.hide(),
             activate: (event: MouseEvent | undefined) => {
               // ⌘/Ctrl+click only — a plain click must keep going to the TUI.
               if (event && !(event.metaKey || event.ctrlKey)) return;
+              hint.hide();
               void activatePath(abs, action);
             }
           });

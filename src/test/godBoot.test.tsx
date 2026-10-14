@@ -63,7 +63,7 @@ function baseBridge(overrides: Record<string, unknown> = {}) {
     hiveRegistry: async () => [],
     hiveTasks: async () => [],
     hiveBoard: async () => '',
-    drainPendingHires: async () => [],
+    drainPendingHires: async () => null,
     ...overrides
   });
 }

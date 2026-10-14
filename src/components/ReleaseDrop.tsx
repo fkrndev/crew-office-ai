@@ -34,6 +34,7 @@
  * out here even though the drop itself holds none.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { buildDropSrcDoc } from '@shared/releaseDrop';
 
 export interface ReleaseDropProps {
@@ -43,7 +44,7 @@ export interface ReleaseDropProps {
   onDismiss: () => void;
 }
 
-// Landing site palette (docs/DESIGN.md Â§2). Restated here because the modal is
+// Landing site palette (docs/DESIGN.md §2). Restated here because the modal is
 // app chrome and cannot reach the site's stylesheet; kept in one place so the
 // frame's tokens in shared/releaseDrop.ts and this chrome never drift apart.
 const PAPER = '#FFFDF7';
@@ -57,7 +58,7 @@ const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monosp
 // How long the loader may cover the frame before it is revealed regardless.
 //
 // The reveal signal is the iframe ELEMENT's own `onLoad` (it fires on the
-// parent, needs no script rights in the sandboxed child) â€” but `load` WAITS for
+// parent, needs no script rights in the sandboxed child) — but `load` WAITS for
 // subresources, so a drop with slow remote images would hold the loader for the
 // whole fetch. With the render-blocking font @import gone (shared/releaseDrop.ts),
 // first paint is immediate and onLoad is normally well under this; the cap only
@@ -67,10 +68,11 @@ const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monosp
 const REVEAL_TIMEOUT_MS = 2500;
 
 export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
+  const { t } = useTranslation();
   const srcDoc = useMemo(() => buildDropSrcDoc(html), [html]);
 
   // The loader covers the frame until it is ready to be seen. `revealed` latches
-  // true on the FIRST of two signals â€” the iframe's onLoad or the timeout cap â€”
+  // true on the FIRST of two signals — the iframe's onLoad or the timeout cap —
   // and never flips back, so the reveal is monotonic and cannot flicker.
   const [revealed, setReveal] = useState(false);
   const reveal = () => setReveal(true);
@@ -116,7 +118,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
           margin: 'auto',
           // A landscape window, like the site's hero frame, not a square card.
           // Width is derived from height so the shape holds as the window
-          // resizes; `min(â€¦, 92vw)` is the escape hatch for a narrow window.
+          // resizes; `min(…, 92vw)` is the escape hatch for a narrow window.
           height: 'min(82vh, 720px)',
           width: 'min(calc(82vh * 1.28), 92vw, 920px)',
           minHeight: 420,
@@ -148,21 +150,21 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
             textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden',
             textOverflow: 'ellipsis'
           }}>
-            Munder Difflin <span style={{ color: YELLOW }}>v{version.replace(/^v/, '')}</span>
+            {t('app.productName')} <span style={{ color: YELLOW }}>v{version.replace(/^v/, '')}</span>
             <span style={{ color: INK_FAINT, fontWeight: 500, marginLeft: 10, letterSpacing: '.12em' }}>
-              / release notes
+              / {t('releaseDrop.releaseNotes')}
             </span>
           </span>
           <span aria-hidden style={{
             flexShrink: 0, fontSize: 11, fontWeight: 500, letterSpacing: '.12em',
             color: INK_FAINT, textTransform: 'uppercase'
           }}>
-            esc
+            {t('releaseDrop.esc')}
           </span>
           <button
             onClick={onDismiss}
-            aria-label="Close release notes"
-            title="Close (Esc)"
+            aria-label={t('releaseDrop.closeAria')}
+            title={t('releaseDrop.closeTitle')}
             style={{
               flexShrink: 0, width: 26, height: 26, padding: 0,
               background: PAPER, color: INK, border: `2px solid ${PAPER}`,
@@ -170,11 +172,11 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
               fontFamily: MONO, fontSize: 13, fontWeight: 700, lineHeight: 1,
               display: 'flex', alignItems: 'center', justifyContent: 'center'
             }}
-          >âœ•</button>
+          >✕</button>
         </div>
 
         {/* The frame area. Relative so the loader can sit exactly over the drop,
-            not the title bar. The iframe is always mounted at full opacity â€” the
+            not the title bar. The iframe is always mounted at full opacity — the
             loader is a separate overlay that is REMOVED on reveal, so the failure
             mode of a broken reveal is a brief extra spinner, never a permanently
             hidden frame. */}
@@ -205,7 +207,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
 
 /** The window before the frame paints. Warm paper (never a white flash) with the
  *  title bar's three square dots marching, in the landing-site palette. Pure
- *  chrome â€” it carries no control; dismissal stays Esc / close / backdrop. It is
+ *  chrome — it carries no control; dismissal stays Esc / close / backdrop. It is
  *  removed the instant the frame is revealed, so it is only ever seen briefly. */
 function DropLoader() {
   return (

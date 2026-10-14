@@ -169,7 +169,9 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
     setConfirming(null);
     setAction((a) => ({ ...a, [sk.path]: { busy: true } }));
     try {
-      const res = await window.cth.skillsUninstall(sk.path);
+      // The backend only deletes inside a managed skills dir; the agent's own
+      // project skills dir counts only when its cwd is passed.
+      const res = await window.cth.skillsUninstall(sk.path, agentCwd);
       if (res.ok) { setAction((a) => { const n = { ...a }; delete n[sk.path]; return n; }); void loadLocal(); }
       else setAction((a) => ({ ...a, [sk.path]: { error: res.error ?? t('skillsTab.removeFailed') } }));
     } catch (e) {

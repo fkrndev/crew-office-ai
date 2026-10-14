@@ -38,6 +38,7 @@ const RATE_LIMIT: u32 = 120;
 const PER_ENDPOINT_RATE_LIMIT: u32 = 60;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const UNKNOWN_BUCKET: &str = ":unknown";
+const GET_BUCKET: &str = ":get";
 /// Bare `POST /` keeps serving the endpoint the pre-multi-endpoint migration
 /// parked under this id (webhook.ts LEGACY_ENDPOINT_ID).
 const LEGACY_ENDPOINT_ID: &str = "legacy";
@@ -164,7 +165,7 @@ impl WebhookServer {
             map.insert(e.id.clone(), (e.clone(), compiled));
         }
         let mut win = self.windows.lock().unwrap();
-        win.retain(|k, _| k.is_empty() || k == UNKNOWN_BUCKET || map.contains_key(k));
+        win.retain(|k, _| k.is_empty() || k == UNKNOWN_BUCKET || k == GET_BUCKET || map.contains_key(k));
         map.len()
     }
 
@@ -356,10 +357,6 @@ impl WebhookServer {
         app: &tauri::AppHandle,
         hive: &crate::hive::Hive,
     ) -> (u16, Value) {
-        // Rate limit first — even a 401 burns budget so floods can't probe.
-        if !self.rate_ok("", RATE_LIMIT) {
-            return (429, json!({ "ok": false, "error": "rate limited" }));
-        }
         let method = req.method().as_str().to_uppercase();
         let url = req.url().to_string();
         let id = Self::endpoint_id_of(&url);
@@ -378,12 +375,29 @@ impl WebhookServer {
                 ),
             }
         };
-        let bucket = if real {
-            id.as_deref().unwrap()
-        } else {
-            UNKNOWN_BUCKET
+        // Rate limit AFTER the secret check: only a caller holding the real
+        // secret draws on the shared + per-endpoint budgets, so an
+        // unauthenticated flood can't exhaust them and lock real callers out.
+        // Everything else is metered in its own buckets (still capped, so
+        // floods are bounded and can't probe unmetered).
+        let authed_post = method == "POST" && real && {
+            let given = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("x-md-webhook-secret"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            secret_eq(&given, &ep.secret)
         };
-        if !self.rate_ok(bucket, PER_ENDPOINT_RATE_LIMIT) {
+        let within = if authed_post {
+            self.rate_ok("", RATE_LIMIT)
+                && self.rate_ok(id.as_deref().unwrap_or(UNKNOWN_BUCKET), PER_ENDPOINT_RATE_LIMIT)
+        } else if method == "GET" {
+            self.rate_ok(GET_BUCKET, RATE_LIMIT)
+        } else {
+            self.rate_ok(UNKNOWN_BUCKET, RATE_LIMIT)
+        };
+        if !within {
             return (429, json!({ "ok": false, "error": "rate limited" }));
         }
 

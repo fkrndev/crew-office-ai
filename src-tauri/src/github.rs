@@ -53,16 +53,27 @@ pub fn token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// "owner/repo" validation — both halves non-empty, no extra slashes.
+/// "owner/repo" validation — both halves `[A-Za-z0-9._-]+` (GitHub's own
+/// alphabet), no extra slashes, no `.`/`..` segments: the value is spliced
+/// straight into an API path (`/repos/{repo}/…`), so `../` or `?`/`#` would
+/// retarget the request.
 pub fn valid_repo(repo: &str) -> Option<String> {
     let r = repo.trim().trim_matches('/');
     let mut parts = r.split('/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(o), Some(n), None) if !o.is_empty() && !n.is_empty() => {
-            Some(format!("{o}/{}", n.trim_end_matches(".git")))
-        }
-        _ => None,
-    }
+    let (o, n) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(o), Some(n), None) => (o, n),
+        _ => return None,
+    };
+    let n = n.strip_suffix(".git").unwrap_or(n);
+    let ok_half = |h: &str| {
+        !h.is_empty()
+            && h.len() <= 100
+            && h != "."
+            && !h.contains("..")
+            && h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    (ok_half(o) && ok_half(n)).then(|| format!("{o}/{n}"))
 }
 
 fn agent() -> ureq::Agent {
@@ -204,4 +215,24 @@ pub fn list_issues(owner_repo: &str) -> Result<Vec<GhIssue>, String> {
                 .unwrap_or_default(),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_repo_charset_and_shape() {
+        assert_eq!(valid_repo("octo/cat").as_deref(), Some("octo/cat"));
+        assert_eq!(valid_repo(" /octo/cat.git/ ").as_deref(), Some("octo/cat"));
+        assert_eq!(valid_repo("my-org/.github").as_deref(), Some("my-org/.github"));
+        assert_eq!(valid_repo("a_b/c.d-e").as_deref(), Some("a_b/c.d-e"));
+        for bad in [
+            "", "octo", "octo/", "/cat", "a/b/c", "../cat", "octo/..", "./x", "octo/.", "a..b/c",
+            "octo/cat?x=1", "octo/cat#f", "octo/ca t", "octo/c%2e", "octo\\cat",
+            "oc to/cat", "octo/\u{e9}", &format!("o/{}", "a".repeat(101)),
+        ] {
+            assert!(valid_repo(bad).is_none(), "{bad:?}");
+        }
+    }
 }

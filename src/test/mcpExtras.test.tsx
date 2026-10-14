@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { installFakeBridge, type FakeBridge } from './fakeBridge';
+import { examplePath } from '@shared/platformLabels';
 import { AddAgentModal } from '@/components/AddAgentModal';
 import type { HarnessConfig } from '@/store/config';
 import { useStore } from '@/store/store';
@@ -39,7 +40,7 @@ async function spawnWith(opts: { checkShardx?: boolean; shardxProfile?: string }
       { target: { value: opts.shardxProfile } }
     );
   }
-  fireEvent.change(screen.getByPlaceholderText('/path/to/your/project'), {
+  fireEvent.change(screen.getByPlaceholderText(examplePath('your-project')), {
     target: { value: 'C:/repo-a' }
   });
   fireEvent.click(screen.getByText('create'));

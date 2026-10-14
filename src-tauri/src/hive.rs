@@ -46,6 +46,8 @@ fn link_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Recursive copy. A per-file failure is returned (not swallowed) so a caller
+/// like install_bundled_skill can never report success on a partial copy.
 pub(crate) fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for e in fs::read_dir(src)? {
@@ -54,10 +56,111 @@ pub(crate) fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         if e.file_type()?.is_dir() {
             copy_dir(&e.path(), &to)?;
         } else {
-            let _ = fs::copy(e.path(), &to);
+            fs::copy(e.path(), &to)?;
         }
     }
     Ok(())
+}
+
+/// One process-wide mutex per on-disk store (registry.json, tasks.json,
+/// config.json…), keyed by path. Every read-modify-write of a store must hold
+/// it, so two writers can't both read the old doc and the later write drop
+/// the earlier one. Keyed globally (not on `Hive`) so every `Hive`/
+/// `ConfigStore` handle on the same file shares it. Never hold one across
+/// slow work (git commit, mail routing) and never nest two.
+pub(crate) fn store_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut m = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    m.entry(path.to_path_buf()).or_default().clone()
+}
+
+/// Lock-guard convenience: poison-tolerant (a panicked writer must not wedge
+/// the store forever).
+pub(crate) fn lock_store<'a>(
+    l: &'a std::sync::Arc<std::sync::Mutex<()>>,
+) -> std::sync::MutexGuard<'a, ()> {
+    l.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Atomic write via a UNIQUE temp file + rename (a fixed `.tmp` name lets two
+/// writers clobber each other's temp). The rename is retried briefly: on
+/// Windows an AV scanner or reader can transiently hold the target.
+pub(crate) fn atomic_write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), short_rand()));
+    fs::write(&tmp, bytes)?;
+    let mut last = None;
+    for attempt in 0..5u64 {
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+        }
+    }
+    let _ = fs::remove_file(&tmp);
+    Err(last.unwrap_or_else(|| std::io::Error::other("rename failed")))
+}
+
+/// Read a JSON store for a read-modify-write. Missing/empty → `empty`; an
+/// UNPARSEABLE file is an error — never an empty doc that the caller would
+/// then overwrite. A copy is kept beside it as `<file>.bak` for recovery.
+pub(crate) fn read_json_strict(path: &Path, empty: Value) -> Result<Value> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(empty),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    if text.trim().is_empty() {
+        return Ok(empty);
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let bak = PathBuf::from(format!("{}.bak", path.display()));
+            let _ = fs::copy(path, &bak);
+            anyhow::bail!(
+                "{} is not valid JSON ({e}); left untouched, copy kept as {}",
+                path.display(),
+                bak.display()
+            )
+        }
+    }
+}
+
+/// True when `path` was modified within the last `ms` — an agent still
+/// writing it (its JSON can be half-written); the router retries next tick
+/// instead of quarantining.
+fn modified_within(path: &Path, ms: u64) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_millis() < ms as u128)
+}
+
+/// Agent-authored message ids become filenames — keep them to
+/// `[A-Za-z0-9._-]`, bounded, and never all-dots (`.`/`..`). Anything else
+/// (path separators, `..\..`, control chars) is replaced; an unusable id gets
+/// None so the caller mints a fresh one.
+fn sanitize_msg_id(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .take(128)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    (!cleaned.is_empty() && !cleaned.chars().all(|c| c == '.')).then_some(cleaned)
 }
 /// FIPA-lite message schema (HIVE.md §4) — field-for-field port.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -700,9 +803,57 @@ const HIVE_GITIGNORE_LINES: &[&str] = &[
     "fleet.json",
     "hooks.sock",
     "cost-ledger.jsonl",
+    "log.jsonl.1",
     "crashes/",
     ".DS_Store",
 ];
+
+/// Archive retention (see `Hive::maintain`).
+const ARCHIVE_KEEP: usize = 500;
+const ARCHIVE_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+/// `log.jsonl` rotation threshold (one generation kept as `log.jsonl.1`).
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Delete archived files in `dir` beyond the newest `keep` or older than
+/// `max_age` (by mtime). Subdirectories and `bad-*` quarantined messages are
+/// never removed. Best-effort — a locked file survives to the next sweep.
+fn prune_archive_dir(dir: &Path, keep: usize, max_age: std::time::Duration) -> usize {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with("bad-"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().unwrap_or(now), e.path()))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    let mut removed = 0;
+    for (i, (mtime, path)) in files.iter().enumerate() {
+        let age = now.duration_since(*mtime).unwrap_or_default();
+        if (i >= keep || age > max_age) && fs::remove_file(path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Rotate `path` to `<path>.1` (replacing any previous generation) when it
+/// exceeds `max_bytes`, leaving a fresh empty file behind. Returns whether it
+/// rotated. A failed rename (file locked) just retries on the next sweep.
+pub(crate) fn rotate_if_larger(path: &Path, max_bytes: u64) -> bool {
+    if fs::metadata(path).map(|m| m.len()).unwrap_or(0) <= max_bytes {
+        return false;
+    }
+    let mut rotated = path.as_os_str().to_owned();
+    rotated.push(".1");
+    if fs::rename(path, PathBuf::from(&rotated)).is_err() {
+        return false;
+    }
+    let _ = fs::OpenOptions::new().create(true).append(true).open(path);
+    true
+}
 
 /// Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z
 /// (upstream stamp(): ISO with `:` and `.` replaced by `-`).
@@ -751,8 +902,107 @@ fn newest_mtime(path: &PathBuf) -> u64 {
         .unwrap_or(0)
 }
 
+/// Per-agent cumulative usage folded from `cost-ledger.jsonl` rows
+/// (see `Hive::usage_sample` for the semantics), kept incrementally.
+#[derive(Default)]
+struct UsageFold {
+    cursor: crate::cost_lifetime::LedgerCursor,
+    /// agent → (session → (closed segments' sum, open segment's peak row), last ts)
+    agents: std::collections::HashMap<
+        String,
+        (
+            std::collections::HashMap<String, (crate::breaker::UsageSample, crate::breaker::UsageSample)>,
+            u64,
+        ),
+    >,
+}
+
+impl UsageFold {
+    /// Fold newly appended rows; None when the ledger is unreadable (missing).
+    fn refresh(&mut self, path: &Path) -> Option<()> {
+        let adv = self.cursor.advance(path).ok()?;
+        if adv.reset {
+            self.agents.clear();
+        }
+        self.feed(&adv.lines);
+        Some(())
+    }
+
+    fn feed(&mut self, text: &str) {
+        use crate::breaker::UsageSample;
+        let total = |s: &UsageSample| s.input + s.output + s.cache_read + s.cache_creation;
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(agent) = v.get("agent_id").and_then(|a| a.as_str()) else {
+                continue;
+            };
+            let u = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+            let row = UsageSample {
+                input: u("input"),
+                output: u("output"),
+                cache_read: u("cache_read"),
+                cache_creation: u("cache_creation"),
+                usd: v
+                    .get("usd")
+                    .and_then(|x| x.as_f64())
+                    .filter(|x| x.is_finite())
+                    .unwrap_or(0.0),
+                ts: 0,
+            };
+            let (sessions, ts) = self.agents.entry(agent.to_string()).or_default();
+            if let Some(t) = v.get("ts").and_then(|x| x.as_u64()) {
+                *ts = t;
+            } else if let Some(t) = v.get("ts").and_then(|x| x.as_str()) {
+                if let Ok(t) = chrono::DateTime::parse_from_rfc3339(t) {
+                    *ts = t.timestamp_millis() as u64;
+                }
+            }
+            let sid = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("");
+            let (closed, open) = sessions.entry(sid.to_string()).or_default();
+            if total(&row) < total(open) || row.usd < open.usd - 1e-9 {
+                // Counter went backwards: the previous segment ended at its peak.
+                closed.input += open.input;
+                closed.output += open.output;
+                closed.cache_read += open.cache_read;
+                closed.cache_creation += open.cache_creation;
+                closed.usd += open.usd;
+                *open = row;
+            } else {
+                open.input = open.input.max(row.input);
+                open.output = open.output.max(row.output);
+                open.cache_read = open.cache_read.max(row.cache_read);
+                open.cache_creation = open.cache_creation.max(row.cache_creation);
+                open.usd = open.usd.max(row.usd);
+            }
+        }
+    }
+
+    fn sample(&self, agent_id: &str) -> Option<crate::breaker::UsageSample> {
+        let (sessions, ts) = self.agents.get(agent_id)?;
+        if sessions.is_empty() {
+            return None;
+        }
+        let mut s = crate::breaker::UsageSample::default();
+        for (closed, open) in sessions.values() {
+            s.input += closed.input + open.input;
+            s.output += closed.output + open.output;
+            s.cache_read += closed.cache_read + open.cache_read;
+            s.cache_creation += closed.cache_creation + open.cache_creation;
+            s.usd += closed.usd + open.usd;
+        }
+        s.ts = *ts;
+        Some(s)
+    }
+}
+
 pub struct Hive {
     pub root: PathBuf,
+    /// Incremental ledger folds shared by every reader (see `usage_sample`,
+    /// `lifetime_usd`).
+    usage_fold: std::sync::Mutex<UsageFold>,
+    cost_totals: std::sync::Mutex<crate::cost_lifetime::CostLedgerTotals>,
 }
 
 /// App-driven seed for a worker's HERMES_HOME when the user never ran
@@ -792,6 +1042,8 @@ impl Hive {
         // append-only, same missing-lines policy as the per-agent .gitignore.
         let hive = Self {
             root: root.to_path_buf(),
+            usage_fold: Default::default(),
+            cost_totals: Default::default(),
         };
         hive.ensure_gitignore_lines(&root.join(".gitignore"), HIVE_GITIGNORE_LINES);
         // Agents created before a provider's private home was on the ignore
@@ -851,6 +1103,24 @@ impl Hive {
         let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
             return (None, Vec::new());
         };
+        Self::parse_registry_doc(&doc)
+    }
+
+    /// The registry's store lock — held across every read-modify-write of
+    /// registry.json (here and in hive_admin).
+    pub(crate) fn registry_lock(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        store_lock(&self.root.join("registry.json"))
+    }
+
+    /// read_registry_doc for a read-modify-write: a missing file is an empty
+    /// registry, but a CORRUPT one is an error (never an empty doc that the
+    /// caller then writes back over the real data). Call under `registry_lock`.
+    fn read_registry_doc_strict(&self) -> Result<(Option<String>, Vec<RegistryEntry>)> {
+        let doc = read_json_strict(&self.root.join("registry.json"), serde_json::json!({}))?;
+        Ok(Self::parse_registry_doc(&doc))
+    }
+
+    fn parse_registry_doc(doc: &serde_json::Value) -> (Option<String>, Vec<RegistryEntry>) {
         let god_id = doc
             .get("godId")
             .and_then(|v| v.as_str())
@@ -905,12 +1175,6 @@ impl Hive {
         )
     }
 
-    /// Rewrite the registry preserving the existing godId.
-    fn write_registry(&self, agents: &[RegistryEntry]) -> Result<()> {
-        let (god_id, _) = self.read_registry_doc();
-        self.write_registry_doc(&god_id, agents)
-    }
-
     /// Raw-json registry patch — like write_registry but on the untyped doc,
     /// so keys no field models are never dropped. Reserved for hive_admin's
     /// untyped-field edits; not wired yet.
@@ -921,9 +1185,9 @@ impl Hive {
         patch: &serde_json::Map<String, Value>,
     ) -> Result<bool> {
         let path = self.root.join("registry.json");
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        let mut doc: Value = serde_json::from_str(&text)
-            .unwrap_or_else(|_| serde_json::json!({ "godId": null, "agents": {} }));
+        let lock = self.registry_lock();
+        let _g = lock_store(&lock);
+        let mut doc = read_json_strict(&path, serde_json::json!({ "godId": null, "agents": {} }))?;
         // Tolerate a legacy array-shaped agents list by converting to a map.
         if let Some(Value::Array(arr)) = doc.get("agents").cloned() {
             let mut map = serde_json::Map::new();
@@ -958,7 +1222,9 @@ impl Hive {
     /// payload) on the registry entry — cheap write-only-on-change, used for
     /// --resume and cost dedup. Port of hive.recordSession (bumps lastSeen).
     pub fn record_session(&self, id: &str, session_id: &str) -> Result<()> {
-        let (god_id, mut agents) = self.read_registry_doc();
+        let lock = self.registry_lock();
+        let _g = lock_store(&lock);
+        let (god_id, mut agents) = self.read_registry_doc_strict()?;
         if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
             if a.session_id.as_deref() != Some(session_id) {
                 a.session_id = Some(session_id.into());
@@ -1157,36 +1423,37 @@ impl Hive {
         Some(t)
     }
 
-    /// Cumulative usage for one agent, folded from cost.jsonl each beat —
+    /// Cumulative usage for one agent, folded from cost-ledger.jsonl each beat —
     /// the same pull seam upstream's UsageProvider feeds the breaker.
+    ///
+    /// Ledger rows are CUMULATIVE per-session counters (not deltas), so rows
+    /// must never be summed: fold per (agent, session) like cost_lifetime —
+    /// the session's latest row is its total, and a counter DECREASE (app
+    /// restart under the same session id) closes the segment at its peak.
+    /// The agent's sample is the sum over its sessions, usd included.
     pub fn usage_sample(&self, agent_id: &str) -> Option<crate::breaker::UsageSample> {
-        let text = fs::read_to_string(self.root.join("cost-ledger.jsonl")).ok()?;
-        let mut s = crate::breaker::UsageSample::default();
-        let mut seen = false;
-        for line in text.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v.get("agent_id").and_then(|a| a.as_str()) != Some(agent_id) {
-                continue;
-            }
-            seen = true;
-            s.input += v.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
-            s.output += v.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
-            s.cache_read += v.get("cache_read").and_then(|x| x.as_u64()).unwrap_or(0);
-            s.cache_creation += v
-                .get("cache_creation")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0);
-            if let Some(ts) = v.get("ts").and_then(|x| x.as_u64()) {
-                s.ts = ts;
-            } else if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
-                if let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) {
-                    s.ts = t.timestamp_millis() as u64;
-                }
-            }
-        }
-        seen.then_some(s)
+        // Incremental: only bytes appended since the last call are parsed
+        // (this runs per agent per beat — the whole-file rescan it replaces
+        // grew with the ledger).
+        let mut fold = self.usage_fold.lock().unwrap_or_else(|e| e.into_inner());
+        fold.refresh(&self.root.join("cost-ledger.jsonl"))?;
+        fold.sample(agent_id)
+    }
+
+    /// Reset-corrected lifetime usd per agent from the ledger, folded
+    /// incrementally and shared by every caller (fleet rows, cost_lifetime).
+    /// None until the ledger has been read once (cold ≠ zero spend).
+    pub fn lifetime_usd(&self) -> Option<std::collections::HashMap<String, f64>> {
+        let mut t = self.cost_totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.refresh_fully(&self.cost_ledger_path());
+        t.ready().then(|| t.all())
+    }
+
+    #[cfg(test)]
+    fn fold_usage_sample(text: &str, agent_id: &str) -> Option<crate::breaker::UsageSample> {
+        let mut f = UsageFold::default();
+        f.feed(text);
+        f.sample(agent_id)
     }
 
     /// Is the floor quiet? (index.ts isFloorQuiet) — newest of: log.jsonl
@@ -1301,11 +1568,15 @@ impl Hive {
             "model": model,
             "usd": usd,
         });
+        // One String ending in a newline, one write_all on an append-mode handle —
+        // `writeln!` is two writes and can interleave with another thread's row.
+        let mut line = serde_json::to_string(&row)?;
+        line.push('\n');
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.cost_ledger_path())?;
-        writeln!(f, "{}", serde_json::to_string(&row)?)?;
+        f.write_all(line.as_bytes())?;
         Ok(())
     }
 
@@ -1536,6 +1807,10 @@ impl Hive {
 
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
+        // The `munder-*` MCP namespace is ours: drop entries from earlier
+        // spawns (they may carry plaintext secrets from before the
+        // `${VAR}` refs, or a since-revoked consent) and re-add below.
+        cfg = strip_munder_mcp_blocks(&cfg);
         // Consent-filtered MCP catalog → `mcp_servers:` — hermes reads the
         // same {command,args,env} stdio shape as claude's mcpServers. Merge by
         // NAME: missing servers are appended into an existing mcp_servers
@@ -1987,7 +2262,9 @@ impl Hive {
         // Merge over the prior registry row (upstream `{...prev, ...meta}`):
         // spawn-time fields win, lifetime fields (sessionId, createdAt) are
         // preserved when the new entry doesn't carry them.
-        let (mut god_id, mut agents) = self.read_registry_doc();
+        let reg_lock = self.registry_lock();
+        let reg_guard = lock_store(&reg_lock);
+        let (mut god_id, mut agents) = self.read_registry_doc_strict()?;
         let prev = agents.iter().find(|a| a.id == entry.id).cloned();
         let mut merged = entry.clone();
         if let Some(p) = &prev {
@@ -2051,6 +2328,7 @@ impl Hive {
             god_id = Some(merged.id.clone());
         }
         self.write_registry_doc(&god_id, &agents)?;
+        drop(reg_guard);
 
         self.log(&serde_json::json!({
             "kind": "spawn", "agentId": merged.id, "name": merged.name, "isGod": merged.is_god
@@ -2064,11 +2342,38 @@ impl Hive {
         Ok(())
     }
 
+    /// Delete an agent's registry row (and clear godId if it pointed at it).
+    /// For rolling back a FRESH hire whose spawn failed — the row would
+    /// otherwise linger as a "gone" ghost. The agent's directory (mail,
+    /// memory) is left alone. Returns whether a row was removed.
+    pub fn remove_agent(&self, id: &str) -> Result<bool> {
+        let lock = self.registry_lock();
+        let _g = lock_store(&lock);
+        let (mut god_id, mut agents) = self.read_registry_doc_strict()?;
+        let before = agents.len();
+        agents.retain(|a| a.id != id);
+        if agents.len() == before {
+            return Ok(false);
+        }
+        if god_id.as_deref() == Some(id) {
+            god_id = None;
+        }
+        self.write_registry_doc(&god_id, &agents)?;
+        Ok(true)
+    }
+
+    /// Stamp an agent's status. Hooks fire this on every tool call, so an
+    /// unchanged status skips the registry rewrite entirely.
     pub fn set_status(&self, id: &str, status: &str) -> Result<()> {
-        let mut agents = self.registry();
+        let lock = self.registry_lock();
+        let _g = lock_store(&lock);
+        let (god_id, mut agents) = self.read_registry_doc_strict()?;
         if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
+            if a.status == status {
+                return Ok(());
+            }
             a.status = status.into();
-            self.write_registry(&agents)?;
+            self.write_registry_doc(&god_id, &agents)?;
         }
         Ok(())
     }
@@ -2077,10 +2382,7 @@ impl Hive {
     /// never see a half-written message. Temp name is upstream's
     /// `${p}.tmp-<rand>` (a fixed `.tmp` would collide two writers on one file).
     fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), short_rand()));
-        fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        Ok(atomic_write_file(path, bytes)?)
     }
 
     /// Write a message into `sender`'s outbox (the only path agents use to
@@ -2107,10 +2409,12 @@ impl Hive {
             .unwrap_or_else(|| "inform".into());
         let hops = partial.hops.unwrap_or(0).clamp(0, HOP_CAP) as u32;
         Message {
+            // The id becomes a filename (`<id>.json` in outbox/inbox) — an
+            // agent-authored one is sanitized so `..\..\x` can't escape.
             id: partial
                 .id
-                .clone()
-                .filter(|s| !s.is_empty())
+                .as_deref()
+                .and_then(sanitize_msg_id)
                 .unwrap_or_else(|| format!("{}-{}", stamp(), short_rand())),
             conversation: partial
                 .conversation
@@ -2264,12 +2568,19 @@ impl Hive {
         // Broadcast fans out over the ACTIVE registry: skip the sender, the
         // send-only prep assistant, and archived agents (upstream
         // selectBroadcastTargets — hookless providers are NOT skipped here).
+        // god → "human" (e.g. closing time's CLOSING-TIME-COMPLETE): the human
+        // IS the audience, so there is no inbox target — delivering to god's
+        // own inbox would loop. It still yields ONE Delivery (to "human") so
+        // the router loop / closing-time observer sees the message.
+        let human_from_god = msg.to.trim() == "human" && msg.from == god_id;
         let targets: Vec<String> = if msg.to.trim() == "broadcast" {
             agents
                 .iter()
                 .filter(|a| a.id != msg.from && !a.is_assistant && !a.archived)
                 .map(|a| a.id.clone())
                 .collect()
+        } else if human_from_god {
+            Vec::new()
         } else {
             // Never deliver to self — guards a god → "human" loop back to god.
             vec![resolve_to(msg.to.trim())]
@@ -2380,11 +2691,14 @@ impl Hive {
                 );
             }
         }
+        if human_from_god {
+            delivered.push("human".to_string());
+        }
         let _ = self.log(&serde_json::json!({
             "kind": "message", "from": msg.from, "to": msg.to, "act": msg.act,
             "subject": msg.subject, "id": msg.id, "delivered": delivered
         }));
-        Ok(targets
+        let mut out: Vec<Delivery> = targets
             .iter()
             .map(|t| Delivery {
                 id: msg.id.clone(),
@@ -2412,7 +2726,22 @@ impl Hive {
                     })
                 }),
             })
-            .collect())
+            .collect();
+        if human_from_god {
+            out.push(Delivery {
+                id: msg.id.clone(),
+                from: msg.from.clone(),
+                to: "human".into(),
+                msg_id: msg.id.clone(),
+                act: msg.act.clone(),
+                subject: msg.subject.clone(),
+                targets: vec!["human".into()],
+                needs_human: true,
+                bounced: false,
+                handoff: None,
+            });
+        }
+        Ok(out)
     }
 
     /// One router pass: drain every outbox into recipient inboxes (upstream
@@ -2459,6 +2788,11 @@ impl Hive {
                 if partial.is_none() {
                     // Malformed JSON — attempt the narrow repair (literal
                     // CR/LF inside strings), then quarantine either way.
+                    // A file the agent is still writing is half-valid JSON:
+                    // retry next tick instead of quarantining it for good.
+                    if modified_within(&file, 1000) {
+                        continue;
+                    }
                     let (repaired_text, changed) = repair_literal_line_breaks(&text);
                     if !changed {
                         let _ = self.log(&serde_json::json!({
@@ -2488,6 +2822,12 @@ impl Hive {
                 }
                 let Some(p) = partial else { continue };
                 let mut msg = self.normalize(&p, &owner);
+                // An agent-chosen id that was already routed from this outbox
+                // would overwrite the earlier message's inbox/.sent files —
+                // mint a fresh one instead.
+                if p.id.is_some() && sent_dir.join(format!("{}.json", msg.id)).exists() {
+                    msg.id = format!("{}-{}", stamp(), short_rand());
+                }
                 // The outbox OWNER is authoritative for `from` — an agent
                 // can't spoof another sender (upstream: msg.from = id).
                 msg.from = owner.clone();
@@ -2629,9 +2969,20 @@ impl Hive {
         Ok(fs::read_to_string(self.root.join("board.md")).unwrap_or_default())
     }
 
+    /// The tasks.json store lock — held across every read-modify-write of the
+    /// ledger (here and in hive_admin add/delete).
+    pub(crate) fn tasks_lock(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        store_lock(&self.root.join("tasks.json"))
+    }
+
+    /// The task ledger document. A missing/empty file is an empty ledger; a
+    /// CORRUPT one is an Err (a copy is kept as tasks.json.bak) — never an
+    /// empty doc the caller would then write back over the real ledger.
     pub fn read_tasks(&self) -> Result<serde_json::Value> {
-        let t = fs::read_to_string(self.root.join("tasks.json")).unwrap_or_default();
-        Ok(serde_json::from_str(&t).unwrap_or(serde_json::json!({"tasks": []})))
+        read_json_strict(
+            &self.root.join("tasks.json"),
+            serde_json::json!({"tasks": []}),
+        )
     }
 
     /// Append one card against the latest on-disk ledger — port of hive.ts
@@ -2640,6 +2991,8 @@ impl Hive {
     /// Idempotent by task id: returns false (no write) when a card with that
     /// id already exists.
     pub fn add_task(&self, card: &serde_json::Value) -> Result<bool> {
+        let lock = self.tasks_lock();
+        let guard = lock_store(&lock);
         let mut doc = self.read_tasks()?;
         let tasks = doc["tasks"]
             .as_array_mut()
@@ -2650,10 +3003,11 @@ impl Hive {
         }
         tasks.push(card.clone());
         let count = tasks.len();
-        fs::write(
-            self.root.join("tasks.json"),
-            serde_json::to_string_pretty(&doc)?,
+        atomic_write_file(
+            &self.root.join("tasks.json"),
+            serde_json::to_string_pretty(&doc)?.as_bytes(),
         )?;
+        drop(guard);
         let _ = self.log(&serde_json::json!({ "kind": "tasks", "count": count }));
         self.commit(&format!("hive: tasks ({count})"));
         Ok(true)
@@ -2665,6 +3019,8 @@ impl Hive {
     /// fields it doesn't know about (the bug mergeTaskLedger exists to stop).
     /// Returns the patched card.
     pub fn update_task(&self, id: &str, patch: &serde_json::Map<String, Value>) -> Result<Value> {
+        let lock = self.tasks_lock();
+        let guard = lock_store(&lock);
         let mut doc = self.read_tasks()?;
         let tasks = doc["tasks"]
             .as_array_mut()
@@ -2685,10 +3041,11 @@ impl Hive {
         // card (upstream patchTask does the same after its spread).
         obj.insert("id".into(), Value::String(id.to_string()));
         let out = entry.clone();
-        fs::write(
-            self.root.join("tasks.json"),
-            serde_json::to_string_pretty(&doc)?,
+        atomic_write_file(
+            &self.root.join("tasks.json"),
+            serde_json::to_string_pretty(&doc)?.as_bytes(),
         )?;
+        drop(guard);
         let n = doc["tasks"].as_array().map(|t| t.len()).unwrap_or(0);
         let _ = self.log(&serde_json::json!({ "kind": "tasks", "count": n }));
         self.commit(&format!("hive: tasks ({n})"));
@@ -2771,12 +3128,40 @@ impl Hive {
         if let (Some(a), Some(b)) = (v.as_object_mut(), event.as_object()) {
             a.extend(b.clone());
         }
+        // One write_all of a complete line (see append_cost_sample).
+        let mut line = serde_json::to_string(&v)?;
+        line.push('\n');
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.root.join("log.jsonl"))?;
-        writeln!(f, "{}", serde_json::to_string(&v)?)?;
+        f.write_all(line.as_bytes())?;
         Ok(())
+    }
+
+    /// Bounded retention for the append-forever files (called at startup and
+    /// at most every few minutes from the router loop — never per tick):
+    /// per-agent `inbox/.done` + `outbox/.sent` archives are pruned to the
+    /// newest `ARCHIVE_KEEP` / `ARCHIVE_MAX_AGE_SECS`, and `log.jsonl` rotates
+    /// to `log.jsonl.1` past `LOG_ROTATE_BYTES`. `cost-ledger.jsonl` is NEVER
+    /// touched (cost_lifetime folds it); `.sent/bad-*` quarantine is kept.
+    pub fn maintain(&self) {
+        if let Ok(rd) = fs::read_dir(self.root.join("agents")) {
+            for e in rd.flatten() {
+                let d = e.path();
+                prune_archive_dir(
+                    &d.join("inbox").join(".done"),
+                    ARCHIVE_KEEP,
+                    std::time::Duration::from_secs(ARCHIVE_MAX_AGE_SECS),
+                );
+                prune_archive_dir(
+                    &d.join("outbox").join(".sent"),
+                    ARCHIVE_KEEP,
+                    std::time::Duration::from_secs(ARCHIVE_MAX_AGE_SECS),
+                );
+            }
+        }
+        rotate_if_larger(&self.root.join("log.jsonl"), LOG_ROTATE_BYTES);
     }
 
     /// Single-committer git (HIVE.md §2.1): only this process ever commits;
@@ -2860,6 +3245,39 @@ pub fn redact_secrets(text: &str) -> String {
         .replace_all(&s, "$1=[redacted]")
         .to_string();
     s
+}
+
+/// Remove `  munder-*:` entries (and their indented bodies) from the top-level
+/// `mcp_servers:` block of a hermes config.yaml; every other line, including
+/// the user's own servers, is kept verbatim.
+fn strip_munder_mcp_blocks(cfg: &str) -> String {
+    let mut out = String::with_capacity(cfg.len());
+    let (mut in_mcp, mut skipping) = (false, false);
+    for line in cfg.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let indent = body.len() - body.trim_start().len();
+        let blank = body.trim().is_empty();
+        if body.starts_with("mcp_servers:") {
+            in_mcp = true;
+            skipping = false;
+        } else if in_mcp && !blank && indent == 0 && !body.starts_with('#') {
+            in_mcp = false;
+            skipping = false;
+        } else if in_mcp {
+            if indent == 2 && body.trim_start().starts_with("munder-") {
+                skipping = true;
+                continue;
+            }
+            if !blank && indent <= 2 {
+                skipping = false;
+            }
+            if skipping {
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2960,6 +3378,54 @@ mod tests {
         assert!(cfg.contains("command: 'node'"));
         assert!(cfg.contains("SHARDX_API: 'http://127.0.0.1:40325'"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stale `munder-*` entries (plaintext secrets from before the `${VAR}`
+    /// refs) are replaced on the next seed; the user's own servers survive.
+    #[test]
+    fn hermes_seed_scrubs_stale_munder_mcp_entries_and_keeps_secrets_out() {
+        let dir = std::env::temp_dir().join(format!("oa-hermes-scrub-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user_home = no_user_hermes(&dir);
+        let agent = dir.join("agent");
+        let home = agent.join(".hermes");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.yaml"),
+            "model: x\nmcp_servers:\n  munder-github-token:\n    command: 'npx'\n    env:\n      GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_OLDPLAINTEXT'\n  mine:\n    command: 'foo'\nother: 1\n",
+        )
+        .unwrap();
+        let mut servers = crate::mcp::build_default_mcp_servers(
+            "C:/w",
+            std::path::Path::new("C:/h"),
+            &std::collections::HashMap::new(),
+            &["github-token".to_string()],
+            &[],
+            &|_| Some("ghp_NEWSECRET".to_string()),
+        );
+        crate::mcp::externalize_mcp_secrets(&mut servers);
+        // claude's per-agent settings.json goes through the same map.
+        let settings = hive.hook_settings("\"shim\"", &servers).to_string();
+        assert!(!settings.contains("ghp_NEWSECRET"), "{settings}");
+        assert!(settings.contains("${MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}"));
+        let seed = HermesSeed { mcp_servers: servers, ..Default::default() };
+        let home = hive
+            .install_hermes_hooks_seeded_at(&agent, &dir.join("hive-hook.exe"), &seed, &user_home)
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(!cfg.contains("ghp_"), "{cfg}");
+        assert!(cfg.contains("GITHUB_PERSONAL_ACCESS_TOKEN: '${MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}'"));
+        assert!(cfg.contains("  mine:\n    command: 'foo'"));
+        assert!(cfg.contains("model: x") && cfg.contains("other: 1"));
+        assert_eq!(cfg.matches("munder-github-token:").count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strip_munder_blocks_only_touches_the_mcp_section() {
+        let s = "munder-x: keep\nmcp_servers:\n  munder-a:\n    command: 'a'\n\n  user:\n    command: 'u'\n  munder-b:\n    args:\n      - 'z'\nhooks:\n  munder-c: 1\n";
+        let out = strip_munder_mcp_blocks(s);
+        assert_eq!(out, "munder-x: keep\nmcp_servers:\n  user:\n    command: 'u'\nhooks:\n  munder-c: 1\n");
     }
 
     /// Empty dir standing in for ~/.hermes — the copy-through source is a
@@ -3303,5 +3769,156 @@ mod tests {
         // Unsafe ids are rejected outright (upstream: safe path components only).
         hive.expose_codex_data(&agent_dir, "../evil");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn maintain_prunes_archives_rotates_log_and_spares_the_cost_ledger() {
+        let dir = std::env::temp_dir().join(format!("oa-maintain-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&dir).unwrap();
+        let sent = dir.join("agents").join("a1").join("outbox").join(".sent");
+        let done = dir.join("agents").join("a1").join("inbox").join(".done");
+        fs::create_dir_all(&sent).unwrap();
+        fs::create_dir_all(&done).unwrap();
+        for i in 0..5 {
+            fs::write(sent.join(format!("m{i}.json")), "{}").unwrap();
+            fs::write(done.join(format!("m{i}.json")), "{}").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        fs::write(sent.join("bad-x.json"), "{").unwrap();
+        // keep=3 → m2..m4 survive; the quarantined bad-* file is never pruned.
+        let big = std::time::Duration::from_secs(3600);
+        assert_eq!(prune_archive_dir(&sent, 3, big), 2);
+        let mut left: Vec<String> = fs::read_dir(&sent)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["bad-x.json", "m2.json", "m3.json", "m4.json"]);
+        // Age cut: zero max-age removes every regular archive file.
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        assert_eq!(prune_archive_dir(&done, 500, std::time::Duration::ZERO), 5);
+        assert!(fs::read_dir(&done).unwrap().next().is_none());
+        // Missing dir is a no-op.
+        assert_eq!(prune_archive_dir(&dir.join("nope"), 1, big), 0);
+
+        // Rotation: only past the threshold; ledger untouched by maintain().
+        let live = dir.join("log.jsonl");
+        fs::write(&live, "x".repeat(64)).unwrap();
+        fs::write(dir.join("cost-ledger.jsonl"), "y".repeat(64)).unwrap();
+        assert!(!rotate_if_larger(&live, 1024));
+        assert!(rotate_if_larger(&live, 10));
+        assert_eq!(fs::read_to_string(dir.join("log.jsonl.1")).unwrap().len(), 64);
+        assert_eq!(fs::metadata(&live).unwrap().len(), 0);
+        // A second rotation replaces the single kept generation.
+        fs::write(&live, "z".repeat(32)).unwrap();
+        assert!(rotate_if_larger(&live, 10));
+        assert_eq!(fs::read_to_string(dir.join("log.jsonl.1")).unwrap(), "z".repeat(32));
+        fs::write(&live, "w".repeat((LOG_ROTATE_BYTES + 1) as usize)).unwrap();
+        hive.maintain();
+        assert!(fs::metadata(&live).unwrap().len() < 1024);
+        assert_eq!(fs::read_to_string(dir.join("cost-ledger.jsonl")).unwrap().len(), 64);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn row(agent: &str, sid: &str, input: u64, usd: f64) -> String {
+        format!(
+            r#"{{"agent_id":"{agent}","session_id":"{sid}","ts":5,"input":{input},"output":0,"cache_read":0,"cache_creation":0,"usd":{usd}}}"#
+        )
+    }
+
+    #[test]
+    fn usage_sample_folds_cumulative_rows_per_session() {
+        // Cumulative counters: the session total is its LAST row, not the sum.
+        let text = [
+            row("a", "s1", 100, 0.1),
+            row("a", "s1", 200, 0.2),
+            row("a", "s1", 300, 0.3),
+            row("a", "s2", 50, 0.05),
+            row("b", "s9", 999, 9.0),
+        ]
+        .join("\n");
+        let s = Hive::fold_usage_sample(&text, "a").unwrap();
+        assert_eq!(s.input, 350);
+        assert!((s.usd - 0.35).abs() < 1e-9);
+        // A counter decrease (restart under the same session) closes the
+        // segment at its peak.
+        let text = [row("a", "s1", 300, 0.3), row("a", "s1", 40, 0.04)].join("\n");
+        let s = Hive::fold_usage_sample(&text, "a").unwrap();
+        assert_eq!(s.input, 340);
+        assert!((s.usd - 0.34).abs() < 1e-9);
+        assert!(Hive::fold_usage_sample(&text, "nobody").is_none());
+    }
+
+    /// The cached incremental folds must track appends, a missing ledger,
+    /// and a ledger replaced underneath them (even by a LONGER file).
+    #[test]
+    fn incremental_ledger_folds_track_appends_and_replacement() {
+        let dir = std::env::temp_dir().join(format!("oa-incr-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&dir).unwrap();
+        let ledger = dir.join("cost-ledger.jsonl");
+        assert!(hive.usage_sample("a").is_none()); // no ledger yet
+        assert!(hive.lifetime_usd().is_none());
+        fs::write(&ledger, format!("{}\n", row("a", "s1", 100, 0.1))).unwrap();
+        assert_eq!(hive.usage_sample("a").unwrap().input, 100);
+        assert!((hive.lifetime_usd().unwrap()["a"] - 0.1).abs() < 1e-9);
+        // Append: only the new rows are folded in; a partial last line waits.
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().append(true).open(&ledger).unwrap();
+        writeln!(f, "{}", row("a", "s1", 250, 0.25)).unwrap();
+        write!(f, "{}", &row("b", "s2", 7, 0.7)[..20]).unwrap();
+        drop(f);
+        assert_eq!(hive.usage_sample("a").unwrap().input, 250);
+        assert!(hive.usage_sample("b").is_none());
+        let mut f = fs::OpenOptions::new().append(true).open(&ledger).unwrap();
+        writeln!(f, "{}", &row("b", "s2", 7, 0.7)[20..]).unwrap();
+        drop(f);
+        assert_eq!(hive.usage_sample("b").unwrap().input, 7);
+        assert!((hive.lifetime_usd().unwrap()["b"] - 0.7).abs() < 1e-9);
+        // Replaced by a different, LONGER ledger: no stale carry-over.
+        let fresh = [row("c", "s9", 5, 0.5), row("c", "s9", 6, 0.6), row("c", "s9", 8, 0.8)].join("\n");
+        fs::write(&ledger, format!("{fresh}\n")).unwrap();
+        assert!(hive.usage_sample("a").is_none());
+        assert_eq!(hive.usage_sample("c").unwrap().input, 8);
+        let t = hive.lifetime_usd().unwrap();
+        assert!(!t.contains_key("a") && (t["c"] - 0.8).abs() < 1e-9);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn message_ids_are_sanitized_for_filenames() {
+        assert_eq!(sanitize_msg_id("abc-1.2_x").as_deref(), Some("abc-1.2_x"));
+        let evil = sanitize_msg_id("..\\..\\evil/x").unwrap();
+        assert!(!evil.contains(['\\', '/']));
+        assert_eq!(sanitize_msg_id(".."), None);
+        assert_eq!(sanitize_msg_id(""), None);
+        let root = std::env::temp_dir().join(format!("oa-san-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&root).unwrap();
+        let m = hive.normalize(
+            &PartialMessage {
+                id: Some("..\\..\\x".into()),
+                ..Default::default()
+            },
+            "w1",
+        );
+        assert!(!m.id.contains(['\\', '/']));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copy_dir_propagates_per_file_errors() {
+        let root = std::env::temp_dir().join(format!("oa-copy-{}", uuid::Uuid::new_v4()));
+        let (src, dst) = (root.join("src"), root.join("dst"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "a").unwrap();
+        // A directory squatting on the destination file name makes fs::copy fail.
+        fs::create_dir_all(dst.join("a.txt")).unwrap();
+        assert!(copy_dir(&src, &dst).is_err());
+        fs::remove_dir_all(&root).ok();
     }
 }

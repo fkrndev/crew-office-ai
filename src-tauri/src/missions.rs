@@ -165,12 +165,28 @@ fn slot_at_ms(from: chrono::DateTime<chrono::Local>, offset: i64, minute: u32) -
     let naive = date
         .and_hms_opt(minute / 60, minute % 60, 0)
         .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap());
-    // On an ambiguous/nonexistent local time (DST fold/gap) .earliest() is
-    // the platform-standard resolution the upstream constructor also gives.
-    match naive.and_local_timezone(chrono::Local).earliest() {
-        Some(dt) => dt.timestamp_millis().max(0) as u64,
-        None => 0,
+    // An ambiguous (DST fold) local time resolves to .earliest(), the same
+    // as the upstream constructor. A NONEXISTENT one (spring-forward gap)
+    // rolls forward past the gap — JS `new Date(y,m,d,2,30)` lands on 03:30 —
+    // rather than collapsing to epoch 0, which would make every weekly slot
+    // on that day look "missed ~55 years ago".
+    for shift_min in [0i64, 60, 30, 120, 180] {
+        let shifted = naive + chrono::Duration::minutes(shift_min);
+        if let Some(dt) = shifted.and_local_timezone(chrono::Local).earliest() {
+            return dt.timestamp_millis().max(0) as u64;
+        }
     }
+    // Unreachable for real zones; keep it non-zero and monotonic anyway.
+    naive.and_utc().timestamp_millis().max(0) as u64
+}
+
+/// Weekday (0 = Sunday) of the CALENDAR date `offset` days from `from` — the
+/// slot's own date, not the date its rolled-forward instant lands on.
+fn slot_weekday(from: chrono::DateTime<chrono::Local>, offset: i64) -> usize {
+    use chrono::Datelike;
+    (from.date_naive() + chrono::Duration::days(offset))
+        .weekday()
+        .num_days_from_sunday() as usize
 }
 
 /// nextWeeklyFireMs â€” first matching slot STRICTLY after now.
@@ -180,14 +196,7 @@ fn next_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     );
     for offset in 0..=7i64 {
         let slot = slot_at_ms(from, offset, w.minute);
-        let wd = (chrono::Datelike::weekday(
-            &(chrono::DateTime::<chrono::Utc>::from_timestamp_millis(slot as i64)?)
-                .with_timezone(&chrono::Local)
-                .naive_local()
-                .date(),
-        ))
-        .num_days_from_sunday() as usize;
-        if !w.days[wd] {
+        if !w.days[slot_weekday(from, offset)] {
             continue;
         }
         if slot > now_ms {
@@ -202,16 +211,12 @@ fn previous_weekly_fire_ms(w: Weekly, now_ms: u64) -> Option<u64> {
     let from = chrono::DateTime::<chrono::Local>::from(
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms as i64)?,
     );
-    for offset in (0..=7i64).rev().map(|o| -o) {
+    // Most recent first: today (0), yesterday (-1), … -7. (A reversed range
+    // here walks oldest-first and returns a week-old slot, so weekly
+    // missions never fired.)
+    for offset in (0..=7i64).map(|o| -o) {
         let slot = slot_at_ms(from, offset, w.minute);
-        let wd = (chrono::Datelike::weekday(
-            &(chrono::DateTime::<chrono::Utc>::from_timestamp_millis(slot as i64)?)
-                .with_timezone(&chrono::Local)
-                .naive_local()
-                .date(),
-        ))
-        .num_days_from_sunday() as usize;
-        if !w.days[wd] {
+        if !w.days[slot_weekday(from, offset)] {
             continue;
         }
         if slot <= now_ms {
@@ -449,6 +454,70 @@ mod tests {
         // due_ms form is what the loop actually consults.)
         let off = ScheduledMission { enabled: false, ..m };
         assert_eq!(mission_due_ms(&off, 999_999, &no_cadence), None);
+    }
+
+    /// Local wall-clock instant → epoch ms (2024-01-01 is a Monday; early
+    /// January is DST-free in every zone this test could plausibly run in).
+    fn local_ms(day: u32, h: u32, m: u32, s: u32) -> u64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(2024, 1, day, h, m, s)
+            .earliest()
+            .unwrap()
+            .timestamp_millis() as u64
+    }
+
+    fn weekly(days: &[u32], minute: u32) -> ScheduledMission {
+        ScheduledMission {
+            id: "w".into(),
+            to: "god".into(),
+            enabled: true,
+            weekly: Some(serde_json::json!({ "days": days, "minute": minute })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn weekly_monday_slot_fires_just_after_and_last_fired_suppresses() {
+        let m = weekly(&[1], 9 * 60);
+        // Mon 09:00:05 — the 09:00 slot is 5s old and unfired → due.
+        let now = local_ms(1, 9, 0, 5);
+        assert!(is_mission_due(&m, now));
+        let no_cadence = std::collections::HashMap::new();
+        assert_eq!(mission_due_ms(&m, now, &no_cadence), Some(0));
+        // Already fired at the slot → not due; next slot is a week out.
+        let fired = ScheduledMission { last_fired_at: local_ms(1, 9, 0, 1), ..m.clone() };
+        assert!(!is_mission_due(&fired, now));
+        let wait = mission_due_ms(&fired, now, &no_cadence).unwrap();
+        assert!(wait > 6 * 24 * 3_600_000 && wait <= 7 * 24 * 3_600_000, "{wait}");
+        // Tuesday noon: the Monday slot is > 6h old → no catch-up, not due.
+        assert!(!is_mission_due(&m, local_ms(2, 12, 0, 0)));
+    }
+
+    #[test]
+    fn weekly_previous_slot_is_most_recent_not_oldest() {
+        let w = normalize_weekly(&serde_json::json!({ "days": [1, 4], "minute": 540 })).unwrap();
+        // Fri Jan 5 12:00 → most recent matching slot is Thu Jan 4 09:00.
+        assert_eq!(
+            previous_weekly_fire_ms(w, local_ms(5, 12, 0, 0)),
+            Some(local_ms(4, 9, 0, 0))
+        );
+        // Thu Jan 4 10:00 → today's 09:00 (offset 0), not Monday's.
+        assert_eq!(
+            previous_weekly_fire_ms(w, local_ms(4, 10, 0, 0)),
+            Some(local_ms(4, 9, 0, 0))
+        );
+    }
+
+    #[test]
+    fn slot_never_collapses_to_epoch() {
+        use chrono::TimeZone;
+        // Whatever zone the host uses, every minute of a day resolves to a
+        // real instant (the DST-gap path used to return 0).
+        let from = chrono::Local.with_ymd_and_hms(2024, 3, 10, 12, 0, 0).earliest().unwrap();
+        for minute in (0..1440).step_by(15) {
+            assert!(slot_at_ms(from, 0, minute) > 1_000_000_000_000);
+        }
     }
 }
 

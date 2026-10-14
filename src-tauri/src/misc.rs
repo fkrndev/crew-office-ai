@@ -76,6 +76,19 @@ pub fn openai_base_url_env(
         .map(|u| ("OPENAI_BASE_URL".to_string(), u.clone()))
 }
 
+/// `parent[key]` as a mutable object — a missing, null, array or scalar value
+/// is replaced by `{}` first, so callers can chain without unwrap panics.
+fn obj_child<'a>(
+    parent: &'a mut serde_json::Map<String, Value>,
+    key: &str,
+) -> &'a mut serde_json::Map<String, Value> {
+    let v = parent.entry(key.to_string()).or_insert_with(|| json!({}));
+    if !v.is_object() {
+        *v = json!({});
+    }
+    v.as_object_mut().expect("just coerced to an object")
+}
+
 /// OpenClaw's `tui` subcommand has NO `--model` flag — a model picked in the
 /// UI would silently corrupt argv and kill the spawn instantly (the same bug
 /// class as hermes' removed `--cli`). The model instead rides a per-agent
@@ -105,50 +118,28 @@ pub fn openclaw_seed_config(existing: &Value, base_url: Option<&str>, model: Opt
             "OPENAI_API_KEY"
         };
         let model_id = model.and_then(|m| m.rsplit('/').next()).map(str::to_string);
-        // Guard: a hand-edited openclaw.json could carry a non-object `models`
-        // — overwrite rather than panic the spawn path.
-        let models_obj = {
-            let root = cfg.as_object_mut().unwrap();
-            if !root.get("models").map(|v| v.is_object()).unwrap_or(true) {
-                root.insert("models".into(), json!({}));
-            }
-            root.entry("models").or_insert_with(|| json!({}))
-        };
-        models_obj
-            .as_object_mut()
-            .unwrap()
-            .entry("providers")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "office-compat".into(),
-                json!({
-                    "baseUrl": url,
-                    "apiKey": format!("${{{key_env}}}"),
-                    "api": "openai-completions",
-                    "models": model_id
-                        .iter()
-                        .map(|id| json!({ "id": id, "name": id }))
-                        .collect::<Vec<_>>(),
-                }),
-            );
+        // Guard: a hand-edited openclaw.json could carry a null/array/scalar
+        // at any level — coerce to an object rather than panic the spawn path.
+        let root = cfg.as_object_mut().expect("cfg is an object");
+        obj_child(obj_child(root, "models"), "providers").insert(
+            "office-compat".into(),
+            json!({
+                "baseUrl": url,
+                "apiKey": format!("${{{key_env}}}"),
+                "api": "openai-completions",
+                "models": model_id
+                    .iter()
+                    .map(|id| json!({ "id": id, "name": id }))
+                    .collect::<Vec<_>>(),
+            }),
+        );
         if let Some(id) = model_id {
             model_ref = Some(format!("office-compat/{id}"));
         }
     }
     if let Some(m) = model_ref {
-        let defaults = cfg
-            .as_object_mut()
-            .unwrap()
-            .entry("agents")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .unwrap()
-            .entry("defaults")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .unwrap();
+        let root = cfg.as_object_mut().expect("cfg is an object");
+        let defaults = obj_child(obj_child(root, "agents"), "defaults");
         // `model` accepts a bare "provider/model" STRING in openclaw.json —
         // upgrading a legacy string pin to {primary:…} keeps it valid.
         match defaults.get_mut("model") {
@@ -537,12 +528,41 @@ pub fn tokenize_command(command: &str) -> Vec<String> {
             chars.next();
             continue;
         }
-        if c == '"' || c == '\'' {
-            let quote = c;
+        if c == '"' {
+            chars.next();
+            // Inside double quotes the Windows CRT rules apply (what
+            // `quote_command_token` emits): 2n backslashes + `"` -> n
+            // backslashes and the quote CLOSES; 2n+1 -> n backslashes and a
+            // literal `"`. Backslashes not followed by `"` stay literal, so
+            // "C:\Program Files\x" is unchanged.
+            let mut token = String::new();
+            let mut bs = 0usize;
+            for ch in chars.by_ref() {
+                match ch {
+                    '\\' => bs += 1,
+                    '"' => {
+                        token.extend(std::iter::repeat('\\').take(bs / 2));
+                        if bs % 2 == 0 {
+                            bs = 0;
+                            break;
+                        }
+                        token.push('"');
+                        bs = 0;
+                    }
+                    other => {
+                        token.extend(std::iter::repeat('\\').take(bs));
+                        bs = 0;
+                        token.push(other);
+                    }
+                }
+            }
+            token.extend(std::iter::repeat('\\').take(bs));
+            out.push(token);
+        } else if c == '\'' {
             chars.next();
             let mut token = String::new();
             while let Some(&ch) = chars.peek() {
-                if ch == quote {
+                if ch == '\'' {
                     chars.next();
                     break;
                 }
@@ -562,6 +582,37 @@ pub fn tokenize_command(command: &str) -> Vec<String> {
             out.push(token);
         }
     }
+    out
+}
+
+/// Inverse of [`tokenize_command`] for ONE argv token: bare when plain,
+/// otherwise double-quoted with CRT backslash/quote escaping, so
+/// `tokenize_command(&quote_command_token(t)) == [t]` for every `t` (embedded
+/// quotes, trailing backslashes, empties, JSON blobs).
+pub fn quote_command_token(t: &str) -> String {
+    if !t.is_empty() && !t.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\'')) {
+        return t.to_string();
+    }
+    let mut out = String::with_capacity(t.len() + 2);
+    out.push('"');
+    let mut bs = 0usize;
+    for c in t.chars() {
+        match c {
+            '\\' => bs += 1,
+            '"' => {
+                out.extend(std::iter::repeat('\\').take(bs * 2 + 1));
+                out.push('"');
+                bs = 0;
+            }
+            other => {
+                out.extend(std::iter::repeat('\\').take(bs));
+                bs = 0;
+                out.push(other);
+            }
+        }
+    }
+    out.extend(std::iter::repeat('\\').take(bs * 2));
+    out.push('"');
     out
 }
 
@@ -785,16 +836,27 @@ pub fn secret_delete_persist(key: &str, store_dir: &std::path::Path) {
     let _ = std::fs::remove_file(dpapi_secret_path(store_dir, key));
 }
 
-/// Last-resort OS opener — `cmd /c start` on Windows, `open` on macOS,
-/// `xdg-open` elsewhere. Used when the shell plugin's `open` fails, and as the
-/// directory opener for `fs_reveal_path`.
+/// Last-resort OS opener — `explorer.exe` / `rundll32` on Windows (never
+/// `cmd /c start`: cmd.exe re-parses `&`, `^`, `%` in a URL or folder name as
+/// commands), `open` on macOS, `xdg-open` elsewhere. Used when the opener
+/// plugin fails, and as the directory opener for `fs_reveal_path`.
 pub fn os_open(target: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", target])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        if target.chars().any(|c| c.is_control()) {
+            return Err("invalid target".into());
+        }
+        let lower = target.to_ascii_lowercase();
+        let mut cmd = if lower.starts_with("http://") || lower.starts_with("https://") {
+            let mut c = std::process::Command::new("rundll32.exe");
+            c.args(["url.dll,FileProtocolHandler", target]);
+            c
+        } else {
+            let mut c = std::process::Command::new("explorer.exe");
+            c.arg(target);
+            c
+        };
+        cmd.spawn().map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -839,6 +901,10 @@ pub fn mime_for(p: &Path) -> &'static str {
         "svg" => "image/svg+xml",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "tif" | "tiff" => "image/tiff",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
 }
@@ -995,28 +1061,50 @@ pub fn load_hero(cache_path: &Path, force: bool) -> Value {
 
 // ─── public tunnel ──────────────────────────────────────────────────────────
 
+/// Exact tunnelmole release the tunnel runs (`npm view tunnelmole version`);
+/// pinned so `npx --yes` never executes whatever is newest on the registry.
+/// Bump deliberately after reviewing the new release.
+const TUNNELMOLE_SPEC: &str = "tunnelmole@2.4.0";
+
 /// openTunnel (webhook.ts/slack.ts) — upstream imports `tunnelmole`; the port
-/// shells the equivalent CLI (`npx --yes tunnelmole <port>`) and scrapes the
+/// shells the equivalent CLI (`npx --yes tunnelmole@<pinned> <port>`) and scrapes the
 /// minted https URL from its stdout. Best-effort: a missing npx or a mint
 /// timeout surfaces as Err — the local server stays up regardless. The
 /// returned Child keeps the tunnel alive; kill it to drop the tunnel
 /// (upstream's teardown is equally best-effort).
 pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> {
     let exe = if cfg!(windows) { "npx.cmd" } else { "npx" };
-    let mut child = std::process::Command::new(exe)
-        .args(["--yes", "tunnelmole", &port.to_string()])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["--yes", TUNNELMOLE_SPEC, &port.to_string()])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        // No console flash for the npx.cmd → node chain.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("tunnelmole spawn failed ({exe}): {e}"))?;
     let (tx, rx) = std::sync::mpsc::channel();
+    // Both pipes are read to EOF for the tunnel's whole life: a full pipe
+    // buffer (or a closed read end) would stall/kill the long-running node
+    // child. Lines are forwarded only until the URL has been scraped.
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    return;
-                }
+                let _ = tx.send(line); // receiver gone after the URL → just drain
+            }
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                log::debug!("[tunnel] {line}");
             }
         });
     }
@@ -1046,10 +1134,28 @@ pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> 
         }
     }
     if url.is_empty() {
-        let _ = child.kill();
+        kill_process_tree(&mut child);
         return Err("tunnelmole returned no URL within 45s".into());
     }
     Ok((url, child))
+}
+
+/// Kill a child AND its descendants. On Windows `npx.cmd` is a cmd shim, so
+/// `Child::kill` only ends the shim and leaves the node grandchild (the actual
+/// tunnel) running — `taskkill /T` sweeps the tree. Elsewhere a plain kill.
+pub fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // ─── slack reply helper script ──────────────────────────────────────────────
@@ -1063,14 +1169,12 @@ pub fn start_tunnel(port: u16) -> Result<(String, std::process::Child), String> 
 pub fn write_slack_reply_script(home: &Path) -> Result<PathBuf, String> {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let cfg_path = home
-        .join("slack-reply.json")
-        .display()
-        .to_string()
-        .replace('\\', "\\\\");
+    let cfg_file = home.join("slack-reply.json").display().to_string();
     #[cfg(windows)]
     {
         let path = dir.join("slack-reply.ps1");
+        // Single-quoted PowerShell literal: only `'` is special (doubled).
+        let cfg_path = cfg_file.replace('\'', "''");
         let body = format!(
             r#"param(
   [Parameter(Mandatory = $true)][string]$Channel,
@@ -1080,20 +1184,27 @@ pub fn write_slack_reply_script(home: &Path) -> Result<PathBuf, String> {
 # Post a reply into a Slack thread via the Agent Office loopback reply rail
 # (the app applies the bot token — it never lives in this process's env).
 $cfg = '{cfg_path}'
-if (-not (Test-Path $cfg)) {{ Write-Error 'slack-reply.json missing — is the Slack rail running?'; exit 1 }}
-$c = Get-Content $cfg -Raw | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath $cfg)) {{ Write-Error 'slack-reply.json missing — is the Slack rail running?'; exit 1 }}
+$c = Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json
 $body = @{{ channel = $Channel; thread_ts = $Thread; text = $Text }} | ConvertTo-Json -Compress
 Invoke-RestMethod -Method Post -Uri ("http://127.0.0.1:" + $c.port + "/reply") `
   -Headers @{{ 'x-md-reply-token' = $c.token }} `
-  -ContentType 'application/json; charset=utf-8' -Body $body | ConvertTo-Json -Compress
+  -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Compress
 "#
         );
-        std::fs::write(&path, body).map_err(|e| e.to_string())?;
+        // UTF-8 BOM: Windows PowerShell 5.1 reads BOM-less scripts as ANSI,
+        // which mangles a non-ASCII profile path / the em dash above.
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(body.as_bytes());
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(path)
     }
     #[cfg(not(windows))]
     {
         let path = dir.join("slack-reply.sh");
+        // POSIX single-quoted literal: `'` becomes `'\''`.
+        let cfg_path = format!("'{}'", cfg_file.replace('\'', "'\\''"));
         let body = format!(
             r#"#!/bin/sh
 # slack-reply.sh --channel <id> --thread <ts> --text <msg>
@@ -1109,14 +1220,23 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-CFG="{cfg_path}"
+CFG={cfg_path}
 PORT=$(sed -n 's/.*"port":\([0-9]*\).*/\1/p' "$CFG" | head -1)
 TOKEN=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$CFG" | head -1)
 [ -n "$PORT" ] && [ -n "$TOKEN" ] || {{ echo "slack-reply.json missing/invalid" >&2; exit 1; }}
-curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
-  -H "x-md-reply-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data "{{\"channel\":\"$CHANNEL\",\"thread_ts\":\"$THREAD\",\"text\":\"$TEXT\"}}"
+# JSON-string escape: drop control chars (keeping tab/newline), tabs -> space,
+# escape backslash + quote, join lines with a literal \n.
+json_escape() {{
+  printf '%s' "$1" | tr -d '\000-\010\013-\037' | tr '\t' ' ' \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+    | awk 'BEGIN{{ORS=""}} NR>1{{printf "\\n"}} {{print}}'
+}}
+printf '{{"channel":"%s","thread_ts":"%s","text":"%s"}}' \
+  "$(json_escape "$CHANNEL")" "$(json_escape "$THREAD")" "$(json_escape "$TEXT")" \
+  | curl -sS -X POST "http://127.0.0.1:$PORT/reply" \
+      -H "x-md-reply-token: $TOKEN" \
+      -H 'Content-Type: application/json' \
+      --data-binary @-
 "#
         );
         std::fs::write(&path, body).map_err(|e| e.to_string())?;
@@ -1426,6 +1546,73 @@ mod tests {
         assert_eq!(tokenize_command("a 'b c' d"), ["a", "b c", "d"]);
         assert_eq!(tokenize_command(""), Vec::<String>::new());
         assert_eq!(tokenize_command("   "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn quote_and_tokenize_round_trip_losslessly() {
+        // Property-style: every token (and every pair/triple of them) survives
+        // quote -> join -> tokenize unchanged.
+        let atoms = [
+            "", "a", "a b", "  ", "\"", "\\", "\\\\", "\\\"", "a\"b", "'", "it's", "a'b c'd",
+            "{\"a\":1}", "{\"k\": \"v w\"}", "C:\\Program Files\\x\\", "C:\\dir\\", "x\\\\\"y",
+            "tab\tsep", "new\nline", "--flag=\"q\"", "\"\"", "'\"'", "é 文 \"",
+        ];
+        for a in atoms {
+            assert_eq!(tokenize_command(&quote_command_token(a)), [a], "single {a:?}");
+            for b in atoms {
+                let line = format!("{} {}", quote_command_token(a), quote_command_token(b));
+                assert_eq!(tokenize_command(&line), [a, b], "pair {a:?} {b:?}");
+            }
+        }
+        // The motivating case: --settings with an inline JSON blob.
+        let args = vec!["--settings".to_string(), r#"{"a":1}"#.to_string()];
+        let line = format!("claude {}", args.iter().map(|a| quote_command_token(a)).collect::<Vec<_>>().join(" "));
+        assert_eq!(tokenize_command(&line), ["claude", "--settings", r#"{"a":1}"#]);
+        // Windows paths in quotes keep their backslashes.
+        assert_eq!(
+            tokenize_command(r#"x "C:\Program Files\a\b.json""#),
+            ["x", r"C:\Program Files\a\b.json"]
+        );
+    }
+
+    #[test]
+    fn slack_reply_script_quotes_the_config_path() {
+        let home = std::env::temp_dir().join(format!("o'a-slack {}", uuid::Uuid::new_v4().simple()));
+        let path = write_slack_reply_script(&home).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        #[cfg(windows)]
+        {
+            assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF], "PS 5.1 needs a UTF-8 BOM");
+            // `'` doubled inside the single-quoted literal, backslashes untouched.
+            let cfg = home.join("slack-reply.json").display().to_string().replace('\'', "''");
+            assert!(text.contains(&format!("$cfg = '{cfg}'")), "{text}");
+            assert!(!cfg.contains("\\\\"));
+        }
+        #[cfg(not(windows))]
+        {
+            let cfg = home.join("slack-reply.json").display().to_string().replace('\'', "'\\''");
+            assert!(text.contains(&format!("CFG='{cfg}'")), "{text}");
+            assert!(text.contains("json_escape"));
+            assert!(!text.contains("--data \"{"), "must not interpolate JSON by hand");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn openclaw_seed_survives_non_object_sections() {
+        for junk in [json!(null), json!([1, 2]), json!("s"), json!(7)] {
+            let existing = json!({ "models": junk, "agents": junk });
+            let out = openclaw_seed_config(&existing, Some("https://api.deepseek.com"), Some("deepseek/chat"));
+            assert_eq!(out["agents"]["defaults"]["model"]["primary"], "office-compat/chat");
+            assert_eq!(
+                out["models"]["providers"]["office-compat"]["baseUrl"],
+                "https://api.deepseek.com"
+            );
+            let existing = json!({ "agents": { "defaults": junk }, "models": { "providers": junk } });
+            let out = openclaw_seed_config(&existing, Some("http://x"), Some("m"));
+            assert_eq!(out["agents"]["defaults"]["model"]["primary"], "office-compat/m");
+        }
     }
 
     #[test]

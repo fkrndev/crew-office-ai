@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatDateTime } from '@shared/dateFormat';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { useRtl } from '@/i18n/useDirection';
@@ -48,7 +49,7 @@ function groupThreads(msgs: HiveMessage[], noSubject: string): Thread[] {
 }
 
 export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const rtl = useRtl();
   const [messages, setMessages] = useState<HiveMessage[]>([]);
   const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({});
@@ -73,10 +74,18 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
   const sendReply = async (last: HiveMessage) => {
     const body = (drafts[last.conversation] ?? '').trim();
     if (!body) return;
-    await window.cth.hiveSend({
-      to: last.from, act: 'inform', conversation: last.conversation,
-      in_reply_to: last.id, subject: 'Re: ' + last.subject, body
-    }, 'human');
+    try {
+      await window.cth.hiveSend({
+        to: last.from, act: 'inform', conversation: last.conversation,
+        in_reply_to: last.id, subject: 'Re: ' + last.subject, body
+      }, 'human');
+    } catch (e) {
+      // Keep the draft and say why — the reply did not go out.
+      window.dispatchEvent(new CustomEvent('cth:notice', {
+        detail: { text: t('notice.sendFailed', { error: e instanceof Error ? e.message : String(e) }) }
+      }));
+      return;
+    }
     setDrafts(d => ({ ...d, [last.conversation]: '' }));
   };
 
@@ -129,7 +138,7 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
                           color: 'var(--cth-ink-900)'
                         }}>{m.act}</span>
                         <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--cth-ink-500)' }}>
-                          {new Date(m.created_at).toLocaleString()}
+                          {formatDateTime(m.created_at, i18n.language)}
                         </span>
                       </div>
                       <div dir={rtl ? 'auto' : undefined} style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 13, lineHeight: '18px', color: 'var(--cth-ink-700)', marginTop: 2, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>

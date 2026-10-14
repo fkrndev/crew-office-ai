@@ -13,12 +13,14 @@
  * is wiring and pixels.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { describeUpdate, manualDownloadUrl, manualInstallSteps, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 import { PixelButton } from './PixelButton';
 
 declare const __APP_VERSION__: string;
 
 export function UpdateBadge() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [hover, setHover] = useState(false);
@@ -212,10 +214,10 @@ export function UpdateBadge() {
             width: 18, height: 18, borderRadius: 999,
             background: 'var(--cth-mint-light, #d0f0e0)', color: 'var(--cth-ink-900)', fontSize: 12
           }}>&#10003;</span>
-          You are on the latest version.
+          {t('updateBadge.latestTitle')}
         </div>
         <div style={{ marginTop: 4, color: 'var(--cth-ink-700)' }}>
-          v{__APP_VERSION__} is the newest release. Checked just now.
+          {t('updateBadge.latestBody', { version: __APP_VERSION__ })}
         </div>
       </div>
     )}

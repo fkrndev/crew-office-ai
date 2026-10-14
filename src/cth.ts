@@ -2,6 +2,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { stashRosterStorage } from '@/store/rosterSource';
+
+/** Where "open the release page" lands when the caller has no specific URL —
+ *  must stay inside the repo update_open_release allows. */
+const RELEASES_URL = 'https://github.com/fkrndev/crew-office-ai/releases/latest';
 
 const warned = new Set<string>();
 const missing = (name: string) => (..._args: unknown[]) => {
@@ -18,38 +23,87 @@ const on = <T>(channel: string, cb: (e: T) => void): (() => void) => {
   return () => { void p.then((u) => u()); };
 };
 
-// Sync IPC — upstream's sendSync surface (clipboard + roster reads) rides a
-// synchronous XHR against the loopback server (sync_api.rs), blocking the
-// renderer thread exactly like Electron's sendSync. The caches remain as the
-// pre-bind / failure fallback.
+// Sync reads — upstream's sendSync surface (clipboard text, roster, harness
+// home) is served from async-warmed caches. The loopback sync-XHR server is gone
+// (it answered every origin, the clipboard included), so a sync read can be one
+// poll stale; warmCth() primes the caches before the app modules evaluate, and
+// the pollers only run while the window is actually in use.
 let clipboardCache = '';
 let rosterCache: unknown = null;
-let syncPort = 0;
-const clipboardPoll = () => {
-  void invoke<string | null>('app_clipboard_read').then((t) => {
-    if (typeof t === 'string') clipboardCache = t;
-  });
-};
-const rosterPoll = () => {
-  void invoke<unknown>('roster_read').then((r) => {
-    if (r && typeof r === 'object') rosterCache = r;
-  });
-};
+let homeCache: string | null = null;
+const clipboardPoll = (): Promise<void> =>
+  invoke<string | null>('app_clipboard_read')
+    .then((t) => { if (typeof t === 'string') clipboardCache = t; })
+    .catch(() => { /* keep the previous cache */ });
+const rosterPoll = (): Promise<void> =>
+  invoke<unknown>('roster_read')
+    .then((r) => { if (r && typeof r === 'object') rosterCache = r; })
+    .catch(() => { /* keep the previous cache */ });
+const homePoll = (): Promise<void> =>
+  invoke<string | null>('config_home_sync')
+    .then((h) => { if (typeof h === 'string' && h) homeCache = h; })
+    .catch(() => { /* keep the previous cache */ });
 
-/** sendSync — synchronous XHR against the loopback sync server. WebView2
- *  honours sync XHR (deprecated but functional); a null return means the
- *  server isn't bound yet — callers fall back to the warm caches. */
-const syncGet = (path: string): string | null => {
-  if (!syncPort) return null;
-  try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', `http://127.0.0.1:${syncPort}${path}`, false);
-    xhr.send();
-    if (xhr.status === 200) return xhr.responseText;
-  } catch {
-    /* sync XHR rejected — cache fallback */
+/** Window is on screen AND focused — the only time a fresh clipboard/roster
+ *  read can matter, so background polling skips every other moment. */
+const windowActive = (): boolean =>
+  document.visibilityState === 'visible' &&
+  (typeof document.hasFocus !== 'function' || document.hasFocus());
+
+/** Prime the sync caches (bounded wait). Call BEFORE importing modules that read
+ *  window.cth at evaluation time (store.ts roster/home, config.ts). */
+export function warmCth(timeoutMs = 1500): Promise<void> {
+  const primed = Promise.all([rosterPoll(), clipboardPoll(), homePoll()]).then(() => undefined);
+  return Promise.race([primed, new Promise<void>((r) => window.setTimeout(r, timeoutMs))]);
+}
+
+const errMsg = (e: unknown): string =>
+  e instanceof Error ? e.message : typeof e === 'string' ? e : (() => {
+    try { return JSON.stringify(e); } catch { return String(e); }
+  })();
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) &&
+  !(v instanceof ArrayBuffer) && !ArrayBuffer.isView(v);
+/** Upstream call sites pass ONE options object; newer ones pass positionally.
+ *  Accept both (the hiveMessages convention). */
+const packOpts = (vals: unknown[], names: string[]): Record<string, unknown> =>
+  vals.length === 1 && isPlainObject(vals[0]) ? vals[0] : pack(vals, names);
+const toArray = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? [v] : [];
+/** Upstream's `{ok:true,…}` / `{ok:false,error}` envelope around a command that
+ *  resolves a bare value and signals failure by rejecting. */
+const envelope = async <T>(
+  p: Promise<T>,
+  map: (v: T) => Record<string, unknown> = () => ({})
+): Promise<Record<string, unknown>> => {
+  try { return { ok: true, ...map(await p) }; } catch (e) { return { ok: false, error: errMsg(e) }; }
+};
+/** git read commands reject with the failure text, but the git panes test
+ *  `'error' in result` — hand them that shape instead of a rejection. */
+const gitSafe = <T>(p: Promise<T>): Promise<T | { error: string }> =>
+  p.catch((e) => ({ error: errMsg(e) }));
+const toBase64 = (data: ArrayBuffer | ArrayBufferView): string => {
+  const bytes = data instanceof ArrayBuffer
+    ? new Uint8Array(data)
+    : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
-  return null;
+  return btoa(bin);
+};
+const fromBase64 = (b64: string): Uint8Array => {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+};
+/** root + rel using the root's own separator; refuses `..` escapes. */
+const joinPath = (root: string, rel: string): string => {
+  const parts = rel.split(/[\\/]+/).filter(Boolean);
+  if (parts.some((p) => p === '..')) throw new Error('path escapes the workspace');
+  const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+  return [root.replace(/[\\/]+$/, ''), ...parts].join(sep);
 };
 
 // Drag-drop file paths — with dragDropEnabled the OS drop never reaches the
@@ -57,50 +111,70 @@ const syncGet = (path: string): string | null => {
 // synthetic DOM `drop` carrying File objects whose Electron-style `.path` is
 // filled in, so the copied renderer's drag handlers work unmodified.
 let dropPaths: string[] = [];
+let dropExpiry: number | undefined;
+let backgroundStarted = false;
 
 export function installCth(): void {
-  // Seed + refresh: focus refreshes are the cheap way to stay fresh without
-  // an aggressive interval (a paste within ~2s of copy still lands).
-  clipboardPoll();
-  rosterPoll();
-  void invoke<number>('sync_port').then((p) => {
-    if (typeof p === 'number' && p > 0) syncPort = p;
-  });
-  window.setInterval(clipboardPoll, 500);
-  window.setInterval(rosterPoll, 3000);
-  window.addEventListener('focus', clipboardPoll);
+  // One-time background wiring (installCth runs again in tests). The caches are
+  // seeded here, then refresh on focus/copy and a slow visible-only interval.
+  if (!backgroundStarted) {
+    backgroundStarted = true;
+    void clipboardPoll();
+    void rosterPoll();
+    void homePoll();
+    window.setInterval(() => { if (windowActive()) void clipboardPoll(); }, 2000);
+    window.setInterval(() => { if (windowActive()) void rosterPoll(); }, 15000);
+    const refresh = () => { void clipboardPoll(); void rosterPoll(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', () => { if (windowActive()) refresh(); });
+    // A copy/cut inside the app changes the clipboard right now — don't wait a tick.
+    const soon = () => { window.setTimeout(() => void clipboardPoll(), 50); };
+    document.addEventListener('copy', soon);
+    document.addEventListener('cut', soon);
 
-  // Tauri's OS-level file drop carries the absolute paths WebView2 won't.
-  // Re-emit it as a DOM `drop` on the element under the cursor — the copied
-  // upstream drop handlers then read File.path exactly like Electron's.
-  void getCurrentWebview()
-    .onDragDropEvent((e) => {
-      const p = e.payload;
-      if (p.type !== 'drop' || p.paths.length === 0) return;
-      dropPaths = [...p.paths];
-      try {
-        const dt = new DataTransfer();
-        for (const path of p.paths) {
-          const f = new File([], path.split(/[\\/]/).pop() ?? 'file');
-          (f as File & { path: string }).path = path;
-          dt.items.add(f);
+    // Tauri's OS-level file drop carries the absolute paths WebView2 won't.
+    // Re-emit it as a DOM `drop` on the element under the cursor — the copied
+    // upstream drop handlers then read File.path exactly like Electron's.
+    void getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type !== 'drop' || p.paths.length === 0) return;
+        dropPaths = [...p.paths];
+        window.clearTimeout(dropExpiry);
+        let synthesized = false;
+        try {
+          const dt = new DataTransfer();
+          for (const path of p.paths) {
+            const f = new File([], path.split(/[\\/]/).pop() ?? 'file');
+            (f as File & { path: string }).path = path;
+            dt.items.add(f);
+          }
+          // The event position is PHYSICAL pixels; elementFromPoint/clientX are CSS.
+          const dpr = window.devicePixelRatio || 1;
+          const x = p.position.x / dpr;
+          const y = p.position.y / dpr;
+          const el = document.elementFromPoint(x, y) ?? document.body;
+          el.dispatchEvent(
+            new DragEvent('drop', {
+              dataTransfer: dt,
+              bubbles: true,
+              cancelable: true,
+              clientX: x,
+              clientY: y,
+            })
+          );
+          synthesized = true;
+        } catch {
+          /* synthetic drop unsupported — pathForFile still has the queue */
         }
-        const el =
-          document.elementFromPoint(p.position.x, p.position.y) ?? document.body;
-        el.dispatchEvent(
-          new DragEvent('drop', {
-            dataTransfer: dt,
-            bubbles: true,
-            cancelable: true,
-            clientX: p.position.x,
-            clientY: p.position.y,
-          })
-        );
-      } catch {
-        /* synthetic drop unsupported — pathForFile still has the queue */
-      }
-    })
-    .catch(() => { /* drag events unsupported — pathForFile degrades */ });
+        // The synthetic Files already carry .path; a leftover queue would be
+        // handed to the NEXT unrelated pasted file. On the fallback path keep it
+        // briefly so pathForFile can still be served.
+        if (synthesized) dropPaths = [];
+        else dropExpiry = window.setTimeout(() => { dropPaths = []; }, 5000);
+      })
+      .catch(() => { /* drag events unsupported — pathForFile degrades */ });
+  }
 
   const ua = navigator.userAgent;
   const platform = ua.includes('Windows') ? 'win32' : ua.includes('Mac') ? 'darwin' : 'linux';
@@ -116,18 +190,10 @@ export function installCth(): void {
     // on the non-standard `.path` property already.
     pathForFile: (file: File): string =>
       (file as File & { path?: string }).path ?? dropPaths.shift() ?? '',
-    // Sync clipboard: cached (see clipboardPoll). Exact upstream signature.
-    readClipboardSync: (): string => {
-      const raw = syncGet('/sync/clipboard');
-      if (raw != null) {
-        try {
-          const t = (JSON.parse(raw) as { text?: string }).text;
-          if (typeof t === 'string') return (clipboardCache = t);
-        } catch { /* fall through to cache */ }
-      }
-      return clipboardCache;
-    },
-    trackMessageSent: (...args: unknown[]) => invoke('analytics_message_sent', pack(args, ["event","props","Value>>"])),
+    // Sync reads are cached (see clipboardPoll/rosterPoll/homePoll). Exact upstream signatures.
+    readClipboardSync: (): string => clipboardCache,
+    harnessHomeSync: (): string | null => homeCache,
+    trackMessageSent: (...args: unknown[]) => invoke('analytics_message_sent', pack(args, ["event","props"])),
     spawnPty: (...args: unknown[]) => invoke('spawn_agent', pack(args, ["args"])),
     writePty: (...args: unknown[]) => invoke('pty_write', pack(args, ["id","data"])),
     resizePty: (...args: unknown[]) => invoke('pty_resize', pack(args, ["id","cols","rows"])),
@@ -136,7 +202,8 @@ export function installCth(): void {
     listPtys: (...args: unknown[]) => invoke('pty_list', pack(args, [])),
     resolveSessionCwd: (...args: unknown[]) => invoke('session_resolve_cwd', pack(args, ["agentId"])),
     chooseFolder: (...args: unknown[]) => invoke('dialog_choose_folder', pack(args, [])),
-    openTerminalAt: (...args: unknown[]) => invoke('terminal_open_at_folder', pack(args, ["path"])),
+    // Rust returns a bare bool (rejects on failure); callers read `.ok`.
+    openTerminalAt: (...args: unknown[]) => envelope(invoke('terminal_open_at_folder', pack(args, ["path"]))),
     copyToClipboard: (...args: unknown[]) => invoke('app_clipboard_write', pack(args, ["text"])),
     readClipboard: (...args: unknown[]) => invoke('app_clipboard_read', pack(args, [])),
     getConfig: (...args: unknown[]) => invoke('get_config', pack(args, [])),
@@ -144,27 +211,94 @@ export function installCth(): void {
     setAgentTokenCap: (...args: unknown[]) => invoke('config_set_agent_token_cap', pack(args, ["agentId","cap"])),
     setAgentCostCap: (...args: unknown[]) => invoke('config_set_agent_cost_cap', pack(args, ["agentId","cap"])),
     ensureHarnessHome: (...args: unknown[]) => invoke('config_ensure_home', pack(args, ["path"])),
-    changeHome: (...args: unknown[]) => invoke('config_change_home', pack(args, ["newHome","mode"])),
-    listDir: (...args: unknown[]) => invoke('fs_list', pack(args, ["root","rel"])),
-    readFile: (...args: unknown[]) => invoke('fs_read', pack(args, ["root","rel"])),
-    readBinary: (...args: unknown[]) => invoke('fs_read_binary', pack(args, ["path"])),
-    writeFile: (...args: unknown[]) => invoke('fs_write_file', pack(args, ["root","rel","content"])),
+    // A 'fresh' switch opens an empty workspace; the old hive's roster still sits
+    // in this origin's localStorage and would be restored into the new one
+    // (useRestoreTeam), so clear it first. Success relaunches the process and
+    // never returns; a rejection puts the roster back.
+    changeHome: async (...args: unknown[]) => {
+      const o = pack(args, ["newHome","mode"]);
+      let undo: (() => void) | null = null;
+      if (o.mode === 'fresh') {
+        try { undo = stashRosterStorage(window.localStorage); } catch { /* storage unavailable */ }
+      }
+      try {
+        return await invoke('config_change_home', o);
+      } catch (e) {
+        undo?.();
+        throw e;
+      }
+    },
+    // fs_* return bare shapes and reject on failure; the IDE/file tree speak
+    // upstream's {ok,...} envelope, so adapt here once.
+    listDir: (root: string, rel: string) =>
+      envelope(
+        invoke<Array<Record<string, unknown>>>('fs_list', { root, rel }),
+        (rows) => ({ entries: rows.map((e) => ({ ...e, isDir: e.kind === 'dir' })) })
+      ),
+    readFile: (root: string, rel: string) =>
+      envelope(
+        invoke<{ kind: string; data: string }>('fs_read', { root, rel }).then((r) => {
+          if (r.kind !== 'text') throw new Error('binary file (not displayable)');
+          return r;
+        }),
+        (r) => ({ content: r.data, path: joinPath(root, rel) })
+      ),
+    // (path) absolute, or (root, rel) confined under root - useWorkspaceImage.
+    readBinary: (root: string, rel?: string) =>
+      envelope(
+        // joinPath throws on a `..` escape — inside the promise so it envelopes.
+        Promise.resolve().then(() => invoke<{ base64: string; mime: string; size: number; path: string }>(
+          'fs_read_binary',
+          { path: rel === undefined ? root : joinPath(root, rel) }
+        )),
+        (r) => ({ bytes: fromBase64(r.base64), mime: r.mime, size: r.size, path: r.path })
+      ),
+    writeFile: (root: string, rel: string, content: string) =>
+      envelope(invoke('fs_write_file', { root, rel, content }), (r) => (isPlainObject(r) ? r : {})),
     statAbs: (...args: unknown[]) => invoke('fs_stat_abs', pack(args, ["path"])),
     revealPath: (...args: unknown[]) => invoke('fs_reveal_path', pack(args, ["path"])),
     gitIsRepo: (...args: unknown[]) => invoke('git_is_repo', pack(args, ["cwd"])),
-    gitMainRepo: (...args: unknown[]) => invoke('git_main_repo', pack(args, ["cwd"])),
-    gitBranch: (...args: unknown[]) => invoke('git_branch', pack(args, ["cwd"])),
-    gitStatus: (...args: unknown[]) => invoke('git_status', pack(args, ["cwd"])),
-    gitLog: (...args: unknown[]) => invoke('git_log', pack(args, ["cwd","n"])),
-    gitBranches: (...args: unknown[]) => invoke('git_branches', pack(args, ["cwd"])),
-    gitAheadBehind: (...args: unknown[]) => invoke('git_ahead_behind', pack(args, ["cwd"])),
-    gitDiff: (...args: unknown[]) => invoke('git_diff', pack(args, ["cwd","relPath"])),
-    gitLogGraph: (...args: unknown[]) => invoke('git_log_graph', pack(args, ["cwd","n","skip"])),
-    gitCommitFiles: (...args: unknown[]) => invoke('git_commit_files', pack(args, ["cwd","sha"])),
-    gitShowFile: (...args: unknown[]) => invoke('git_show_file', pack(args, ["cwd","rev","path"])),
-    gitCompareRefs: (...args: unknown[]) => invoke('git_compare_refs', pack(args, ["cwd","base","head"])),
-    gitWorktrees: (...args: unknown[]) => invoke('git_worktrees', pack(args, ["cwd"])),
-    gitCheckout: (...args: unknown[]) => invoke('git_checkout', pack(args, ["cwd","r#ref","detach"])),
+    // Not-a-repo rejects; upstream resolved null (callers `?? root` / `|| null`).
+    gitMainRepo: (...args: unknown[]) => invoke('git_main_repo', pack(args, ["cwd"])).catch(() => null),
+    gitBranch: (...args: unknown[]) => gitSafe(invoke('git_branch', pack(args, ["cwd"]))),
+    gitStatus: (...args: unknown[]) => gitSafe(invoke('git_status', pack(args, ["cwd"]))),
+    gitLog: (...args: unknown[]) => gitSafe(invoke('git_log', pack(args, ["cwd","n"]))),
+    gitBranches: (...args: unknown[]) => gitSafe(invoke('git_branches', pack(args, ["cwd"]))),
+    gitAheadBehind: (...args: unknown[]) => gitSafe(invoke('git_ahead_behind', pack(args, ["cwd"]))),
+    // Rust's git_diff returns a unified-diff string; the diff editor wants the
+    // two sides, so rebuild them: HEAD blob vs the working-tree file.
+    gitDiff: async (cwd: string, rel: string) => {
+      try {
+        const head = await invoke<{ isBinary?: boolean; content?: string }>(
+          'git_show_file', { cwd, rev: 'HEAD', path: rel }
+        ).catch(() => ({ isBinary: false, content: '' }));
+        let working = '';
+        let isBinary = head.isBinary === true;
+        try {
+          const w = await invoke<{ kind: string; data: string }>('fs_read', { root: cwd, rel });
+          if (w.kind === 'text') working = w.data; else isBinary = true;
+        } catch (e) {
+          // A deleted file has no working side; anything else is a real failure.
+          if (/too large/i.test(errMsg(e))) throw e;
+        }
+        return { ok: true, isBinary, head: head.content ?? '', working };
+      } catch (e) {
+        return { ok: false, error: errMsg(e) };
+      }
+    },
+    gitLogGraph: (...args: unknown[]) => gitSafe(invoke('git_log_graph', pack(args, ["cwd","n","skip"]))),
+    gitCommitFiles: (...args: unknown[]) => gitSafe(invoke('git_commit_files', pack(args, ["cwd","sha"]))),
+    gitShowFile: (...args: unknown[]) => envelope(
+      invoke<Record<string, unknown>>('git_show_file', pack(args, ["cwd","rev","path"])),
+      (r) => (isPlainObject(r) ? r : {})
+    ),
+    gitCompareRefs: (...args: unknown[]) => gitSafe(invoke('git_compare_refs', pack(args, ["cwd","base","head"]))),
+    gitWorktrees: (...args: unknown[]) => gitSafe(invoke('git_worktrees', pack(args, ["cwd"]))),
+    // Tauri keys a raw `r#ref` parameter as `ref`.
+    gitCheckout: (...args: unknown[]) => envelope(
+      invoke<Record<string, unknown>>('git_checkout', pack(args, ["cwd","ref","detach"])),
+      (r) => (isPlainObject(r) ? r : {})
+    ),
     hiveRegistry: (...args: unknown[]) => invoke('hive_registry', pack(args, [])),
     hivePatchAgentRole: (...args: unknown[]) => invoke('hive_patch_agent_role', pack(args, ["id","role"])),
     hiveRenameAgent: (...args: unknown[]) => invoke('hive_rename_agent', pack(args, ["id","name"])),
@@ -190,10 +324,12 @@ export function installCth(): void {
     toolsStatus: (...args: unknown[]) => invoke('tools_status', pack(args, [])),
     heroPayload: (...args: unknown[]) => invoke('hero_payload', pack(args, ["force"])),
     modelCatalog: (...args: unknown[]) => invoke('models_catalog', pack(args, [])),
-    skillsLocal: (...args: unknown[]) => invoke('skills_local', pack(args, ["cwds"])),
+    // `cwds` is Vec<String>; callers hand a single cwd (or nothing).
+    skillsLocal: (cwds?: unknown) => invoke('skills_local', { cwds: toArray(cwds) }),
     skillsCatalog: (...args: unknown[]) => invoke('skills_catalog', pack(args, ["force"])),
     skillsInstall: (...args: unknown[]) => invoke('skills_install', pack(args, ["url","name"])),
-    skillsUninstall: (...args: unknown[]) => invoke('skills_uninstall', pack(args, ["path","cwds"])),
+    skillsUninstall: (path: string, cwds?: unknown) =>
+      invoke('skills_uninstall', { path, cwds: toArray(cwds) }),
     skillsBundled: (...args: unknown[]) => invoke('skills_bundled', pack(args, [])),
     skillsInstallBundled: (...args: unknown[]) => invoke('skills_install_bundled', pack(args, ["dirName"])),
     shardxStatus: () => invoke('shardx_status'),
@@ -223,13 +359,55 @@ export function installCth(): void {
     kgAddFiles: (...args: unknown[]) => invoke('kg_add_files', pack(args, ["payload"])),
     kgIngestFiles: (...args: unknown[]) => invoke('kg_ingest_files', pack(args, ["payload"])),
     attachFiles: (...args: unknown[]) => invoke('dialog_attach_files', pack(args, [])),
-    saveClipboardImage: (...args: unknown[]) => invoke('clipboard_save_image', pack(args, ["base64"])),
-    historyAdd: (...args: unknown[]) => invoke('command_history_add', pack(args, ["agentId","cwd","text"])),
-    historyList: (...args: unknown[]) => invoke('command_history_list', pack(args, ["agentId","limit"])),
-    historySearch: (...args: unknown[]) => invoke('command_history_search', pack(args, ["query","limit"])),
+    // Rust puts the decoded image on the OS clipboard and returns a bool. Accepts
+    // a base64 string/data URL or {base64}; a `file` the backend may one day
+    // return rides through so the composer can attach it.
+    saveClipboardImage: (arg?: unknown) => {
+      const base64 = isPlainObject(arg) ? arg.base64 : arg;
+      return envelope(
+        invoke<unknown>('clipboard_save_image', { base64: typeof base64 === 'string' ? base64 : '' }),
+        (r) => (isPlainObject(r) ? r : {})
+      );
+    },
+    // Pasted screenshot → PNG temp file under the harness home. Accepts a base64
+    // string/data URL or {base64}; resolves {ok:true,path} | {ok:false,error}.
+    clipboardImageToFile: (arg?: unknown) => {
+      const base64 = isPlainObject(arg) ? arg.base64 : arg;
+      return envelope(
+        invoke<unknown>('clipboard_image_to_file', { base64: typeof base64 === 'string' ? base64 : '' }),
+        (r) => (isPlainObject(r) ? r : {})
+      ) as Promise<{ ok: boolean; path?: string; error?: string }>;
+    },
+    historyAdd: (...args: unknown[]) => invoke('command_history_add', packOpts(args, ["agentId","cwd","text"])),
+    historyList: (...args: unknown[]) => invoke('command_history_list', packOpts(args, ["agentId","limit"])),
+    historySearch: (...args: unknown[]) => invoke('command_history_search', packOpts(args, ["query","limit"])),
     hiveSend: (...args: unknown[]) => invoke('hive_send', pack(args, ["partial","from"])),
+    // Deep-link source parked by the backend (Option<String>): the https
+    // manifest URL, or null when nothing is queued.
     drainPendingHires: (...args: unknown[]) => invoke('hire_drain_pending', pack(args, [])),
-    importHireFiles: (...args: unknown[]) => invoke('hire_open_file', pack(args, [])),
+    // Resolve a source URL into a validated manifest ({ok,manifest,...}); rejects
+    // with the reason (SSRF block, bad JSON, invalid manifest).
+    hireFetch: (url: string) => invoke('hire_fetch', { url }),
+    // File picker -> {ok,manifests,errors}. The backend validates ONE file and
+    // answers {ok,manifest,warnings} | {ok:false,errors} | {ok:false,error}.
+    importHireFiles: async () => {
+      try {
+        const r = await invoke<{
+          ok?: boolean; manifest?: unknown; errors?: string[]; error?: string; warnings?: string[];
+        }>('hire_open_file');
+        if (r?.ok && r.manifest) {
+          return { ok: true, manifests: [r.manifest], errors: [] as string[], warnings: r.warnings ?? [] };
+        }
+        // One file, so its validation errors collapse into one entry.
+        const errors = Array.isArray(r?.errors) && r.errors.length ? [r.errors.join('; ')] : [];
+        return { ok: false, manifests: [], errors, error: r?.error };
+      } catch (e) {
+        return { ok: false, manifests: [], errors: [] as string[], error: errMsg(e) };
+      }
+    },
+    // Kills every PTY and exits the app immediately (no closing-time protocol).
+    forceQuit: () => invoke<boolean>('app_force_quit'),
+    // Re-arms the closing-time protocol (same rail as startClosingTime).
     confirmClose: (...args: unknown[]) => invoke('app_confirm_close', pack(args, [])),
     cancelClose: (...args: unknown[]) => invoke('app_cancel_close', pack(args, [])),
     newFloor: (...args: unknown[]) => invoke('window_new_floor', pack(args, [])),
@@ -250,21 +428,42 @@ export function installCth(): void {
     controlHalt: (...args: unknown[]) => invoke('control_halt', pack(args, ["agentId"])),
     controlSnapshot: (...args: unknown[]) => invoke('control_snapshot', pack(args, ["agentId"])),
     hiveAddTask: (...args: unknown[]) => invoke('hive_add_task', pack(args, ["fields"])),
-    hivePatchTask: (...args: unknown[]) => invoke('hive_patch_task', pack(args, ["id","patch"])),
-    hiveDeleteTask: (...args: unknown[]) => invoke('hive_delete_task', pack(args, ["id"])),
+    // Rust resolves the patched card / the remaining cards and rejects on
+    // failure; callers test `.ok`.
+    hivePatchTask: (...args: unknown[]) =>
+      envelope(invoke('hive_patch_task', pack(args, ["id","patch"])), (task) => ({ task })),
+    hiveDeleteTask: (...args: unknown[]) =>
+      envelope(invoke('hive_delete_task', pack(args, ["id"])), (tasks) => ({ tasks })),
     listMissions: (...args: unknown[]) => invoke('missions_list', pack(args, [])),
     saveMissions: (...args: unknown[]) => invoke('missions_save', pack(args, ["missions"])),
-    textSearch: (...args: unknown[]) => invoke('hive_text_search', pack(args, ["query","limit"])),
+    // Rust resolves the bare hit list; callers read {ok,results}.
+    textSearch: (...args: unknown[]) =>
+      envelope(invoke('hive_text_search', pack(args, ["query","limit"])), (results) => ({ results })),
     githubIssues: (...args: unknown[]) => invoke('github_issues', pack(args, ["repo"])),
     githubCIRuns: (...args: unknown[]) => invoke('github_ci_runs', pack(args, ["repo"])),
     setNotifications: (...args: unknown[]) => invoke('app_set_notifications', pack(args, ["enabled"])),
     openExternal: (...args: unknown[]) => invoke('app_open_external', pack(args, ["url"])),
     setLoginItem: (...args: unknown[]) => invoke('app_set_login_item', pack(args, ["enabled"])),
     hiveSetArchived: (...args: unknown[]) => invoke('hive_set_archived', pack(args, ["id","archived"])),
-    slackStart: (...args: unknown[]) => invoke('slack_start', pack(args, ["port","channelId"])),
+    // slack_start needs the listener port and returns a bare bool; Settings wants
+    // {ok,url} (the tunnel URL lives in slack_status).
+    slackStart: async (...args: unknown[]) => {
+      const o = packOpts(args, ["port","channelId"]);
+      try {
+        await invoke('slack_start', { port: Number(o.port) || 3847, channelId: o.channelId || null });
+        const st = await invoke<{ url?: string | null }>('slack_status').catch(() => null);
+        return { ok: true, url: st?.url ?? undefined };
+      } catch (e) {
+        return { ok: false, error: errMsg(e) };
+      }
+    },
     slackStop: (...args: unknown[]) => invoke('slack_stop', pack(args, [])),
     slackStatus: (...args: unknown[]) => invoke('slack_status', pack(args, [])),
-    slackReply: (...args: unknown[]) => invoke('slack_reply', pack(args, ["channel","threadTs","text"])),
+    // Accepts {channel,thread_ts|threadTs,text} or positional (channel,threadTs,text).
+    slackReply: (...args: unknown[]) => {
+      const o = packOpts(args, ["channel","threadTs","text"]);
+      return invoke('slack_reply', { channel: o.channel, threadTs: o.threadTs ?? o.thread_ts, text: o.text });
+    },
     slackReplyScriptPath: (...args: unknown[]) => invoke('slack_reply_script_path', pack(args, [])),
     slackSetConfig: (...args: unknown[]) => invoke('slack_set_config', pack(args, ["cfg"])),
     webhookStart: (...args: unknown[]) => invoke('webhook_start', pack(args, ["port"])),
@@ -286,7 +485,26 @@ export function installCth(): void {
       invoke('trigger_history_decide', { arg }),
     clearTriggerHistory: (...args: unknown[]) => invoke('triggers_clear', pack(args, ["source"])),
     freeflowSetConfig: (...args: unknown[]) => invoke('freeflow_set_config', pack(args, ["patch"])),
-    freeflowTranscribe: (...args: unknown[]) => invoke('freeflow_transcribe', pack(args, ["audioB64","mime","filename","language"])),
+    // Recorder hands {audio: ArrayBuffer, mimeType, filename, language}; the
+    // backend wants base64 text.
+    freeflowTranscribe: async (arg: Record<string, unknown>) => {
+      try {
+        const audio = arg.audio;
+        const audioB64 =
+          typeof arg.audioB64 === 'string' ? arg.audioB64
+          : typeof audio === 'string' ? audio
+          : audio instanceof ArrayBuffer || ArrayBuffer.isView(audio) ? toBase64(audio)
+          : '';
+        return await invoke('freeflow_transcribe', {
+          audioB64,
+          mime: arg.mime ?? arg.mimeType ?? null,
+          filename: arg.filename ?? null,
+          language: arg.language ?? null
+        });
+      } catch (e) {
+        return { ok: false, error: errMsg(e) };
+      }
+    },
     integrationsList: (...args: unknown[]) => invoke('integrations_list', pack(args, [])),
     integrationsTemplates: (...args: unknown[]) => invoke('integrations_templates', pack(args, [])),
     integrationsUpsert: (...args: unknown[]) => invoke('integrations_upsert', pack(args, ["record"])),
@@ -322,16 +540,7 @@ export function installCth(): void {
     realtimeWaitFor: (...args: unknown[]) => invoke('realtime_wait_for', pack(args, ["taskIdOrAgent","timeoutMs"])),
     appInfo: (...args: unknown[]) => invoke('app_info', pack(args, [])),
     rosterRead: (...args: unknown[]) => invoke('roster_read', pack(args, [])),
-    rosterReadSync: (): unknown => {
-      const raw = syncGet('/sync/roster');
-      if (raw != null) {
-        try {
-          const v = JSON.parse(raw) as unknown;
-          if (v != null) return (rosterCache = v);
-        } catch { /* fall through to cache */ }
-      }
-      return rosterCache;
-    },
+    rosterReadSync: (): unknown => rosterCache,
     rosterWrite: (...args: unknown[]) =>
       invoke('roster_write', pack(args, ["snap"])).then((r) => {
         rosterCache = args[0];
@@ -341,7 +550,16 @@ export function installCth(): void {
     updateRestartAndInstall: (...args: unknown[]) => invoke('update_restart_and_install', pack(args, [])),
     updateCheckNow: (...args: unknown[]) => invoke('update_check_now', pack(args, [])),
     updateDownload: (...args: unknown[]) => invoke('update_download', pack(args, [])),
-    updateOpenRelease: (...args: unknown[]) => invoke('update_open_release', pack(args, ["url"])),
+    // Callers pass no url for "show me the releases page"; the backend requires
+    // one (and refuses anything outside this app's repo), so fill the default in.
+    updateOpenRelease: async (url?: string) => {
+      try {
+        return await invoke<boolean>('update_open_release', { url: url || RELEASES_URL });
+      } catch (e) {
+        console.warn('[cth] updateOpenRelease:', errMsg(e));
+        return false;
+      }
+    },
     updateSimulate: (...args: unknown[]) => invoke('update_simulate', pack(args, ["version","notes"])),
     // ── events — upstream channel names verbatim (colon-style). ──────────
     onHiveMessage: (cb: (e: HiveRouteEvent) => void) => on<HiveRouteEvent>('hive:message', cb),
@@ -375,9 +593,8 @@ export function installCth(): void {
     onConfigChanged: (cb: (e: unknown) => void) => on<unknown>('config:changed', cb),
     onCloseRequested: (cb: (e: unknown) => void) => on<unknown>('app:closeRequested', cb),
     onClosingTime: (cb: (e: unknown) => void) => on<unknown>('app:closingTime', cb),
-    onHirePending: (cb: (e: unknown) => void) => on<unknown>('hire-pending', cb),
-    onHireImport: (cb: (e: unknown) => void) => on<unknown>('hire:import', cb),
-    onHireError: (cb: (e: { error: string }) => void) => on<{ error: string }>('hire:error', cb),
+    // Payload = the deep link's manifest source URL (string).
+    onHirePending: (cb: (src: string) => void) => on<string>('hire-pending', cb),
     onPowerResume: (cb: (e: unknown) => void) => on<unknown>('power:resume', cb),
     onAutoCompact: (cb: () => void) => on<unknown>('mission:autoCompact', () => cb()),
     onContextTrigger: (cb: (e: { action: 'compact' | 'clear'; rule: unknown }) => void) =>

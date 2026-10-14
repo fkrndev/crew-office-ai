@@ -85,7 +85,8 @@
     "stopAfterStepTip": "让它完成当前步骤后再停止。进程与会话都会保留，因此“重启”和“继续”可以恢复它。若要直接结束进程，请使用 ✕。",
     "stopAfterStepAria": "在当前步骤后停止该智能体",
     "steerTip": "在该智能体的下一轮边界交给它一条笔记。不会打断它当前正在做的事，也不会输入到它的终端。",
-    "steerAria": "给该智能体发送一条笔记"
+    "steerAria": "给该智能体发送一条笔记",
+    "haltConfirm": "中止该智能体？它会立刻停下当前工作。"
   },
   "agentCard": {
     "boss": "老板",
@@ -137,7 +138,8 @@
     "terminal": "终端",
     "git": "Git",
     "messages": "消息",
-    "traces": "追踪"
+    "traces": "追踪",
+    "resizeTitle": "拖动调整大小 · 双击重置"
   },
   "toolWaterfall": {
     "fresh": "输入 {{tokens}} tok",
@@ -163,7 +165,10 @@
     "openIde": "打开 IDE",
     "ide": "IDE",
     "openTerminalAria": "在该智能体的文件夹中打开系统终端",
-    "killAria": "停止 {{name}}"
+    "killAria": "停止 {{name}}",
+    "editTip": "编辑 {{name}}：名字和形象、运行的引擎，以及说明其职责的简介。",
+    "editAria": "编辑此智能体",
+    "editLabel": "编辑"
   },
   "settingsHero": {
     "sponsoredBy": "赞助方",
@@ -200,7 +205,15 @@
     "cantUndo": "此操作无法撤销。",
     "switching": "切换中…",
     "deleteSwitch": "删除 {{count}} 个并切换",
-    "notBuiltWarning": "此主题({{label}})尚未构建 — 你的办公室外观不变,但 agent 仍会被删除。选择一个已构建的主题,或在其发布后再切换。"
+    "notBuiltWarning": "此主题({{label}})尚未构建 — 你的办公室外观不变,但 agent 仍会被删除。选择一个已构建的主题,或在其发布后再切换。",
+    "blurbs": {
+      "office": "Dunder Mifflin — 最初的办公室",
+      "friends": "Central Perk 咖啡馆",
+      "brooklyn99": "第 99 分局大办公室",
+      "siliconvalley": "黑客旅社",
+      "got": "红堡王座厅",
+      "hogwarts": "霍格沃茨大礼堂"
+    }
   },
   "settings": {
     "title": "设置",
@@ -348,11 +361,7 @@
       "mode": "模式",
       "webhooksHint": "调用方把请求 POST 到 webhook 的 URL，密钥放在 x-md-webhook-secret 请求头中。每个 webhook 都会按自己的 JSON schema 校验请求体——可在 {{godName}} 的命令中心的触发器标签页中编辑，那里也保留着所有到达历史。",
       "organisation": "组织",
-      "orgKey": "组织密钥",
-      "orgKeyDesc": "队友的安装如何找到你的实例。",
-      "apiKey": "API 密钥",
-      "orgKeyPlaceholder": "粘贴你的组织密钥",
-      "orgConfigOnly": "目前仅限配置。组织消息服务尚不存在，所以这里的密钥不会启动任何传输——它会被保存、显示在触发器标签页中，然后等待。"
+      "apiKey": "API 密钥"
     },
     "voice": {
       "freeFlow": "自由输入",
@@ -363,7 +372,7 @@
       "model": "模型",
       "fast": "whisper-large-v3-turbo（快速）",
       "accurate": "whisper-large-v3（准确）",
-      "freeFlowHint": "两种听写方式：点击队列编辑器发送键上方的麦克风按钮（点击开始录音，再点一次转写）；或在查看任意智能体终端时按住 Option（⌥）说话、松手转写。两种方式都会把文字放进编辑器草稿，供你发送前检查。首次录音时 macOS 会请求麦克风权限。",
+      "freeFlowHint": "两种听写方式：点击队列编辑器发送键上方的麦克风按钮（点击开始录音，再点一次转写）；或在查看任意智能体终端时按住 {{altKey}}说话、松手转写。两种方式都会把文字放进编辑器草稿，供你发送前检查。{{micNote}}",
       "realtime": "实时 {{godName}}",
       "voiceChat": "与 {{godName}} 语音对话",
       "voiceChatDesc": "实时与调度者对话。从 {{godName}} 的标签页开启；在这里选择语音回路使用的麦克风和扬声器。",
@@ -384,7 +393,9 @@
       "5m": "5 分钟",
       "10m": "10 分钟",
       "never": "关闭（永不）",
-      "idleDisconnectDesc": "语音会话在无人说话时保持多久后自动关闭。即使此项关闭，支出上限仍能阻止失控的会话。"
+      "idleDisconnectDesc": "语音会话在无人说话时保持多久后自动关闭。即使此项关闭，支出上限仍能阻止失控的会话。",
+      "micNoteMac": "首次录音时 macOS 会请求麦克风权限。",
+      "micNoteOther": "首次录音时系统可能会请求麦克风权限，请允许。"
     },
     "saved": "已保存",
     "saving": "保存中…",
@@ -489,7 +500,14 @@
     "openIssue": "GitHub Issue #{{num}}：{{title}}",
     "deliveryResumeAria": "恢复整个楼层的自动投递",
     "deliveryHoldAria": "暂停整个楼层的自动投递",
-    "openIdeAria": "打开 IDE"
+    "openIdeAria": "打开 IDE",
+    "forgetArchivedConfirm": "忘记已归档的智能体“{{name}}”？它将被永久从列表中移除。",
+    "fetchIssuesFailed": "获取 issue 失败。",
+    "resumeDifferentProvider": "无法通过不同的提供商恢复会话。",
+    "resumeNoSessionId": "没有已记录的会话 ID；当前进程保持运行。",
+    "resumeNoTranscript": "未找到会话记录；当前进程保持运行。",
+    "couldNotStop": "无法停止当前进程。",
+    "resumeRefused": "恢复被拒绝；未接受任何替代会话。"
   },
   "addAgent": {
     "title": "添加智能体",
@@ -605,7 +623,13 @@
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
     "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。",
     "needsKey": "⚠ {{provider}} 需要 API 密钥——请在 设置 → AI Engines 中配置",
-    "needsShardx": "⚠ 需要 ShardX 设置——请在 设置 → MCP → Set up 运行"
+    "needsShardx": "⚠ 需要 ShardX 设置——请在 设置 → MCP → Set up 运行",
+    "hireSkipped": "已跳过 {{n}} 个无效文件：{{errors}}",
+    "spawnFailed": "启动失败",
+    "statusResumeMissing": "未找到会话 — 全新启动",
+    "statusStarting": "正在启动",
+    "removeProjectTitle": "从此列表中移除 {{name}}。文件夹本身不会被改动。",
+    "removeProjectAria": "从项目列表中移除 {{name}}"
   },
   "onboarding": {
     "titles": {
@@ -1418,15 +1442,19 @@
     "removeFromQueue": "从队列移除",
     "ffNoKeyTitle": "听写需要一个免费的 Groq API 密钥。点击信息标记查看步骤。",
     "ffStopTranscribe": "停止并转写",
-    "ffTitle": "自由输入——向队列听写。点击，或按住 Option（⌥）。",
+    "ffTitle": "自由输入——向队列听写。点击，或按住 {{altKey}}。",
     "stop": "停止",
     "ffHowEnable": "如何启用听写？",
     "ffSetupTitle": "设置听写",
     "ffSetupIntro": "说话代替打字。Groq 负责转写，其免费额度足以覆盖——无需绑卡，零成本。",
     "ffCreateKey": "在以下地址免费创建密钥",
     "ffPasteKey": "粘贴到设置 → 语音 → Groq API 密钥",
-    "ffClickOrHold": "点击「语音」，或按住右侧 Option 键说话",
-    "ffHoldHint": "单独按住一会儿即可开始；松开后转写到编辑器，发送前可修改。两个 Option 键都可以，Option+按键组合仍会原样到达终端。"
+    "ffClickOrHold": "点击「语音」，或按住右侧 {{altKey}} 键说话",
+    "ffHoldHint": "单独按住一会儿即可开始；松开后转写到编辑器，发送前可修改。两个 {{altKey}} 键都可以，{{altKey}}+按键组合仍会原样到达终端。",
+    "imagePasteFailed": "无法读取粘贴的图片：{{error}}",
+    "clearAllConfirm": "清空全部 {{n}} 条排队消息？",
+    "closePickerTitle": "关闭该智能体打开的选择器，以便送达排队的消息",
+    "recoverPromptTitle": "将该智能体提示符上残留的文本移到此输入框，以便送达排队的消息"
   },
   "idePanel": {
     "workspace": "{{name}} 的工作区",
@@ -1462,7 +1490,10 @@
     "copyPath": "复制路径",
     "saveTitle": "保存（Cmd/Ctrl+S）",
     "saved": "已保存",
-    "save": "保存"
+    "save": "保存",
+    "nothingOpen": "没有打开的文件",
+    "nothingOpenHint": "从文件树中选择要编辑的文件，或选择已更改的文件查看差异。",
+    "loading": "加载中…"
   },
   "gitPanes": {
     "jumpConfirm": "把仓库跳转到 {{sha}}（\"{{subject}}\"）？\n\n这会脱离 HEAD。若工作区不干净或有智能体正在运行，将自动阻止。",
@@ -1495,7 +1526,9 @@
     "viewSourceTitle": "在编辑器中打开 SVG 标记",
     "viewSource": "查看源码",
     "loading": "正在加载图片…",
-    "decodeFailed": "无法解码此图片——文件可能已损坏或扩展名有误"
+    "decodeFailed": "无法解码此图片——文件可能已损坏或扩展名有误",
+    "copyPathTitle": "复制绝对路径",
+    "copyPath": "复制路径"
   },
   "quit": {
     "title": "现在退出?",
@@ -1522,7 +1555,8 @@
     "workersConfirmedDone": "{{acked}} / {{total}} 个 WORKER 已确认 — 等待协调者",
     "noWorkers": "楼层没有 WORKER — 等待协调者",
     "timeoutNote": "耗时较长(某个 agent 可能正在压缩或深入工具调用)。继续等待,或强制退出并接受数据丢失。",
-    "errorFallback": "打烊时间无法启动。"
+    "errorFallback": "打烊时间无法启动。",
+    "quitFailed": "无法退出：{{error}}"
   },
   "editAgent": {
     "title": "编辑 AGENT",
@@ -1579,19 +1613,109 @@
     "toggleDarkMode": "切换深色模式",
     "settings": "设置",
     "focusMode": "专注模式",
-    "exitFocusMode": "退出专注模式 (Esc)",
+    "exitFocusMode": "退出专注模式",
     "toggleFocusMode": "切换专注模式",
     "wakingFloor": "正在唤醒工作区",
     "wakingDesc": "{{godName}} 正在就位。终端会在这里出现。",
     "noAgentSelected": "未选择 agent",
     "noAgentDesc": "从下方栏 spawn 一个 agent。终端和命令栏会出现在这里。",
-    "addAgent": "添加 agent"
+    "addAgent": "添加 agent",
+    "productName": "Agent Office",
+    "emptyFloorTitle": "办公室空空如也",
+    "emptyFloorBody": "办公室里还没有智能体。创建一个，即可在这里看到 claude 的实时输出。",
+    "loadFailedTitle": "无法启动",
+    "loadFailedBody": "应用无法读取设置，因此暂时无法打开。",
+    "retry": "重试",
+    "hireFailed": "无法导入智能体：{{error}}",
+    "hireInvalid": "清单无效"
   },
   "ptyTerminal": {
     "livePty": "实时 · 终端 {{id}}",
     "zoomOut": "缩小 (Ctrl -)",
     "zoomReset": "重置缩放 (Ctrl 0)",
     "zoomIn": "放大 (Ctrl +)",
-    "exitFocus": "退出专注模式 (Esc)"
+    "exitFocus": "退出专注模式",
+    "linkHint": "按住 {{modifier}} 并点击以打开"
+  },
+  "notice": {
+    "queueDropped": "发给 {{agent}} 的消息无法送达，已被丢弃：“{{text}}”",
+    "sendFailed": "无法发送：{{error}}"
+  },
+  "realtime": {
+    "micDenied": "麦克风权限被拒绝 — 请允许访问麦克风以便与 {{godName}} 对话",
+    "micNotFound": "未找到麦克风 — 请检查输入设备"
+  },
+  "updateBadge": {
+    "latestTitle": "你已是最新版本。",
+    "latestBody": "v{{version}} 是最新发布版本。刚刚检查过。"
+  },
+  "agentHold": {
+    "needsRestart": "请重启应用：此版本尚不支持 1:1 控制",
+    "couldNotSet": "无法设置暂挂",
+    "endTip": "结束 1:1。{{godName}} 可以再次给 {{name}} 分配工作。",
+    "startTip": "把 {{name}} 请到一边。在你结束之前，{{godName}} 不会再给它派活。与这里另外两个按钮不同，它不会限制智能体：它仍会继续运行并回答你。",
+    "endAria": "结束 1:1，将此智能体交还给 {{godName}}",
+    "startAria": "将此智能体请到一边进行 1:1",
+    "failed": "1:1 失败",
+    "active": "1:1 中",
+    "label": "1:1"
+  },
+  "releaseDrop": {
+    "releaseNotes": "发行说明",
+    "esc": "esc",
+    "closeAria": "关闭发行说明",
+    "closeTitle": "关闭 (Esc)"
+  },
+  "codeEditor": {
+    "copyPathTitle": "复制绝对路径",
+    "copyPath": "复制路径",
+    "saveTitleMac": "保存 (Cmd-S)",
+    "saveTitleOther": "保存 (Ctrl-S)",
+    "saved": "已保存",
+    "error": "错误",
+    "save": "保存",
+    "openInIde": "在 IDE 中打开",
+    "loading": "加载中…"
+  },
+  "restorePrompt": {
+    "title": "恢复上次会话",
+    "question": "恢复上次会话中的 {{n}} 个智能体？（{{names}}）",
+    "restore": "恢复",
+    "skip": "跳过"
+  },
+  "agentStatus": {
+    "usingTool": "正在使用 {{tool}}",
+    "compacting": "正在压缩上下文",
+    "resumed": "已恢复",
+    "thinking": "思考中",
+    "idle": "空闲",
+    "readingInbox": "正在读取收件箱",
+    "runningFloor": "正在统筹办公室",
+    "startingUp": "正在启动",
+    "revived": "休眠后已恢复",
+    "breakerArmed": "熔断已触发",
+    "awaiting": "等待中",
+    "waitingOnYou": "等待你",
+    "waitingOnGod": "等待 {{godName}}",
+    "reconnecting": "正在重新连接…",
+    "worktreeGone": "工作树已丢失 — 使用基础仓库",
+    "processExited": "进程已退出",
+    "restarting": "正在重启",
+    "restartingDots": "正在重启…",
+    "recreatingTerminal": "正在重建终端…",
+    "continuing": "正在继续…",
+    "switchingTo": "正在切换到 {{provider}}…",
+    "archived": "已归档",
+    "blockSummary": "等待你的回复",
+    "blockDetail": "Claude 正在等待输入。请查看终端了解具体提示。",
+    "approve": "批准",
+    "deny": "拒绝"
+  },
+  "restoreNote": {
+    "restored": "已恢复 {{n}}",
+    "alreadyLive": "{{n}} 个已在运行",
+    "failed": "{{n}} 个失败 — {{details}}",
+    "nothing": "没有可恢复的内容",
+    "spawnFailed": "启动失败"
   }
 }

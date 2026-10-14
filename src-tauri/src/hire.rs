@@ -385,22 +385,96 @@ fn urlencoding(s: &str) -> String {
         .replace("%26", "&")
 }
 
+/// A strictly-parsed manifest URL authority. Hand-rolled (no `url` crate) and
+/// deliberately narrow: anything ambiguous between parsers — userinfo (`@`),
+/// backslashes, whitespace/control chars, non-ASCII, percent-escapes in the
+/// host, odd ports — is rejected outright, because the SSRF guard and the HTTP
+/// client must agree on which host a URL means.
+#[derive(Debug, PartialEq, Eq)]
+struct ManifestUrl {
+    https: bool,
+    /// Lowercased host; an IPv6 literal is stored WITHOUT brackets.
+    host: String,
+    port: u16,
+}
+
+impl ManifestUrl {
+    fn is_loopback_host(&self) -> bool {
+        self.host == "localhost"
+            || self
+                .host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+}
+
+fn parse_manifest_url(u: &str) -> Option<ManifestUrl> {
+    if u.is_empty() || u.len() > 2048 || !u.is_ascii() {
+        return None;
+    }
+    if u.chars().any(|c| c.is_control() || c == ' ' || c == '\\') {
+        return None;
+    }
+    let lower = u.to_ascii_lowercase();
+    let (https, rest) = if let Some(r) = lower.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        (false, r)
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') || authority.contains('%') {
+        return None;
+    }
+    let (host, port_str) = if let Some(inner) = authority.strip_prefix('[') {
+        // [v6] or [v6]:port
+        let (addr, after) = inner.split_once(']')?;
+        addr.parse::<std::net::Ipv6Addr>().ok()?;
+        let port = match after {
+            "" => None,
+            p => Some(p.strip_prefix(':')?),
+        };
+        (addr.to_string(), port)
+    } else {
+        let (h, p) = match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        };
+        if h.is_empty()
+            || h.contains(':')
+            || h.starts_with(['.', '-'])
+            || h.ends_with('-')
+            || !h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            return None;
+        }
+        (h.to_string(), p)
+    };
+    let port = match port_str {
+        None => {
+            if https {
+                443
+            } else {
+                80
+            }
+        }
+        Some(p) => {
+            if p.is_empty() || p.len() > 5 || !p.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            match p.parse::<u16>() {
+                Ok(n) if n > 0 => n,
+                _ => return None,
+            }
+        }
+    };
+    Some(ManifestUrl { https, host, port })
+}
+
 /// https everywhere; http ONLY for loopback (local gallery development).
 pub fn is_allowed_manifest_url(u: &str) -> bool {
-    if u.starts_with("https://") {
-        return true;
-    }
-    if let Some(rest) = u.strip_prefix("http://") {
-        let host = rest
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("");
-        return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
-    }
-    false
+    parse_manifest_url(u).is_some_and(|p| p.https || p.is_loopback_host())
 }
 
 /* ── transport (main-side hire.ts) ───────────────────────────────────────── */
@@ -438,41 +512,92 @@ fn ip_blocked(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// Fetch a manifest from an https URL with the SSRF guard: resolve the host
-/// and reject the whole fetch when ANY resolved address is blocked.
-pub fn fetch_manifest(url: &str) -> Result<Value, String> {
-    if !is_allowed_manifest_url(url) {
-        return Err("manifest URL must be https (or loopback http for dev)".into());
+/// Connect-time guard: resolves through ureq's default resolver, then refuses
+/// to hand the connector ANY address for the manifest host that fails policy.
+/// The addresses validated here are the ones connected to (one resolution —
+/// no DNS-rebinding window between check and use). Other hosts (an
+/// env-configured proxy) pass through untouched.
+#[derive(Debug)]
+struct GuardedResolver {
+    host: String,
+    loopback_only: bool,
+}
+
+impl GuardedResolver {
+    fn ip_ok(&self, ip: &std::net::IpAddr) -> bool {
+        if self.loopback_only {
+            let v4 = match ip {
+                std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+                _ => None,
+            };
+            ip.is_loopback() || v4.is_some_and(|a| a.is_loopback())
+        } else {
+            !ip_blocked(ip)
+        }
     }
-    let rest = url.split("://").nth(1).unwrap_or("");
-    let hostport = rest.split('/').next().unwrap_or("");
-    let (host, port) = match hostport.split_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(443)),
-        None => (
-            hostport.trim_matches(|c| c == '[' || c == ']').to_string(),
-            443,
-        ),
+}
+
+impl ureq::unversioned::resolver::Resolver for GuardedResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = ureq::unversioned::resolver::DefaultResolver::default()
+            .resolve(uri, config, timeout)?;
+        let is_target = uri
+            .host()
+            .is_some_and(|h| h.trim_matches(['[', ']']).eq_ignore_ascii_case(&self.host));
+        if is_target && addrs.iter().any(|sa| !self.ip_ok(&sa.ip())) {
+            return Err(ureq::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "manifest host resolves to a blocked (private/reserved) address",
+            )));
+        }
+        Ok(addrs)
+    }
+}
+
+/// Fetch a manifest from an https URL with the SSRF guard: the URL is parsed
+/// strictly (no userinfo/backslash tricks), http is loopback-only, EVERY
+/// resolved address is validated for both schemes, redirects are off (a 3xx
+/// to an internal host is an error, not a hop), and the client connects only
+/// to the addresses that were validated.
+pub fn fetch_manifest(url: &str) -> Result<Value, String> {
+    let parsed = parse_manifest_url(url)
+        .filter(|p| p.https || p.is_loopback_host())
+        .ok_or_else(|| "manifest URL must be https (or loopback http for dev)".to_string())?;
+    let loopback_only = !parsed.https;
+    let guard = GuardedResolver {
+        host: parsed.host.clone(),
+        loopback_only,
     };
-    // Loopback http is allowed (dev) — skip the blocklist for it.
-    let is_loopback_http = url.starts_with("http://");
-    if !is_loopback_http {
+    {
+        // Early, readable failure; the resolver above re-checks at connect.
         use std::net::ToSocketAddrs;
-        let resolved: Vec<std::net::SocketAddr> = (host.as_str(), port)
+        let resolved: Vec<std::net::SocketAddr> = (parsed.host.as_str(), parsed.port)
             .to_socket_addrs()
             .map_err(|e| format!("DNS resolution failed: {e}"))?
             .collect();
         if resolved.is_empty() {
             return Err("DNS resolution returned no addresses".into());
         }
-        for sa in &resolved {
-            if ip_blocked(&sa.ip()) {
-                return Err(
-                    "manifest host resolves to a blocked (private/reserved) address".into(),
-                );
-            }
+        if resolved.iter().any(|sa| !guard.ip_ok(&sa.ip())) {
+            return Err("manifest host resolves to a blocked (private/reserved) address".into());
         }
     }
-    let mut resp = ureq::get(url)
+    let config = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build();
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::new(),
+        guard,
+    );
+    let mut resp = agent
+        .get(url)
         .call()
         .map_err(|e| format!("fetch failed: {e}"))?;
     if !resp.status().is_success() {
@@ -558,6 +683,82 @@ mod tests {
         assert!(is_allowed_manifest_url("http://localhost:8000/a.json"));
         assert!(!is_allowed_manifest_url("http://ex.com/a.json"));
         assert!(!is_allowed_manifest_url("ftp://ex.com"));
+    }
+
+    #[test]
+    fn ssrf_bypass_strings_are_rejected() {
+        for bad in [
+            // userinfo smuggling: the real host is what follows the '@'
+            "https://example.com:x@10.0.0.5/m.json",
+            "https://user:pw@example.com/m.json",
+            "http://localhost:80@169.254.169.254/latest/meta-data",
+            "http://127.0.0.1@169.254.169.254/",
+            // http is loopback-only
+            "http://169.254.169.254/",
+            "http://10.0.0.5/m.json",
+            "http://localhost.evil.com/m.json",
+            "http://127.0.0.1.evil.com/m.json",
+            // parser-differential characters
+            "https://exa\\mple.com/m.json",
+            "https://example.com\\@10.0.0.5/",
+            "https://example.com/\r\nHost: 10.0.0.5",
+            "https://exa mple.com/",
+            "https://ex%2eample.com/",
+            "https://exämple.com/",
+            // malformed authority/port
+            "https://example.com:99999/",
+            "https://example.com:0/",
+            "https://example.com:/m.json",
+            "https://example.com:80:80/",
+            "https://:443/m.json",
+            "https:///m.json",
+            "https://[::1/m.json",
+            "https://[not-ip]/m.json",
+        ] {
+            assert!(!is_allowed_manifest_url(bad), "must reject: {bad:?}");
+        }
+        // Still fine: https hosts/ports/IPv6 literal, loopback http for dev.
+        for ok in [
+            "https://example.com/m.json",
+            "https://example.com:8443/m.json?x=1#f",
+            "HTTPS://Example.COM/m.json",
+            "http://localhost:8000/a.json",
+            "http://127.0.0.1/a.json",
+            "http://[::1]:9000/a.json",
+        ] {
+            assert!(is_allowed_manifest_url(ok), "must accept: {ok:?}");
+        }
+        let p = parse_manifest_url("https://Example.com:8443/x").unwrap();
+        assert_eq!((p.host.as_str(), p.port, p.https), ("example.com", 8443, true));
+    }
+
+    #[test]
+    fn blocklist_covers_internal_ranges_for_the_guard() {
+        for ip in ["127.0.0.1", "10.0.0.5", "169.254.169.254", "192.168.1.1", "100.64.0.1", "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.5"] {
+            assert!(ip_blocked(&ip.parse().unwrap()), "{ip} must be blocked");
+        }
+        assert!(!ip_blocked(&"93.184.216.34".parse().unwrap()));
+        // loopback-only mode (http dev) accepts ONLY loopback, even for "localhost"
+        let g = GuardedResolver { host: "localhost".into(), loopback_only: true };
+        assert!(g.ip_ok(&"127.0.0.1".parse().unwrap()));
+        assert!(g.ip_ok(&"::1".parse().unwrap()));
+        assert!(!g.ip_ok(&"10.0.0.5".parse().unwrap()));
+        assert!(!g.ip_ok(&"169.254.169.254".parse().unwrap()));
+        let g = GuardedResolver { host: "example.com".into(), loopback_only: false };
+        assert!(!g.ip_ok(&"127.0.0.1".parse().unwrap()));
+        assert!(g.ip_ok(&"93.184.216.34".parse().unwrap()));
+    }
+
+    #[test]
+    fn fetch_refuses_blocked_targets_without_network() {
+        for u in [
+            "http://169.254.169.254/latest/meta-data",
+            "https://10.0.0.5/m.json",
+            "https://127.0.0.1:1/m.json",
+            "http://localhost:80@169.254.169.254/",
+        ] {
+            assert!(fetch_manifest(u).is_err(), "{u}");
+        }
     }
 
     #[test]

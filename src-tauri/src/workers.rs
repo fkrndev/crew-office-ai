@@ -356,6 +356,24 @@ pub fn gc_preserved_worktrees(st: &AppState) {
     }
 }
 
+/// The base ref a worker's worktree is compared against, from
+/// `git_ops::branch()`'s `{"branch","detached"}` — HEAD when detached (the
+/// "branch" is then just a short sha), "main" when there's no repo / no
+/// commits yet.
+fn base_ref(b: Option<&Value>) -> String {
+    let Some(b) = b else {
+        return "main".into();
+    };
+    if b["detached"].as_bool() == Some(true) {
+        return "HEAD".into();
+    }
+    b["branch"]
+        .as_str()
+        .filter(|s| !s.is_empty() && !s.starts_with('('))
+        .map(String::from)
+        .unwrap_or_else(|| "main".into())
+}
+
 /// processSpawnRequest — validate, spawn, register, dispatch. Terminal
 /// failures archive to .failed and inform god WITH the Slack coords.
 pub fn process_spawn_request(app: &AppHandle, path: &Path) {
@@ -366,6 +384,16 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
     {
         Some(v) => v,
         None => {
+            // God writes these files non-atomically — a half-written request
+            // must be retried next tick, not rejected + archived for good.
+            let still_writing = fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_millis() < 1000);
+            if still_writing {
+                return;
+            }
             log::warn!("[worker] unparseable spawn-request: {}", path.display());
             inform_god(
                 &st.hive,
@@ -475,17 +503,35 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         fail!(format!("engine CLI \"{bin}\" is not installed"));
     }
 
-    let base_branch = crate::git_ops::branch(Path::new(&cwd))
-        .and_then(|b| b["current"].as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "main".into());
+    let base_branch = base_ref(crate::git_ops::branch(Path::new(&cwd)).as_ref());
 
     let name = raw["name"]
         .as_str()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("Worker {}", &req_id[..req_id.len().min(12)]));
+        .unwrap_or_else(|| format!("Worker {}", req_id.chars().take(12).collect::<String>()));
 
+    // Register the worker BEFORE spawning: a child that dies right after spawn
+    // runs the natural-exit teardown (which removes this record) possibly
+    // before spawn_inner even returns — inserting afterwards would leak a
+    // max_workers slot forever. Rolled back below if the spawn itself fails.
+    let token_cap = raw["tokenCap"]
+        .as_f64()
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .map(|c| c as u64);
+    st.live_workers.lock().unwrap().insert(
+        worker_id.clone(),
+        WorkerRec {
+            req_id: req_id.clone(),
+            name: name.clone(),
+            slack: slack.clone(),
+            base_branch,
+            spawned_at: now_ms(),
+            token_cap,
+            releasing: false,
+        },
+    );
     let spawned = crate::commands::spawn_inner(
         app.clone(),
         SpawnArgs {
@@ -530,6 +576,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         },
     );
     if let Err(e) = spawned {
+        st.live_workers.lock().unwrap().remove(&worker_id);
         crate::integrations::BROKER.revoke(&worker_id);
         fail!(format!("spawn failed — {e}"));
     }
@@ -544,22 +591,6 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         }),
     );
 
-    let token_cap = raw["tokenCap"]
-        .as_f64()
-        .filter(|c| c.is_finite() && *c > 0.0)
-        .map(|c| c as u64);
-    st.live_workers.lock().unwrap().insert(
-        worker_id.clone(),
-        WorkerRec {
-            req_id: req_id.clone(),
-            name: name.clone(),
-            slack: slack.clone(),
-            base_branch,
-            spawned_at: now_ms(),
-            token_cap,
-            releasing: false,
-        },
-    );
 
     // Dispatch the objective via the standard inbox path — `from: god`, the
     // autonomous-worker preamble (Slack protocol when coords came along) and
@@ -777,6 +808,14 @@ mod tests {
         })
         .unwrap();
         (root, hive)
+    }
+
+    #[test]
+    fn base_ref_reads_branch_key_and_handles_detached() {
+        assert_eq!(base_ref(Some(&json!({ "branch": "develop", "detached": false }))), "develop");
+        assert_eq!(base_ref(Some(&json!({ "branch": "abc1234", "detached": true }))), "HEAD");
+        assert_eq!(base_ref(Some(&json!({ "branch": "(no commits yet)", "detached": false }))), "main");
+        assert_eq!(base_ref(None), "main");
     }
 
     /// The stale-done guard (upstream workerDoneAt): a `done` authored BEFORE

@@ -136,6 +136,11 @@ fn malformed_outbox_message_quarantines_not_wedges() {
     // file can't re-trip every tick.
     let bad = d.join("hive/agents/w1/outbox/bad.json");
     std::fs::write(&bad, "not json at all").unwrap();
+    // A file written moments ago may still be mid-write by its agent — the
+    // router retries on a later tick instead of quarantining it for good.
+    assert!(h.router_tick().unwrap().is_empty());
+    assert!(bad.exists(), "fresh malformed file is retried, not quarantined");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     let ds = h.router_tick().unwrap();
     assert!(ds.is_empty());
     assert!(!bad.exists());

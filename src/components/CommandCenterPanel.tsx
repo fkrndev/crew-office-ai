@@ -432,7 +432,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
       const provider = opts.provider ?? previousProvider;
       let resume = opts.resume === true && provider === previousProvider;
       if (opts.resume && !resume && !opts.resumeOptional) {
-        throw new Error('Cannot resume a session through a different provider.');
+        throw new Error(t('commandCenter.resumeDifferentProvider'));
       }
       let resumeSessionId: string | undefined;
       if (resume) {
@@ -446,9 +446,9 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         const registry = await window.cth.hiveRegistry();
         resumeSessionId = registry.agents[a.id]?.sessionId;
         if (!resumeSessionId) {
-          giveUpOnResume('No recorded session ID; current process was left running.');
+          giveUpOnResume(t('commandCenter.resumeNoSessionId'));
         } else if (provider === 'claude' && !(await window.cth.resolveSessionCwd(resumeSessionId))) {
-          giveUpOnResume('Session transcript not found; current process was left running.');
+          giveUpOnResume(t('commandCenter.resumeNoTranscript'));
         }
       }
       // Capture the live grid before replacing anything. Restart & Continue
@@ -471,7 +471,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
       // `no pty: <id>`. Treating that as fatal aborted before the respawn and
       // turned the one situation the button exists for into a dead end.
       if (!killed.ok && !/^no pty:/.test(killed.error ?? '')) {
-        throw new Error(killed.error ?? 'Could not stop the current process.');
+        throw new Error(killed.error ?? t('commandCenter.couldNotStop'));
       }
       if (!resume) {
         resetTerminal(a.ptyId);
@@ -502,9 +502,9 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         resumeSessionId,
         requireResume: resume
       });
-      if (!res.ok) throw new Error(res.error ?? 'Restart failed.');
+      if (!res.ok) throw new Error(res.error ?? t('commandCenter.restartFailed'));
       if (resume && res.resumed !== true) {
-        throw new Error('Resume was refused; no replacement session was accepted.');
+        throw new Error(t('commandCenter.resumeRefused'));
       }
       if (resume) {
         // The replacement is accepted, so NOW it is safe to throw the old
@@ -522,7 +522,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         updateAgent(a.id, {
           terminalGeneration: (a.terminalGeneration ?? 0) + 1,
           status: 'idle',
-          action: 'recreating terminal…'
+          action: t('agentStatus.recreatingTerminal')
         });
       }
       if (res.ok) {
@@ -539,14 +539,14 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
               provider,
               model,
               status: 'idle' as const,
-              action: 'continuing…'
+              action: t('agentStatus.continuing')
             }
           : {
               command: command.trim(),
               provider,
               model,
               status: 'idle' as const,
-              action: provider === previousProvider ? 'restarting…' : `switching to ${providerPreset(provider).label}…`
+              action: provider === previousProvider ? t('agentStatus.restartingDots') : t('agentStatus.switchingTo', { provider: providerPreset(provider).label })
             };
         updateAgent(a.id, patch);
       }
@@ -572,11 +572,17 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
     const full = suggested
       ? `${body}\n\n${t('commandCenter.dispatchSuggestion', { name: suggested.name, id: suggested.id })}`
       : body;
-    const res = await window.cth.hiveSend(
-      { to: 'god', act: 'request', subject: t('commandCenter.taskFromHuman'), body: full },
-      'human'
-    );
-    setDispatchText('');
+    let res: { ok?: boolean; error?: string };
+    try {
+      res = await window.cth.hiveSend(
+        { to: 'god', act: 'request', subject: t('commandCenter.taskFromHuman'), body: full },
+        'human'
+      );
+    } catch (e) {
+      // A rejected send must read as a failure — and keep the typed text.
+      res = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    if (res.ok) setDispatchText('');
     setDispatchMsg(res.ok
       ? suggested
         ? t('commandCenter.sentToWithSuggestion', { godName, name: suggested.name })
@@ -587,7 +593,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
 
   const fetchIssues = async () => {
     const repo = issueRepo || repos[0];
-    if (!repo) { setIssuesError('No repo selected.'); return; }
+    if (!repo) { setIssuesError(t('commandCenter.noRepoSelected')); return; }
     setIssuesLoading(true);
     setIssuesError(null);
     try {
@@ -596,7 +602,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         setIssues((res.issues ?? []).slice(0, 10));
       } else {
         setIssues([]);
-        setIssuesError(res.error ?? 'Failed to fetch issues.');
+        setIssuesError(res.error ?? t('commandCenter.fetchIssuesFailed'));
       }
     } catch (e) {
       setIssues([]);
@@ -1105,7 +1111,9 @@ function ArchivedSection() {
             <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', wordBreak: 'break-all' }}>{a.cwd}</div>
           </div>
           <button
-            onClick={() => removeArchivedAgent(a.id)}
+            onClick={() => {
+              if (window.confirm(t('commandCenter.forgetArchivedConfirm', { name: a.name }))) removeArchivedAgent(a.id);
+            }}
             style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--cth-ink-500)', flexShrink: 0 }}
           ><Icon name="x" /></button>
         </div>

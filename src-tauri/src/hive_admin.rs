@@ -26,26 +26,29 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Same temp-file + rename contract as hive's private atomic_write — the
-/// ledger/registry are never observed half-written by the router or the UI.
+/// Unique-temp-file + rename (hive::atomic_write_file) — the ledger/registry
+/// are never observed half-written by the router or the UI, and two writers
+/// never share a temp name.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(crate::hive::atomic_write_file(path, bytes)?)
 }
 
 // ─── task ledger (taskLedger.ts add/delete) ─────────────────────────────────
 
+/// Write the ledger file. The caller holds `hive.tasks_lock()` across its
+/// read-modify-write and calls `tasks_written` AFTER releasing it (the git
+/// commit must not run under the store lock).
 fn write_tasks(hive: &Hive, doc: &Value) -> Result<()> {
     atomic_write(
         &hive.root.join("tasks.json"),
         serde_json::to_string_pretty(doc)?.as_bytes(),
-    )?;
+    )
+}
+
+fn tasks_written(hive: &Hive, doc: &Value) {
     let n = doc["tasks"].as_array().map(|t| t.len()).unwrap_or(0);
     let _ = hive.log(&json!({ "kind": "tasks", "count": n }));
     hive.commit(&format!("hive: tasks ({n})"));
-    Ok(())
 }
 
 /// Short random task id — lowercase alnum (~8 chars), upstream's card-id
@@ -75,6 +78,8 @@ pub fn add_task(hive: &Hive, fields: &Value) -> Result<Value> {
         card.insert("createdAt".into(), json!(chrono::Utc::now().to_rfc3339()));
     }
 
+    let lock = hive.tasks_lock();
+    let guard = crate::hive::lock_store(&lock);
     let mut doc = hive.read_tasks()?;
     let tasks = doc
         .get_mut("tasks")
@@ -88,6 +93,8 @@ pub fn add_task(hive: &Hive, fields: &Value) -> Result<Value> {
     }
     tasks.push(Value::Object(card));
     write_tasks(hive, &doc)?;
+    drop(guard);
+    tasks_written(hive, &doc);
     let out = doc["tasks"]
         .as_array()
         .and_then(|t| t.last().cloned())
@@ -99,6 +106,8 @@ pub fn add_task(hive: &Hive, fields: &Value) -> Result<Value> {
 /// (mergeTaskLedger protects FIELDS, never card membership). 404-style error
 /// when the id is absent.
 pub fn delete_task(hive: &Hive, id: &str) -> Result<Value> {
+    let lock = hive.tasks_lock();
+    let guard = crate::hive::lock_store(&lock);
     let mut doc = hive.read_tasks()?;
     let tasks = doc
         .get_mut("tasks")
@@ -111,6 +120,8 @@ pub fn delete_task(hive: &Hive, id: &str) -> Result<Value> {
     }
     let remaining = Value::Array(tasks.clone());
     write_tasks(hive, &doc)?;
+    drop(guard);
+    tasks_written(hive, &doc);
     Ok(remaining)
 }
 
@@ -121,8 +132,11 @@ pub fn delete_task(hive: &Hive, id: &str) -> Result<Value> {
 /// same rule taskLedger's patchTaskInLedger exists to enforce).
 fn patch_registry_entry(hive: &Hive, id: &str, patch: &Map<String, Value>) -> Result<bool> {
     let path = hive.root.join("registry.json");
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    let mut doc: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "agents": {} }));
+    // Same store lock as hive.rs' typed registry writers; a corrupt file is
+    // an error, never an empty doc that overwrites the roster.
+    let lock = hive.registry_lock();
+    let _g = crate::hive::lock_store(&lock);
+    let mut doc = crate::hive::read_json_strict(&path, json!({ "agents": {} }))?;
     let Some(agents) = doc.get_mut("agents") else {
         anyhow::bail!("registry.json is not an object");
     };
@@ -195,11 +209,14 @@ pub fn patch_agent_role(hive: &Hive, id: &str, role: &str) -> Result<Value> {
     patch.insert("role".into(), Value::String(next.to_string()));
     patch.insert("lastSeen".into(), json!(now_ms()));
     patch_registry_entry(hive, id, &patch)?;
-    let identity = format!(
-        "# {}\n\n- id: `{}`\n- provider: `{}`\n- role: {}\n- cwd: `{}`\n",
-        agent.name, agent.id, agent.provider, next, agent.cwd
+    // Same text register_agent writes on spawn (capabilities, god lines…) —
+    // a private re-format here would drop them.
+    let mut updated = agent.clone();
+    updated.role = next.to_string();
+    let _ = fs::write(
+        hive.agent_dir(id).join("identity.md"),
+        Hive::identity_text(&updated),
     );
-    let _ = fs::write(hive.agent_dir(id).join("identity.md"), identity);
     let _ = hive.log(&json!({ "kind": "role", "agent": id, "role": next }));
     hive.commit(&format!("hive: role {id}"));
     Ok(json!({ "ok": true }))
@@ -314,20 +331,66 @@ pub fn agent_context(hive: &Hive, id: &str, pty_live: bool) -> Value {
     })
 }
 
-/// hive:log — upstream logTail: the last `limit` events in FILE order,
-/// oldest→newest; unparseable lines are preserved as `{"raw": <line>}` so a
-/// corrupt tail never silently disappears. `limit` is capped at 500.
-pub fn hive_log(hive: &Hive, limit: usize) -> Vec<Value> {
-    let cap = limit.min(500);
-    let Ok(text) = fs::read_to_string(hive.root.join("log.jsonl")) else {
+/// Last `max_lines` non-blank lines of `path`, oldest→newest, read from the
+/// end in chunks so a multi-MB log is never loaded whole. A missing file is
+/// an empty tail.
+fn tail_lines(path: &std::path::Path, max_lines: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const CHUNK: u64 = 64 * 1024;
+    let Ok(mut f) = fs::File::open(path) else {
         return Vec::new();
     };
-    let all: Vec<Value> = text
-        .lines()
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    let mut pos = len;
+    // Need max_lines complete lines: stop once the buffer holds more than
+    // max_lines newlines (the oldest, possibly partial, line is discarded).
+    while pos > 0 && buf.iter().filter(|&&b| b == b'\n').count() <= max_lines {
+        let take = CHUNK.min(pos);
+        pos -= take;
+        let mut chunk = vec![0u8; take as usize];
+        if f.seek(SeekFrom::Start(pos)).is_err() || f.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        chunk.extend_from_slice(&buf);
+        buf = chunk;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if pos > 0 && !lines.is_empty() {
+        lines.remove(0); // starts mid-line
+    }
+    let lines: Vec<String> = lines
+        .into_iter()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str::<Value>(l.trim()).unwrap_or_else(|_| json!({ "raw": l })))
+        .map(String::from)
         .collect();
-    all.into_iter().rev().take(cap).rev().collect()
+    let skip = lines.len().saturating_sub(max_lines);
+    lines.into_iter().skip(skip).collect()
+}
+
+/// hive:log — upstream logTail: the last `limit` events in FILE order,
+/// oldest→newest; unparseable lines are preserved as `{"raw": <line>}` so a
+/// corrupt tail never silently disappears. `limit` is capped at 500. When the
+/// live log was just rotated and holds fewer lines than asked for, the tail
+/// continues into `log.jsonl.1`.
+pub fn hive_log(hive: &Hive, limit: usize) -> Vec<Value> {
+    let cap = limit.min(500);
+    let live = hive.root.join("log.jsonl");
+    let mut lines = tail_lines(&live, cap);
+    if lines.len() < cap {
+        let mut prev = live.into_os_string();
+        prev.push(".1");
+        let mut older = tail_lines(std::path::Path::new(&prev), cap - lines.len());
+        older.append(&mut lines);
+        lines = older;
+    }
+    lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l.trim()).unwrap_or_else(|_| json!({ "raw": l })))
+        .collect()
 }
 
 /// hive:messages — upstream `voiceMessages` (hive.ts:2015): floor-wide or
@@ -435,6 +498,41 @@ pub fn voice_messages(
     out
 }
 
+/// Case-insensitive substring search that reports BYTE offsets into the
+/// ORIGINAL `hay` (`(start, end)` on char boundaries). Lowercasing the whole
+/// line first (`hay.to_lowercase().find(..)`) shifts offsets whenever a char's
+/// lowercase form has a different UTF-8 length, so the match is walked
+/// char-by-char on `hay` itself instead. `needle` is already lowercase.
+fn find_ci(hay: &str, needle: &[char]) -> Option<(usize, usize)> {
+    for (start, _) in hay.char_indices() {
+        let mut ni = 0;
+        let mut end = start;
+        for (off, c) in hay[start..].char_indices() {
+            if ni == needle.len() {
+                break;
+            }
+            let mut ok = true;
+            for lc in c.to_lowercase() {
+                if ni < needle.len() && needle[ni] == lc {
+                    ni += 1;
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                ni = usize::MAX;
+                break;
+            }
+            end = start + off + c.len_utf8();
+        }
+        if ni == needle.len() {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
 /// hive:textSearch — literal, case-insensitive substring search across the
 /// text files under hive/ (*.md, *.txt, *.json). Skips .git, anything
 /// non-UTF-8/binary, and files over 256KB. Rows are {path, line, text}
@@ -445,7 +543,7 @@ pub fn voice_messages(
 /// scope (the memory-search surface is a curated set).
 pub fn text_search(hive: &Hive, query: &str, limit: usize) -> Vec<Value> {
     const MAX_ROWS: usize = 100;
-    let needle = query.trim().to_lowercase();
+    let needle: Vec<char> = query.trim().to_lowercase().chars().collect();
     if needle.is_empty() {
         return Vec::new();
     }
@@ -473,15 +571,20 @@ pub fn text_search(hive: &Hive, query: &str, limit: usize) -> Vec<Value> {
             if hits >= 3 {
                 break;
             }
-            let lower = line.to_lowercase();
-            let Some(idx) = lower.find(&needle) else {
+            let Some((m_start, m_end)) = find_ci(line, &needle) else {
                 continue;
             };
-            let start = idx.saturating_sub(40);
-            let end = (idx + needle.len() + 40).min(line.len());
-            // Don't slice mid-UTF8 — the line is what it is, but the needle
-            // boundaries are char-safe so only the padding needs a guard.
-            let excerpt = line[start.min(line.len())..end].trim();
+            // ~40 bytes of context either side, snapped to char boundaries —
+            // multibyte text (em-dash, CJK, emoji) must never be sliced mid-char.
+            let mut start = m_start.saturating_sub(40);
+            while !line.is_char_boundary(start) {
+                start -= 1;
+            }
+            let mut end = (m_end + 40).min(line.len());
+            while !line.is_char_boundary(end) {
+                end += 1;
+            }
+            let excerpt = line[start..end].trim();
             out.push(json!({ "source": source, "excerpt": excerpt }));
             hits += 1;
             if out.len() >= cap {
@@ -620,8 +723,34 @@ mod tests {
         let a = hive.registry().into_iter().find(|a| a.id == "w-2").unwrap();
         assert_eq!(a.role, "reviewer");
         let ident = fs::read_to_string(hive.agent_dir("w-2").join("identity.md")).unwrap();
-        assert!(ident.contains("- role: reviewer"));
+        // identity_text's format (the one register_agent writes) — Role line
+        // plus the capabilities/cwd lines a private re-format used to drop.
+        assert!(ident.contains("- Role: reviewer"), "{ident}");
+        assert!(ident.contains("- Capabilities:"), "{ident}");
+        assert!(ident.contains("- Working directory:"), "{ident}");
         assert!(patch_agent_role(&hive, "w-2", "  ").is_err());
+    }
+
+    #[test]
+    fn log_tail_spans_a_rotation_and_reads_big_files_from_the_end() {
+        let (_r, hive) = tmp_hive("log-rot");
+        // > one 64 KB chunk of lines, so the backwards read has to loop.
+        let pad = "x".repeat(200);
+        for i in 0..1000 {
+            hive.log(&json!({ "event": "t", "i": i, "pad": pad })).unwrap();
+        }
+        let tail = hive_log(&hive, 500);
+        assert_eq!(tail.len(), 500);
+        assert_eq!(tail[0]["i"], json!(500));
+        assert_eq!(tail[499]["i"], json!(999));
+        // Rotate: the live log is empty, the tail continues into log.jsonl.1.
+        let live = hive.root.join("log.jsonl");
+        assert!(crate::hive::rotate_if_larger(&live, 10));
+        assert!(hive.root.join("log.jsonl.1").exists());
+        hive.log(&json!({ "event": "after", "i": 1000 })).unwrap();
+        let tail = hive_log(&hive, 3);
+        assert_eq!(tail.iter().map(|v| v["i"].as_u64().unwrap()).collect::<Vec<_>>(), vec![998, 999, 1000]);
+        assert_eq!(hive_log(&hive, 500).len(), 500);
     }
 
     #[test]
@@ -663,6 +792,70 @@ mod tests {
         assert_eq!(hits[0]["excerpt"], json!("The QUICK brown fox"));
         assert!(text_search(&hive, "absent-token", 100).is_empty());
         assert!(text_search(&hive, "  ", 100).is_empty());
+    }
+
+    #[test]
+    fn text_search_is_char_boundary_safe_on_multibyte() {
+        let (_r, hive) = tmp_hive("search-mb");
+        let dir = hive.agent_dir("w-9");
+        fs::create_dir_all(&dir).unwrap();
+        // Em-dash, CJK and emoji packed around the match so BOTH the 40-byte
+        // left and right padding land mid-char; 'İ' lowercases to 2 chars,
+        // which used to shift to_lowercase() offsets against the original.
+        let pad = "—漢字😀".repeat(12);
+        let line = format!("İİİ {pad} NEEDLE {pad} end");
+        fs::write(dir.join("memory.md"), format!("{line}\n")).unwrap();
+        let hits = text_search(&hive, "needle", 100);
+        assert_eq!(hits.len(), 1);
+        let ex = hits[0]["excerpt"].as_str().unwrap();
+        assert!(ex.contains("NEEDLE"), "{ex}");
+        // The match itself may be multibyte too.
+        fs::write(dir.join("memory.md"), format!("{pad}漢字😀{pad}\n")).unwrap();
+        let hits = text_search(&hive, "漢字😀", 100);
+        assert!(!hits.is_empty());
+        // find_ci reports offsets into the ORIGINAL text.
+        let hay = "İİ abc";
+        let (s0, e0) = find_ci(hay, &['a', 'b', 'c']).unwrap();
+        assert_eq!(&hay[s0..e0], "abc");
+    }
+
+    #[test]
+    fn corrupt_stores_are_errors_not_overwritten() {
+        let (_r, hive) = tmp_hive("corrupt");
+        hive.register_agent(&entry("w-7", "Gus")).unwrap();
+        fs::write(hive.root.join("registry.json"), "{ not json").unwrap();
+        assert!(hive.set_status("w-7", "working").is_err());
+        // The corrupt file is untouched and a .bak copy exists.
+        assert_eq!(
+            fs::read_to_string(hive.root.join("registry.json")).unwrap(),
+            "{ not json"
+        );
+        assert!(hive.root.join("registry.json.bak").exists());
+        fs::write(hive.root.join("tasks.json"), "garbage").unwrap();
+        assert!(hive.read_tasks().is_err());
+        assert!(add_task(&hive, &json!({ "title": "x" })).is_err());
+        assert_eq!(
+            fs::read_to_string(hive.root.join("tasks.json")).unwrap(),
+            "garbage"
+        );
+    }
+
+    #[test]
+    fn concurrent_task_adds_all_land() {
+        let (_r, hive) = tmp_hive("conc");
+        let hive = std::sync::Arc::new(hive);
+        let hs: Vec<_> = (0..8)
+            .map(|i| {
+                let h = hive.clone();
+                std::thread::spawn(move || {
+                    add_task(&h, &json!({ "id": format!("t{i}"), "title": "x" })).unwrap();
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(hive.read_tasks().unwrap()["tasks"].as_array().unwrap().len(), 8);
     }
 
     #[test]

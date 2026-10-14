@@ -554,15 +554,11 @@ pub(crate) struct PendingInstall {
 pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<Mutex<HashMap<String, PendingInstall>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Quote one argv token so `tokenize_command` round-trips it: whitespace and
-/// empties need quotes; tokens that already carry quote characters pass
-/// through raw (the tokenizer can't express embedded quotes either way).
+/// Quote one argv token so `tokenize_command` round-trips it losslessly —
+/// whitespace, empties and embedded quotes (`--settings {"a":1}`) all
+/// survive via the CRT-style backslash escaping.
 fn quote_spawn_token(t: &str) -> String {
-    if t.is_empty() || t.chars().any(|c| c.is_whitespace()) {
-        format!("\"{t}\"")
-    } else {
-        t.to_string()
-    }
+    crate::misc::quote_command_token(t)
 }
 
 /// Reassemble upstream's (command, args[]) split into the single command
@@ -828,6 +824,75 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     args: SpawnArgs,
     plan: SpawnPlan,
 ) -> Result<SpawnOutcome, String> {
+    // (pty_id, agent_id) once the spawn passed the duplicate-id gate: any
+    // later failure must not leak the registry status, isolation worktree,
+    // proxy bridge or a half-registered PTY.
+    // The bool: the agent had NO registry row before this call (a fresh hire).
+    let mut claimed: Option<(String, String, bool)> = None;
+    let res = spawn_inner_impl(app.clone(), args, plan, &mut claimed);
+    if res.is_err() {
+        if let Some((pty_id, agent_id, fresh)) = claimed {
+            let st = state(&app);
+            st.map_pty(&pty_id, &agent_id);
+            if let Some(mut h) = st.ptys.lock().unwrap().remove(&pty_id) {
+                let _ = h.kill();
+            }
+            // Shared teardown: proxy bridge stop, worktree removal (guarded —
+            // never deletes unintegrated work), status → gone.
+            teardown_pty_core(&app, &pty_id, "gone");
+            // A fresh hire that never came up must not linger as a "gone"
+            // registry ghost; an existing agent keeps its row (status gone).
+            if fresh {
+                let _ = st.hive.remove_agent(&agent_id);
+            }
+        }
+    }
+    res
+}
+
+/// Worktree dir segment for an agent id. Ids that need sanitising (or would
+/// be `.`/`..`) get a stable hash suffix so two distinct ids can never share
+/// a worktree/branch and the segment can never climb out of the worktree root.
+fn worktree_seg(agent_id: &str) -> String {
+    let seg: String = agent_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if seg == agent_id && !seg.is_empty() && !seg.chars().all(|c| c == '.') {
+        return seg;
+    }
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(agent_id.as_bytes());
+    let tag: String = h.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    let stem = seg.trim_matches(|c| c == '.' || c == '-');
+    format!("{}-{tag}", if stem.is_empty() { "agent" } else { stem })
+}
+
+/// Branch to base an isolation worktree on, from `git_ops::branch()`'s
+/// `{branch, detached}` shape — a detached HEAD (or an unborn branch) bases
+/// on `HEAD` itself.
+fn worktree_base_from_branch(b: &serde_json::Value) -> Option<String> {
+    if b["detached"].as_bool() == Some(true) {
+        return Some("HEAD".into());
+    }
+    b["branch"]
+        .as_str()
+        .filter(|s| !s.starts_with('('))
+        .map(str::to_string)
+}
+
+fn spawn_inner_impl<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    args: SpawnArgs,
+    plan: SpawnPlan,
+    claimed: &mut Option<(String, String, bool)>,
+) -> Result<SpawnOutcome, String> {
     let st = state(&app);
     // The PTY namespace key — the renderer's terminal `id` ("pty-<agentId>").
     // Upstream ptyManager.spawn refuses a duplicate id with "pty already
@@ -850,6 +915,10 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| pty_id.clone());
+    // Remember whether this id is brand new BEFORE anything registers it —
+    // the failure cleanup only deletes rows this call created.
+    let fresh = !st.hive.registry().iter().any(|a| a.id == agent_id);
+    *claimed = Some((pty_id.clone(), agent_id.clone(), fresh));
 
     // Git isolation (index.ts:2730): when requested and the cwd is a real
     // repo, give the agent its own `agent/<id>` worktree under
@@ -858,16 +927,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     let mut effective_cwd = args.cwd.clone();
     if args.isolate && crate::git_ops::is_repo(std::path::Path::new(&args.cwd)) {
         // Upstream worktree seg is `opts.hive?.id ?? opts.id` — the AGENT id.
-        let seg: String = agent_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
+        let seg = worktree_seg(&agent_id);
         let wt_root = st
             .hive
             .root
@@ -878,8 +938,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         // Path-safety: the resolved worktree path must stay under wt_root.
         if wt_path.starts_with(&wt_root) {
             let base = crate::git_ops::branch(std::path::Path::new(&args.cwd))
-                .and_then(|b| b["current"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "main".into());
+                .and_then(|b| worktree_base_from_branch(&b))
+                .unwrap_or_else(|| "HEAD".into());
             let branch = crate::git_ops::agent_branch_for(&wt_path);
             match crate::git_ops::add_worktree(
                 std::path::Path::new(&args.cwd),
@@ -1009,6 +1069,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     }
     if let Some(sock) = &st.sock_addr {
         agent_env.insert("HIVE_SOCK".into(), sock.clone());
+        // Per-run secret the hook server requires on every envelope.
+        agent_env.insert("HIVE_TOKEN".into(), crate::hooks::hook_token().to_string());
     }
     // Integration broker token (integrationBroker.ts grant(workerId,
     // enabledIds)) — MD_BROKER_URL/MD_BROKER_TOKEN env for worker spawn;
@@ -1113,6 +1175,9 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 {
                     spec.env.insert("SHARDX_PROFILE".into(), pid);
                 }
+                // config.yaml gets `${MUNDER_MCP_*}` refs (hermes expands ${VAR}
+                // in mcp_servers from its process env); values ride agent_env.
+                agent_env.extend(crate::mcp::externalize_mcp_secrets(&mut seed.mcp_servers));
                 seed
             };
             if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
@@ -1320,7 +1385,7 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
         }
         path.push_str(&runtime_dir.display().to_string());
     }
-    let env = build_pty_env(&parent, &path, Some(&agent_env), cfg!(windows));
+    let mut env = build_pty_env(&parent, &path, Some(&agent_env), cfg!(windows));
 
     // cwd: expand `~` first (existsSync never expands it — pty.ts:559), then
     // upstream's hard error on a missing workspace rather than a silent
@@ -1406,9 +1471,11 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 &mcp_defaults,
                 &args.mcp_enable,
                 &args.mcp_disable,
-                &|key| keyring::Entry::new(KEYRING_SERVICE, key)
-                    .ok()
-                    .and_then(|e| e.get_password().ok()),
+                // Same persist-aware getter as the hermes path — a key a flaky
+                // CredMan dropped is still found in the DPAPI file store.
+                // Values are swapped for `${MUNDER_MCP_*}` refs below and ride
+                // the spawned process env instead of settings.json.
+                &|key| crate::misc::secret_get_persist(key, st.config_store.dir()),
             );
             // The agent's own launcher profile id rides the MCP server's env
             // too — the server ignores it today, but a future default-profile
@@ -1418,6 +1485,8 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
             {
                 spec.env.insert("SHARDX_PROFILE".into(), pid);
             }
+            // Secrets never touch disk: refs in the file, values in the env.
+            env.extend(crate::mcp::externalize_mcp_secrets(&mut mcp_servers));
             let settings = st.hive.hook_settings(&shim_cmd, &mcp_servers);
             let settings_path = agent_dir.join("settings.json");
             let _ = std::fs::write(
@@ -1483,8 +1552,11 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                     },
                 );
             }
+            let spawn_gen = handle.spawn_gen;
             st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
             st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
+            // A child that already exited ran its teardown before the insert.
+            pty::reap_if_already_exited(&app, &pty_id, spawn_gen);
             return Ok(SpawnOutcome {
                 pty_id,
                 cwd,
@@ -1647,11 +1719,16 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
     );
+    let spawn_gen = handle.spawn_gen;
     st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
     // upstream ptyToAgent.set(opts.id, opts.hive.id) — every agent-keyed
     // lookup (hooks, breaker, watchdog, missions) resolves through this.
     st.map_pty(&pty_id, &agent_id);
     st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
+    // The waiter thread started inside pty::spawn, before the handle was
+    // registered: a child that already exited (~1ms) ran its teardown against
+    // nothing and would leave this dead handle + mapping behind forever.
+    pty::reap_if_already_exited(&app, &pty_id, spawn_gen);
 
     // 'type-into-tui' seed delivery: upstream returns the seed to the
     // renderer, which types it via the write chain (seedPrompt → submitToPty).
@@ -1667,13 +1744,14 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 let Some(st) = app2.try_state::<AppState>() else {
                     return;
                 };
-                let mut ptys = st.ptys.lock().unwrap();
-                if let Some(h) = ptys.get_mut(&pid2) {
-                    let _ = h.write(&format!(
+                crate::pty::write_pty(
+                    &st,
+                    &pid2,
+                    &format!(
                         "{}\r",
                         text.split_whitespace().collect::<Vec<_>>().join(" ")
-                    ));
-                }
+                    ),
+                );
             });
         }
     }
@@ -1739,9 +1817,11 @@ pub(crate) fn pty_write_core<R: tauri::Runtime>(
     data: &str,
 ) -> PtyOpResult {
     let st = state(app);
-    let mut ptys = st.ptys.lock().unwrap();
-    match ptys.get_mut(id) {
-        Some(h) => match h.write(data) {
+    // Clone the writer out and release the map lock first: a blocking write
+    // into a wedged agent must not stall every other PTY operation.
+    let writer = st.ptys.lock().unwrap().get(id).map(|h| h.writer());
+    match writer {
+        Some(w) => match w.write(data) {
             Ok(()) => PtyOpResult::ok(),
             Err(e) => PtyOpResult::err(err_str(e)),
         },
@@ -2039,8 +2119,6 @@ pub fn missions_save(
 
 // ─── secrets (OS keychain → agent env) ──────────────────────────────────────
 
-const KEYRING_SERVICE: &str = "agent-office";
-
 /// Read a credential — the caller's only path to a value (slack secrets and
 /// spawn-time env injection both go through here).
 fn secret_get(app: &AppHandle, key: &str) -> Option<String> {
@@ -2123,8 +2201,13 @@ fn ensure_webhook_server(
         return None;
     }
     st.webhook.prune_held(app, &st.trigger_history);
-    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    use std::sync::atomic::Ordering::SeqCst;
+    // Shared with webhook_start/webhook_stop: a stop clears BOUND and latches,
+    // so a save after a stop must not claim a listener that no longer exists.
+    if crate::cmd_misc::WEBHOOK_LATCHED.load(SeqCst) {
+        return None;
+    }
+    if crate::cmd_misc::WEBHOOK_BOUND.swap(true, SeqCst) {
         return Some(port); // already bound; set_endpoints already applied
     }
     let wh = st.webhook.clone();
@@ -2133,8 +2216,9 @@ fn ensure_webhook_server(
     std::thread::spawn(move || {
         if let Err(e) = wh.run(port, hive, app2) {
             log::warn!("[webhook] server stopped: {e:#}");
-            STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
         }
+        // The serve loop returned (bind failure or a stop) — nothing listens.
+        crate::cmd_misc::WEBHOOK_BOUND.store(false, SeqCst);
     });
     Some(port)
 }
@@ -2735,6 +2819,9 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
     // Public tunnel (upstream slack.ts openTunnel — Slack's servers need a
     // reachable Request URL). Non-fatal: the local handler is the security
     // boundary and stays up even if the tunnel can't be established.
+    if let Some((_, mut old)) = st.slack_tunnel.lock().unwrap().take() {
+        crate::misc::kill_process_tree(&mut old); // never orphan a previous tunnel
+    }
     match crate::misc::start_tunnel(port) {
         Ok((url, child)) => *st.slack_tunnel.lock().unwrap() = Some((url, child)),
         Err(e) => log::warn!("[slack] tunnel unavailable: {e}"),
@@ -2748,7 +2835,7 @@ pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
     st.slack.stop();
     st.slack_reply.stop();
     if let Some((_, mut child)) = st.slack_tunnel.lock().unwrap().take() {
-        let _ = child.kill();
+        crate::misc::kill_process_tree(&mut child);
     }
     // The discovery file advertises a dead socket once the rail is down —
     // drop it so a stale helper doesn't talk to an unrelated listener.
@@ -2930,9 +3017,20 @@ pub(crate) fn closing_time_start_core<R: tauri::Runtime>(
     // closing-time steers AGENT ids — translate the live PTY map through the
     // pty→agent mapping (pty keys carry the renderer's `pty-` prefix).
     let live: std::collections::HashSet<String> = st.live_agent_ids();
-    let mut control = st.control.lock().unwrap();
-    let n = st.closing.start(&st.hive, &mut control, &live)?;
-    drop(control);
+    // start() mails god (disk write + git commit) — never under the global
+    // control lock, which every hook handler takes. It steers into a scratch
+    // registry; the queued notes are replayed into the real one afterwards.
+    let mut scratch = crate::control::ControlRegistry::default();
+    let n = st.closing.start(&st.hive, &mut scratch, &live)?;
+    {
+        let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
+        let mut control = st.control.lock().unwrap();
+        for id in live.iter().chain(std::iter::once(&god_id)) {
+            while let Some(note) = scratch.take_steer(id) {
+                control.steer(id, &note);
+            }
+        }
+    }
     nudge_idle_god(&st);
     emit_closing(&app, "started");
     Ok(n)
@@ -2941,8 +3039,19 @@ pub(crate) fn closing_time_start_core<R: tauri::Runtime>(
 #[tauri::command(async)]
 pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
     let st = state(&app);
-    let mut control = st.control.lock().unwrap();
-    st.closing.cancel(&st.hive, &mut control);
+    // cancel() mails god — do that against a scratch registry, then clear the
+    // real queued steers under a short-lived lock.
+    let was_active = st.closing.is_active();
+    let mut scratch = crate::control::ControlRegistry::default();
+    st.closing.cancel(&st.hive, &mut scratch);
+    if was_active {
+        let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
+        let live = st.live_agent_ids();
+        let mut control = st.control.lock().unwrap();
+        for id in live.iter().chain(std::iter::once(&god_id)) {
+            control.clear_steers(id);
+        }
+    }
     emit_closing(&app, "cancelled");
     Ok(true)
 }
@@ -2988,10 +3097,13 @@ pub(crate) fn nudge_idle_god(st: &AppState) -> bool {
     if !(idle_by_status || idle_by_quiet) {
         return false;
     }
-    h.write(
-        "CLOSING TIME — check your inbox for the shutdown brief and run the protocol now.\r",
-    )
-    .is_ok()
+    let writer = h.writer();
+    drop(ptys);
+    writer
+        .write(
+            "CLOSING TIME — check your inbox for the shutdown brief and run the protocol now.\r",
+        )
+        .is_ok()
 }
 
 /// Emit the protocol state to the floor UI (upstream 'app:closingTime').
@@ -3057,11 +3169,11 @@ pub fn roster_archive(app: AppHandle) -> Result<bool, String> {
 #[tauri::command(async)]
 pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
     let st = state(&app);
-    let mut t = crate::cost_lifetime::CostLedgerTotals::default();
-    t.refresh_fully(&st.hive.cost_ledger_path());
+    let agents = st.hive.lifetime_usd().unwrap_or_default();
+    let floor_total: f64 = agents.values().sum();
     Ok(serde_json::json!({
-        "agents": t.all(),
-        "floor_total": t.floor_total(),
+        "agents": agents,
+        "floor_total": floor_total,
     }))
 }
 
@@ -3224,21 +3336,63 @@ fn wait_or_kill(mut child: std::process::Child, secs: u64) -> bool {
             Err(_) => return false,
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    crate::misc::kill_process_tree(&mut child);
     false
+}
+
+/// Hard ceiling for any single ShardX download (launcher exe ~100MB, engine
+/// zip a few hundred MB) — a hostile/broken server can't fill the disk.
+const MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// `<dest>.part` — downloads land here and are renamed only once complete, so
+/// a killed/failed transfer never leaves a truncated file under the final name.
+fn part_path(dest: &Path) -> PathBuf {
+    let mut p = dest.as_os_str().to_owned();
+    p.push(".part");
+    PathBuf::from(p)
 }
 
 /// Stream a response body straight to disk. ureq's buffered readers
 /// (read_to_vec/read_to_string/read_json) carry a 10 MiB default cap —
 /// binary downloads (launcher exe ~100MB, repo tarballs, fingerprint
-/// bundles) exceed it, so they stream through as_reader() instead.
+/// bundles) exceed it, so they stream through as_reader() instead. Writes to
+/// `<dest>.part` and renames on success; capped at MAX_DOWNLOAD_BYTES.
 fn download_to_file(resp: &mut ureq::http::Response<ureq::Body>, dest: &Path) -> Result<u64, String> {
+    use std::io::Read as _;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let mut out = std::fs::File::create(dest).map_err(|e| e.to_string())?;
-    std::io::copy(&mut resp.body_mut().as_reader(), &mut out).map_err(|e| e.to_string())
+    let part = part_path(dest);
+    let result = (|| -> Result<u64, String> {
+        let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+        let mut capped = resp.body_mut().as_reader().take(MAX_DOWNLOAD_BYTES + 1);
+        let n = std::io::copy(&mut capped, &mut out).map_err(|e| e.to_string())?;
+        if n > MAX_DOWNLOAD_BYTES {
+            return Err(format!("download exceeds the {} MiB cap", MAX_DOWNLOAD_BYTES >> 20));
+        }
+        drop(out);
+        std::fs::rename(&part, dest).map_err(|e| e.to_string())?;
+        Ok(n)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result
+}
+
+/// The system bsdtar. Bare `tar` on Windows can resolve to a GNU tar earlier
+/// on PATH (Git for Windows, MSYS) that mishandles `C:\` paths and .zip —
+/// System32's tar.exe is the one the extract flags were written for.
+fn system_tar() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let p = PathBuf::from(root).join("System32").join("tar.exe");
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("tar")
 }
 
 /// Resolve a hostname via DNS-over-HTTPS (Cloudflare's JSON API over the
@@ -3289,18 +3443,36 @@ fn doh_download(url: &str, dest: &Path) -> Result<u64, String> {
         .ok_or("not an https url")?
         .to_string();
     let ip = doh_resolve(&host).ok_or("DoH resolution failed")?;
+    // Bounded like the direct path (never hang the settings card), and
+    // written to <dest>.part then renamed — curl dying mid-transfer must not
+    // leave a truncated file under the final name.
+    let part = part_path(dest);
     let st = std::process::Command::new("curl")
         .args(["-fsSL", "--resolve", &format!("{host}:443:{ip}")])
+        .args(["--connect-timeout", "20", "--max-time", "900"])
+        .args(["--max-filesize", &MAX_DOWNLOAD_BYTES.to_string()])
         .arg("-o")
-        .arg(dest)
+        .arg(&part)
         .arg(url)
         .status()
         .map_err(|e| format!("curl spawn failed: {e}"))?;
     if !st.success() {
+        let _ = std::fs::remove_file(&part);
         return Err(format!("curl --resolve exit {}", st.code().unwrap_or(-1)));
+    }
+    if let Err(e) = std::fs::rename(&part, dest) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.to_string());
     }
     std::fs::metadata(dest).map_err(|e| e.to_string()).map(|m| m.len())
 }
+
+/// ProxyShard/ShardBrowser commit the vendored MCP bridge is built from —
+/// pinned (not refs/heads/main) so a compromised or broken push can't reach
+/// users. Bump: `curl -s https://api.github.com/repos/ProxyShard/ShardBrowser/commits/main`
+/// → `.sha`, review the `mcp/` diff (and package.json scripts/deps), update
+/// this constant. Pinned 2026-10-14 (commit dated 2026-09-13).
+const SHARDX_MCP_COMMIT: &str = "4880c3fd1a6360bc205daa5bc5542b16277201c3";
 
 /// Vendor the ShardX MCP source into <harness>/mcp-servers/shardx/ and npm
 /// install it with the browser download skipped (patchright only ever
@@ -3309,15 +3481,17 @@ fn doh_download(url: &str, dest: &Path) -> Result<u64, String> {
 /// tarball extracts without new deps.
 fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
     let tmp = std::env::temp_dir().join(format!("shardx-mcp-{}.tgz", uuid::Uuid::new_v4()));
+    let out = std::env::temp_dir().join(format!("shardx-src-{}", uuid::Uuid::new_v4()));
     let step = || -> Result<(), String> {
         let mut resp = shardx_http(120)
-            .get("https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/refs/heads/main")
+            .get(&format!(
+                "https://codeload.github.com/ProxyShard/ShardBrowser/tar.gz/{SHARDX_MCP_COMMIT}"
+            ))
             .call()
             .map_err(|e| format!("download failed: {e}"))?;
         download_to_file(&mut resp, &tmp)?;
-        let out = std::env::temp_dir().join(format!("shardx-src-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-        let ok = std::process::Command::new("tar")
+        let ok = std::process::Command::new(system_tar())
             .args(["-xzf"])
             .arg(&tmp)
             .arg("-C")
@@ -3337,9 +3511,14 @@ fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
                 crate::hive::copy_dir(&cand, &dest).map_err(|e| e.to_string())?;
                 // npm install — browser download flags keep node_modules
                 // small; a dead registry connection is killed at 4 min.
+                // --ignore-scripts: neither the package nor any dependency
+                // (patchright, @modelcontextprotocol/sdk, zod) has an
+                // install script the bridge needs (verified at the pinned
+                // commit), so lifecycle scripts never run. No lockfile
+                // ships, hence `install` rather than `ci`.
                 let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
                 let child = std::process::Command::new(npm)
-                    .arg("install")
+                    .args(["install", "--ignore-scripts"])
                     .current_dir(&dest)
                     .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
                     .env("PATCHRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
@@ -3348,14 +3527,17 @@ fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
                 if !wait_or_kill(child, 240) {
                     return Err("npm install failed or timed out".into());
                 }
-                let _ = std::fs::remove_dir_all(&out);
                 return Ok(());
             }
         }
         Err("mcp/ not found in the archive".into())
     };
+    let res = step();
+    // The tarball and the extraction dir are scratch — drop them on success
+    // AND failure (the .tgz was never deleted before).
     let _ = std::fs::remove_file(&tmp);
-    step()
+    let _ = std::fs::remove_dir_all(&out);
+    res
 }
 
 #[tauri::command(async)]
@@ -3406,12 +3588,17 @@ fn shardx_download_launcher_at(release_api: &str, dest_dir: &Path) -> Result<Str
         "amd64.AppImage"
     };
     let assets = rel["assets"].as_array().cloned().unwrap_or_default();
-    let url = assets
+    let asset = assets
         .iter()
         .find(|a| a["name"].as_str().unwrap_or("").contains(want))
-        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or("no asset for this OS")?;
+    let url = asset["browser_download_url"]
+        .as_str()
         .ok_or("no asset for this OS")?
         .to_string();
+    // GitHub exposes `digest: "sha256:<hex>"` on release assets; absent on
+    // older releases (then the download is unverified, as before).
+    let digest = asset["digest"].as_str().map(String::from);
     let name = url.rsplit('/').next().unwrap_or("shardx-launcher");
     let dest = dest_dir.join(name);
     let mut resp = shardx_http(300)
@@ -3420,7 +3607,38 @@ fn shardx_download_launcher_at(release_api: &str, dest_dir: &Path) -> Result<Str
         .call()
         .map_err(|e| e.to_string())?;
     download_to_file(&mut resp, &dest)?;
+    if let Some(d) = digest {
+        verify_sha256_digest(&dest, &d)?;
+    }
     Ok(dest.display().to_string())
+}
+
+/// Check `path` against a GitHub-style `sha256:<hex>` digest. A mismatch
+/// DELETES the file and errors; a digest in an unknown format (or no
+/// `sha256:` prefix) is ignored so a future algorithm never blocks installs.
+fn verify_sha256_digest(path: &Path, digest: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read as _;
+    let Some(want) = digest.trim().strip_prefix("sha256:") else {
+        return Ok(());
+    };
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    drop(f);
+    let got: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if got.eq_ignore_ascii_case(want.trim()) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(path);
+    Err(format!("sha256 mismatch for {} (expected {want}, got {got}) — file deleted", path.display()))
 }
 
 // ── ShardX bootstrap: one consent → the whole chain ─────────────────────────
@@ -3580,7 +3798,7 @@ fn shardx_seed_engine() -> Result<Value, String> {
             }
         }
         std::fs::create_dir_all(&runtime).map_err(|e| e.to_string())?;
-        let extracted = std::process::Command::new("tar")
+        let extracted = std::process::Command::new(system_tar())
             .arg("-xf")
             .arg(&tmp)
             .arg("-C")
@@ -3713,7 +3931,7 @@ fn shardx_seed_fingerprints_at(
             return Err("bundle download was not a zip (blocked by network?)".into());
         }
         std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-        let extracted = std::process::Command::new("tar")
+        let extracted = std::process::Command::new(system_tar())
             .arg("-xf")
             .arg(&tmp)
             .arg("-C")
@@ -4608,6 +4826,32 @@ mod tests {
     }
 
     #[test]
+    fn worktree_base_reads_branch_key_and_handles_detached() {
+        let b = serde_json::json!({ "branch": "dev", "detached": false });
+        assert_eq!(worktree_base_from_branch(&b).as_deref(), Some("dev"));
+        let d = serde_json::json!({ "branch": "abc1234", "detached": true });
+        assert_eq!(worktree_base_from_branch(&d).as_deref(), Some("HEAD"));
+        let u = serde_json::json!({ "branch": "(no commits yet)", "detached": false });
+        assert_eq!(worktree_base_from_branch(&u), None);
+    }
+
+    #[test]
+    fn worktree_seg_is_unique_and_cannot_climb() {
+        assert_eq!(worktree_seg("agent-1"), "agent-1");
+        // Sanitised ids carry a hash so `a b` and `a-b` never collide.
+        let (a, b) = (worktree_seg("a b"), worktree_seg("a-b"));
+        assert_eq!(b, "a-b");
+        assert_ne!(a, b);
+        assert!(a.starts_with("a-b-"));
+        // `.`/`..` never reach Path::join as-is.
+        for bad in ["..", ".", "", "a/b", "..\\x"] {
+            let s = worktree_seg(bad);
+            assert!(!s.contains('/') && !s.contains('\\'), "{bad}: {s}");
+            assert!(!s.chars().all(|c| c == '.'), "{bad}: {s}");
+        }
+    }
+
+    #[test]
     fn pty_spawn_request_deserializes_upstream_payload() {
         // The god-boot payload verbatim (useHive): pty id + hive agent meta.
         let r = req(serde_json::json!({
@@ -4963,6 +5207,38 @@ mod tests {
         assert!(skills_dir.join("meta-ads").join("SKILL.md").exists());
 
         let _ = kill_agent_core(&handle, "b1");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A spawn that fails AFTER registration (cwd missing) must not leak a
+    /// live-looking registry row, a pty slot, a pty↔agent mapping or a
+    /// worktree record.
+    #[test]
+    fn failed_spawn_cleans_up_after_itself() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("spawn-fail");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-f1", "cwd": home.join("does-not-exist").display().to_string(),
+                "command": "cmd",
+                "hive": { "id": "f1", "name": "Ghost", "role": "dev" }
+            })),
+        );
+        assert!(!res.ok, "a missing cwd must fail the spawn");
+        assert!(st.ptys.lock().unwrap().is_empty());
+        assert!(st.pty_to_agent.lock().unwrap().is_empty());
+        assert!(st.worktree_paths.lock().unwrap().is_empty());
+        let row = st.hive.registry().into_iter().find(|a| a.id == "f1");
+        assert_ne!(
+            row.map(|a| a.status).as_deref(),
+            Some("idle"),
+            "failed spawn must not leave an idle ghost"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -5544,6 +5820,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The release API's per-asset `digest` gates the download: a matching
+    /// sha256 lands the file; a mismatch deletes it and errors.
+    #[test]
+    fn shardx_download_launcher_verifies_release_digest() {
+        use sha2::{Digest, Sha256};
+        let want = if cfg!(windows) {
+            "portable-win-x64.exe"
+        } else if cfg!(target_os = "macos") {
+            "aarch64.dmg"
+        } else {
+            "amd64.AppImage"
+        };
+        let body = b"launcher-bytes".to_vec();
+        let good: String = Sha256::digest(&body).iter().map(|b| format!("{b:02x}")).collect();
+        let rel = |digest: String| {
+            serde_json::json!({ "assets": [{
+                "name": format!("ShardX-{want}"),
+                "browser_download_url": "{BASE}/dl/asset",
+                "digest": digest
+            }]})
+            .to_string()
+            .into_bytes()
+        };
+        let srv = fake_shardx_api(vec![
+            ("/ok", rel(format!("sha256:{good}"))),
+            ("/bad", rel(format!("sha256:{}", "0".repeat(64)))),
+            ("/dl/asset", body.clone()),
+        ]);
+        let home = tmp_home("shardx-dl-digest");
+        let p = shardx_download_launcher_at(&format!("{}/ok", srv.base), &home).unwrap();
+        assert!(PathBuf::from(&p).exists());
+        let _ = std::fs::remove_file(&p);
+        let err = shardx_download_launcher_at(&format!("{}/bad", srv.base), &home).unwrap_err();
+        assert!(err.contains("sha256 mismatch"), "{err}");
+        assert!(!PathBuf::from(&p).exists(), "mismatched file must be deleted");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn verify_sha256_digest_helper() {
+        let dir = tmp_home("sha-helper");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.bin");
+        std::fs::write(&f, b"abc").unwrap();
+        // sha256("abc")
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verify_sha256_digest(&f, &format!("sha256:{abc}")).is_ok());
+        assert!(verify_sha256_digest(&f, &format!("sha256:{}", abc.to_uppercase())).is_ok());
+        // Unknown algorithm / no prefix → not enforced, file kept.
+        assert!(verify_sha256_digest(&f, "sha512:deadbeef").is_ok());
+        assert!(f.exists());
+        assert!(verify_sha256_digest(&f, "sha256:00").is_err());
+        assert!(!f.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// LIVE — the real GitHub release → real launcher asset → disk. ~100MB
     /// download; run manually:
     ///   cargo test shardx_download_launcher_live -- --ignored --nocapture
@@ -5591,7 +5923,22 @@ mod tests {
         assert_eq!(n as usize, big.len());
         assert_eq!(std::fs::metadata(&tmp).unwrap().len() as usize, big.len());
         assert_eq!(&std::fs::read(&tmp).unwrap()[..4], &[0xAB; 4]);
+        // Landed via <dest>.part + rename — no scratch file left behind.
+        assert!(!part_path(&tmp).exists());
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn part_path_appends_suffix_and_tar_resolves() {
+        assert_eq!(part_path(Path::new("a/b.zip")), PathBuf::from("a/b.zip.part"));
+        let t = system_tar();
+        #[cfg(windows)]
+        assert!(
+            t.ends_with("System32/tar.exe") || t == PathBuf::from("tar"),
+            "{t:?}"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(t, PathBuf::from("tar"));
     }
 
     /// A DNS-hijack block page arrives with HTTP 200 but HTML bytes — the
@@ -5684,8 +6031,25 @@ mod tests {
         assert_eq!(closing_time_start_core(&handle).unwrap(), 0);
         // Idle god + live PTY → the write is attempted and succeeds.
         assert!(nudge_idle_god(&st));
-        // Busy god → never type into a working terminal.
+        // Busy god → never type into a working terminal. The PTY-quiet leg
+        // keys off last_output_at (seeded at spawn, so a loaded machine that
+        // stalls this test for 12s+ would flip it idle) — pin the clock
+        // explicitly instead of racing real time.
+        let clock = {
+            let ptys = st.ptys.lock().unwrap();
+            ptys.get("pty-god").expect("god pty").last_output_at.clone()
+        };
+        let set_clock = |ago_ms: u64| {
+            clock.store(
+                crate::closing_time::now_ms_pub().saturating_sub(ago_ms).max(1),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        };
         st.hive.set_status("god", "busy").unwrap();
+        // (Only ever moved FORWARD here: the first nudge's echo also bumps
+        // the clock from the reader thread, so a "far in the past" value
+        // could be raced away — the negative assertion can't be.)
+        set_clock(0);
         assert!(!nudge_idle_god(&st));
         // Idle again but PTY gone → nothing to write to.
         st.hive.set_status("god", "idle").unwrap();
@@ -6073,6 +6437,145 @@ mod tests {
             .map(|h| h.tail())
             .unwrap_or_default();
         panic!("exit never detected after 10s; tail={tail:?}");
+    }
+
+    /// The spawn-vs-waiter race: the child exits (waiter runs its teardown)
+    /// BEFORE spawn_inner inserts the handle. Forced deterministically here by
+    /// inserting only after the exit marker appears. Without the reap the dead
+    /// handle + agent mapping would stay forever ("already running").
+    #[test]
+    fn handle_inserted_after_child_already_exited_is_reaped() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("late-insert");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+        let env: std::collections::HashMap<String, String> = Default::default();
+        let mut h = crate::pty::spawn(
+            "pty-late",
+            "ver",
+            &home.display().to_string(),
+            &env,
+            80,
+            24,
+            handle.clone(),
+        )
+        .unwrap();
+        let spawn_gen = h.spawn_gen;
+        // Wait for the waiter to observe the exit with nothing registered
+        // (answering ConPTY's CSI 6n so `ver` can run).
+        let mut answered = 0usize;
+        let mut exited = false;
+        for _ in 0..50 {
+            let cur = h.tail().matches("\u{1b}[6n").count();
+            for _ in answered..cur {
+                let _ = h.write("\u{1b}[24;80R");
+            }
+            answered = cur;
+            if crate::pty::EARLY_EXITS
+                .lock()
+                .unwrap()
+                .get("pty-late")
+                .is_some_and(|(g, _)| *g == spawn_gen)
+            {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert!(exited, "waiter never reported the exit");
+        // Now do what spawn_inner does — too late.
+        st.ptys.lock().unwrap().insert("pty-late".into(), h);
+        st.map_pty("pty-late", "late-agent");
+        crate::pty::reap_if_already_exited(&handle, "pty-late", spawn_gen);
+        assert!(!st.ptys.lock().unwrap().contains_key("pty-late"), "dead handle left behind");
+        assert!(st.pty_for_agent("late-agent").is_none(), "stale agent mapping left behind");
+        assert!(crate::pty::EARLY_EXITS.lock().unwrap().get("pty-late").is_none());
+    }
+
+    /// A FRESH hire whose spawn fails after registration leaves no registry
+    /// ghost; a failed respawn of an EXISTING agent keeps its row (gone).
+    #[test]
+    fn failed_fresh_spawn_removes_its_registry_row_but_respawn_keeps_it() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("fresh-fail");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+        let missing = home.join("no-such-dir").display().to_string();
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-ghost", "cwd": missing, "command": "cmd",
+                "hive": { "id": "ghost", "name": "Ghost", "role": "worker" }
+            })),
+        );
+        assert!(!res.ok, "spawn into a missing cwd must fail");
+        assert!(
+            !st.hive.registry().iter().any(|a| a.id == "ghost"),
+            "fresh hire left a registry ghost"
+        );
+        // Existing agent: failed respawn keeps the row, status gone.
+        st.hive
+            .register_agent(&crate::hive::RegistryEntry {
+                id: "keeper".into(),
+                name: "Keeper".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let res = spawn_agent_core(
+            &handle,
+            req(serde_json::json!({
+                "id": "pty-keeper", "cwd": missing, "command": "cmd",
+                "hive": { "id": "keeper", "name": "Keeper", "role": "worker" }
+            })),
+        );
+        assert!(!res.ok);
+        let row = st.hive.registry().into_iter().find(|a| a.id == "keeper").expect("row kept");
+        assert_eq!(row.status, "gone");
+    }
+
+    #[test]
+    fn hive_remove_agent_drops_row_and_god_pointer() {
+        let st = AppState::new(tmp_home("rm-agent")).unwrap();
+        st.hive
+            .register_agent(&crate::hive::RegistryEntry {
+                id: "g".into(),
+                name: "G".into(),
+                is_god: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(st.hive.god_id().as_deref(), Some("g"));
+        assert!(st.hive.remove_agent("g").unwrap());
+        assert!(!st.hive.remove_agent("g").unwrap());
+        assert!(st.hive.registry().is_empty());
+        assert!(st.hive.god_id().is_none());
+    }
+
+    /// A live handle (no early-exit marker) is never touched by the reap.
+    #[test]
+    fn reap_leaves_live_handles_alone() {
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("reap-live");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+        let env: std::collections::HashMap<String, String> = Default::default();
+        let h = crate::pty::spawn(
+            "pty-alive", "cmd", &home.display().to_string(), &env, 80, 24, handle.clone(),
+        )
+        .unwrap();
+        let g = h.spawn_gen;
+        st.ptys.lock().unwrap().insert("pty-alive".into(), h);
+        st.map_pty("pty-alive", "alive-agent");
+        crate::pty::reap_if_already_exited(&handle, "pty-alive", g);
+        assert!(st.ptys.lock().unwrap().contains_key("pty-alive"));
+        assert_eq!(st.pty_for_agent("alive-agent").as_deref(), Some("pty-alive"));
+        let h = st.ptys.lock().unwrap().remove("pty-alive");
+        if let Some(mut h) = h {
+            let _ = h.kill();
+        }
     }
 
     /// The install PTY's exit-0 → relaunch rail (upstream

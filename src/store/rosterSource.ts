@@ -11,6 +11,30 @@
  *  workspace's team turns up in another — restorable entries and all, each one
  *  still carrying the `cwd` of the workspace it was hired in. */
 
+/** The localStorage keys that hold one hive's roster (agents, archive, restorable
+ *  list, selection, parked queues). store.ts persists to these; a workspace switch
+ *  clears them so the old hive's team is not adopted into the new one. */
+export const ROSTER_STORAGE_KEYS = [
+  'cth.agents',
+  'cth.archivedAgents',
+  'cth.restorableAgents',
+  'cth.selectedId',
+  'cth.messageQueues'
+] as const;
+
+/** Remove every roster key and hand back an undo, for a switch that then fails. */
+export function stashRosterStorage(
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+): () => void {
+  const saved: Array<[string, string]> = [];
+  for (const key of ROSTER_STORAGE_KEYS) {
+    const v = storage.getItem(key);
+    if (v !== null) saved.push([key, v]);
+    storage.removeItem(key);
+  }
+  return () => { for (const [k, v] of saved) storage.setItem(k, v); };
+}
+
 export interface RosterCounts {
   agents: unknown[];
   archived: unknown[];

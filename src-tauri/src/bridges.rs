@@ -25,6 +25,8 @@ function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
+    // Per-launch shared secret — the HookServer drops envelopes without it.
+    payload.token = process.env.HIVE_TOKEN;
     // HIVE_SOCK is a TCP 'host:port' (this port listens on loopback, not a
     // unix socket path) — split it or createConnection treats the string as
     // an IPC path and never connects. IPv6-safe: split on the LAST colon and
@@ -86,6 +88,8 @@ function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
+    // Per-launch shared secret — the HookServer drops envelopes without it.
+    payload.token = process.env.HIVE_TOKEN;
     // HIVE_SOCK is a TCP 'host:port' here (loopback listener, not a unix
     // socket path) — split on the LAST colon so IPv6 stays parseable.
     const i = SOCK.lastIndexOf(':');

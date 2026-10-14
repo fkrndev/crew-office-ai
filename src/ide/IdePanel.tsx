@@ -9,6 +9,7 @@ import { ImagePreview } from './ImagePreview';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { HistoryPane, ComparePane } from './GitPanes';
 import { isImagePath, isSvgPath } from '@shared/imageTypes';
+import { joinPath, relativeTo } from '@shared/pathUtil';
 import { ideBarStyle, ideIconBtn as iconBtn, ideTextBtn as textBtn } from './chrome';
 
 // v0.3.4 markdown preview: per-md-tab view mode, defaulted from the last choice.
@@ -244,9 +245,9 @@ export function IdePanel() {
     const abs = useStore.getState().ideInitialFile;
     if (!abs) return;
     useStore.getState().setIdeInitialFile(null);
-    const prefix = root.endsWith('/') ? root : `${root}/`;
-    if (!abs.startsWith(prefix)) return; // different workspace — tree still lets them browse
-    const rel = abs.slice(prefix.length);
+    // Separator- and (on Windows) case-insensitive containment check.
+    const rel = relativeTo(root, abs);
+    if (!rel) return; // different workspace — tree still lets them browse
     // Same routing as a tree click — an "open in IDE" on a screenshot must land
     // on the preview, not on a tab that refuses to display it.
     openEdit(rel);
@@ -353,7 +354,7 @@ export function IdePanel() {
   };
 
   const copyAbs = (rel: string) => {
-    if (root) navigator.clipboard.writeText(rel ? `${root}/${rel}` : root).catch(() => { /* noop */ });
+    if (root) navigator.clipboard.writeText(rel ? joinPath(root, rel) : root).catch(() => { /* noop */ });
   };
 
   // Image tabs highlight in the tree too — the tree's job is "what am I looking
@@ -632,9 +633,9 @@ export function IdePanel() {
                   <div style={{
                     fontFamily: 'var(--cth-font-display)', fontSize: 8, textTransform: 'uppercase',
                     letterSpacing: 1, color: 'var(--cth-ink-700)'
-                  }}>nothing open</div>
+                  }}>{t('idePanel.nothingOpen')}</div>
                   <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 13 }}>
-                    Pick a file from the tree to edit, or a changed file to diff.
+                    {t('idePanel.nothingOpenHint')}
                   </div>
                   <ShortcutHint />
                 </div>
@@ -654,7 +655,7 @@ export function IdePanel() {
 
               {activeTab?.mode === 'edit' && (() => {
                 const buf = editBuffers[activeTab.rel];
-                if (!buf || buf.status === 'loading') return <Centered>loading…</Centered>;
+                if (!buf || buf.status === 'loading') return <Centered>{t('idePanel.loading')}</Centered>;
                 if (buf.status === 'error') return <Centered tone="error">{buf.error}</Centered>;
                 const md = isMarkdown(activeTab.rel);
                 const view: MdView = md ? (mdViews[activeTab.rel] ?? defaultMdView()) : 'code';

@@ -44,7 +44,6 @@ pub mod reflect;
 pub mod roster;
 pub mod skills;
 mod slack;
-mod sync_api;
 mod telemetry;
 pub mod trigger_history;
 mod usage;
@@ -118,10 +117,7 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
                 // `tid` is an AGENT id (registry/mission target) — the PTY map
                 // is keyed by pty id, so translate first.
                 if let Some(pty_id) = st.pty_for_agent(&tid) {
-                    let mut ptys = st.ptys.lock().unwrap();
-                    if let Some(h) = ptys.get_mut(&pty_id) {
-                        let _ = h.write(&format!("{nudge}\r"));
-                    }
+                    pty::write_pty(st, &pty_id, &format!("{nudge}\r"));
                 }
             }
         }
@@ -136,6 +132,40 @@ fn fire_mission(app: &tauri::AppHandle, st: &AppState, m: &missions::ScheduledMi
         "hive-log",
         serde_json::json!({ "event": "mission_fired", "id": m.id, "label": m.label }),
     );
+}
+
+/// A fatal startup error: show it natively (the window never opens, so a bare
+/// `expect` would abort silently) and hand back the error for `setup` to return.
+fn startup_failure(
+    app: &tauri::AppHandle,
+    what: &str,
+    err: impl std::fmt::Display,
+) -> Box<dyn std::error::Error> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let msg = format!("Agent Office could not {what}.\n\n{err}");
+    log::error!("[startup] {msg}");
+    app.dialog()
+        .message(msg.clone())
+        .title("Agent Office failed to start")
+        .kind(MessageDialogKind::Error)
+        .blocking_show();
+    msg.into()
+}
+
+/// Kill every live agent PTY so quitting never orphans the agent CLIs (and
+/// their MCP/helper process trees). Idempotent: the map is drained.
+fn kill_all_ptys(app: &tauri::AppHandle) {
+    let Some(st) = app.try_state::<AppState>() else {
+        return;
+    };
+    let handles: Vec<pty::PtyHandle> = st
+        .ptys
+        .lock()
+        .map(|mut m| m.drain().map(|(_, h)| h).collect())
+        .unwrap_or_default();
+    for mut h in handles {
+        let _ = h.kill();
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -184,7 +214,7 @@ pub fn run() {
             let default_home = app
                 .path()
                 .app_data_dir()
-                .expect("app_data_dir")
+                .map_err(|e| startup_failure(app.handle(), "locate the app data directory", e))?
                 .join("harness");
             // config_change_home's pointer: `harnessHome` in the FIXED
             // default-home config.json — the only file readable before we
@@ -202,8 +232,9 @@ pub fn run() {
             // agent spawn. Connections arriving before state is managed harmlessly
             // answer {} (none can — no agents exist yet).
             let server = hooks::HookServer::start(&app.handle())
-                .expect("hook server bind");
-            let mut state = AppState::new(harness_home.clone()).expect("init app state");
+                .map_err(|e| startup_failure(app.handle(), "start the hook server", e))?;
+            let mut state = AppState::new(harness_home.clone())
+                .map_err(|e| startup_failure(app.handle(), "initialise app state", e))?;
             state.sock_addr = Some(server.addr.clone());
             app.manage(state);
             app.manage(cmd_update::UpdateState::default());
@@ -282,14 +313,9 @@ pub fn run() {
                 });
             }
 
-            // Sync-IPC loopback — upstream's sendSync surface (roster:readSync,
-            // clipboard:readSync) rides synchronous XHR; bind on an ephemeral
-            // port and publish it for the `sync_port` command.
-            if let Some(port) = sync_api::start(app.handle().clone()) {
-                app.state::<AppState>()
-                    .sync_port
-                    .store(port, std::sync::atomic::Ordering::Relaxed);
-            }
+            // (The unauthenticated sync-IPC loopback server was removed — it
+            // served the OS clipboard to any website via CORS `*`. The
+            // `sync_port` command stays and reports 0.)
 
             // Router loop — the Electron version watched outboxes via chokidar;
             // a 250ms poll keeps the same deliver contract with no watcher dep.
@@ -297,9 +323,19 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(250));
                 let mut closing_nudge_ticks = 0u32;
+                // Archive/log retention: once at startup (first tick), then at
+                // most every 10 min — off the async thread, never per tick.
+                let mut maintain_ticks = 0u32;
                 loop {
                     tick.tick().await;
                     let st = handle.state::<AppState>();
+                    if maintain_ticks == 0 {
+                        let h = handle.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            h.state::<AppState>().hive.maintain()
+                        });
+                    }
+                    maintain_ticks = (maintain_ticks + 1) % 2400; // 2400 x 250ms
                     // realtimeCompletionWatcher — poll once per tick so
                     // dispatch completions surface even without a waiter.
                     crate::realtime::WATCHER
@@ -329,22 +365,20 @@ pub fn run() {
                                 // are renderer `pty-<agent>` ids).
                                 let live: std::collections::HashSet<String> =
                                     st.live_agent_ids();
+                                // Fed straight from the Delivery (from/subject/to
+                                // ride on it): an inbox lookup would miss god →
+                                // "human" (the CLOSING-TIME-COMPLETE verdict —
+                                // the human has no inbox) and any mail the
+                                // recipient already filed within this tick.
                                 for d in &deliveries {
-                                    let msg = st
-                                        .hive
-                                        .inbox(&d.to)
-                                        .ok()
-                                        .and_then(|inb| inb.into_iter().find(|m| m.id == d.msg_id));
-                                    if let Some(m) = msg {
-                                        if let Some(phase) = st.closing.on_routed(
-                                            &st.hive,
-                                            &live,
-                                            &m.from,
-                                            &m.subject,
-                                            &[d.to.clone()],
-                                        ) {
-                                            commands::emit_closing(&handle, phase);
-                                        }
+                                    if let Some(phase) = st.closing.on_routed(
+                                        &st.hive,
+                                        &live,
+                                        &d.from,
+                                        &d.subject,
+                                        &[d.to.clone()],
+                                    ) {
+                                        commands::emit_closing(&handle, phase);
                                     }
                                 }
                                 if st.closing.concluded() {
@@ -469,9 +503,10 @@ pub fn run() {
                             last_work_at: hive::Hive::last_work_at(&a.cwd),
                         })
                         .collect();
-                    if inputs.is_empty() {
-                        continue;
-                    }
+                    // (No early `continue` on empty inputs: the ledger append,
+                    // session fallback, api-error drain and context-trigger
+                    // cadence below are independent of the breaker; only
+                    // breaker.tick is skipped when no non-god worker is live.)
                     // Cost-ledger append gate (index.ts #56): each live
                     // session's cumulative usd is ledgered when the counter
                     // moved — the fold detects restarts as counter decreases.
@@ -520,15 +555,19 @@ pub fn run() {
                         }
                         drop(b);
                     }
-                    let decisions = st.breaker.lock().unwrap().tick(
-                        &inputs,
-                        now,
-                        &cfg.circuit_breaker,
-                        cfg.cost_cap_usd,
-                        cfg.cost_cap_tokens,
-                        &cfg.agent_token_caps,
-                        &cfg.agent_cost_caps,
-                    );
+                    let decisions = if inputs.is_empty() {
+                        Vec::new()
+                    } else {
+                        st.breaker.lock().unwrap().tick(
+                            &inputs,
+                            now,
+                            &cfg.circuit_breaker,
+                            cfg.cost_cap_usd,
+                            cfg.cost_cap_tokens,
+                            &cfg.agent_token_caps,
+                            &cfg.agent_cost_caps,
+                        )
+                    };
                     for d in decisions {
                         let _ = handle2.emit("control:breakerState", &d.state);
                         let id = d.state.agent_id.clone();
@@ -755,11 +794,10 @@ pub fn run() {
                             // `id` is an AGENT id (facts.agent_id) — the PTY
                             // map is keyed by pty id, so translate first.
                             if let Some(pty_id) = st.pty_for_agent(&id) {
-                                let mut ptys = st.ptys.lock().unwrap();
-                                if let Some(h) = ptys.get_mut(&pty_id) {
-                                    let _ = h.write(workerwake::WORKER_WAKE_NUDGE);
-                                    let _ = h.write("\r");
-                                }
+                                // Two writes on purpose (text, then Enter) so a
+                                // TUI doesn't treat the CR as part of a paste.
+                                pty::write_pty(&st, &pty_id, workerwake::WORKER_WAKE_NUDGE);
+                                pty::write_pty(&st, &pty_id, "\r");
                             }
                             let _ = handle4.emit(
                                 "hive-log",
@@ -1008,6 +1046,7 @@ pub fn run() {
             commands::hire_import_file,
             commands::hire_drain_pending,
             commands::app_confirm_close,
+            cmd_misc::app_force_quit,
             commands::app_cancel_close,
             commands::app_info,
             commands::skills_reveal,
@@ -1090,6 +1129,7 @@ pub fn run() {
             cmd_misc::app_clipboard_write,
             cmd_misc::app_clipboard_read,
             cmd_misc::clipboard_save_image,
+            cmd_misc::clipboard_image_to_file,
             cmd_misc::app_reset_all,
             cmd_misc::app_set_login_item,
             cmd_misc::app_set_notifications,
@@ -1181,6 +1221,9 @@ pub fn run() {
             // before the process drops (analytics.rs gates on DNT/opt-out).
             if matches!(ev, tauri::RunEvent::Exit) {
                 crate::analytics::global().end_session(app);
+                // Exit is final (ExitRequested can still be prevented, so the
+                // kill lives here) — don't orphan the agent CLIs.
+                kill_all_ptys(app);
             }
         });
 }

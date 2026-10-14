@@ -149,3 +149,16 @@ fn stdin_without_event_falls_to_payload_name() {
     let env = h.join().unwrap();
     assert_eq!(env["event"], "SubagentStop");
 }
+
+#[test]
+fn envelope_carries_the_hive_token() {
+    let (h, addr) = serve_once("{}");
+    run_shim(
+        &[],
+        &[("HIVE_SOCK", &addr), ("AGENT_ID", "w1"), ("HIVE_TOKEN", "tok-123")],
+        r#"{"hook_event_name":"Stop"}"#,
+    );
+    let env = h.join().unwrap();
+    assert_eq!(env["token"], "tok-123");
+    assert_eq!(env["event"], "Stop");
+}

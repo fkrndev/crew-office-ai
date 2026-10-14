@@ -81,7 +81,9 @@ const SUPPORTED: readonly string[] = LANGUAGES.map((l) => l.code);
  * `godName` explicitly.
  */
 export function setGodName(name: string | undefined | null): void {
-  const next = name?.trim() || DEFAULT_GOD_NAME;
+  // escapeValue is off (React escapes text itself), but the name also lands in
+  // <Trans> strings that are parsed for tags — so markup characters never go in.
+  const next = name?.replace(/[<>]/g, '').trim() || DEFAULT_GOD_NAME;
   const interpolation = i18n.options.interpolation ?? (i18n.options.interpolation = {});
   const vars = interpolation.defaultVariables ?? (interpolation.defaultVariables = {});
   if (vars.godName === next) return;

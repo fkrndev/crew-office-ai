@@ -60,6 +60,16 @@ fn strip_request(name: &str) -> bool {
         "authorization" | "x-md-broker-token" | "host" | "cookie" | "content-length"
     ) || HOP_BY_HOP.contains(&name)
 }
+/// Header names an `authType: "header"` integration may NOT inject — they
+/// frame the request itself (smuggling / host-confusion), or are the broker's
+/// own credential/hop-by-hop plumbing.
+fn reserved_auth_header(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    matches!(
+        l.as_str(),
+        "host" | "content-length" | "x-md-broker-token" | "cookie"
+    ) || HOP_BY_HOP.contains(&l.as_str())
+}
 /// Response headers never forwarded back (the client decodes the body, so the
 /// upstream content-encoding/length would be wrong).
 fn strip_response(name: &str) -> bool {
@@ -276,6 +286,9 @@ pub fn validate_record(rec: &Value) -> Result<IntegrationRecord, String> {
         if h.is_empty() || !valid_header_name(&h) {
             return Err("authType 'header' requires authHeader matching [A-Za-z0-9-]{1,64}".into());
         }
+        if reserved_auth_header(&h) {
+            return Err(format!("authHeader '{h}' is reserved and cannot carry the credential"));
+        }
         Some(h)
     } else {
         match r.get("authHeader") {
@@ -315,7 +328,7 @@ pub fn build_auth_headers(
             _ => vec![],
         },
         "header" => match (secret, auth_header) {
-            (Some(s), Some(h)) if !s.is_empty() && !h.is_empty() => {
+            (Some(s), Some(h)) if !s.is_empty() && !h.is_empty() && !reserved_auth_header(h) => {
                 vec![(h.to_lowercase(), s.to_string())]
             }
             _ => vec![],
@@ -1115,12 +1128,23 @@ impl IntegrationBroker {
                 resp_headers.push((key, v.to_string()));
             }
         }
-        let body = upstream_res
+        // A read error or an over-cap body must surface as a failure, not as
+        // the upstream status carrying a silently empty/truncated body.
+        let body = match upstream_res
             .body_mut()
             .with_config()
             .limit((MAX_BODY_BYTES * 2) as u64)
             .read_to_vec()
-            .unwrap_or_default();
+        {
+            Ok(b) => b,
+            Err(e) => {
+                return Self::send_error(
+                    502,
+                    "bad_gateway",
+                    &format!("upstream response unreadable or too large: {e}"),
+                )
+            }
+        };
         (status, resp_headers, body)
     }
 }
@@ -1249,6 +1273,20 @@ mod tests {
             .any(|(k, v)| k == "authorization" && v == "Bearer t"));
         assert!(gh.iter().any(|(k, _)| k == "x-github-api-version"));
         assert!(build_auth_headers("none", None, Some("x")).is_empty());
+    }
+
+    #[test]
+    fn framing_headers_cannot_be_the_auth_header() {
+        for h in ["Host", "content-length", "Transfer-Encoding", "Connection", "X-MD-Broker-Token", "cookie"] {
+            assert!(reserved_auth_header(h), "{h}");
+            assert!(build_auth_headers("header", Some(h), Some("s")).is_empty(), "{h}");
+            let r = validate_record(&json!({
+                "id": "x1", "label": "X", "kind": "custom-rest",
+                "baseUrl": "https://api.example.com", "authType": "header", "authHeader": h,
+            }));
+            assert!(r.is_err(), "{h} must be rejected at save time");
+        }
+        assert!(!reserved_auth_header("X-Api-Key"));
     }
 
     #[test]

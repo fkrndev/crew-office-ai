@@ -355,7 +355,12 @@ impl TelemetryCollector {
                         let value = point_value(dp);
                         {
                             let mut sessions = self.sessions.lock().unwrap();
-                            let accum = sessions.get_mut(&session_id).unwrap();
+                            // `forget` (agent teardown) can drop the session
+                            // between `self.session()` and this lock — skip
+                            // the point instead of unwrapping into an abort.
+                            let Some(accum) = sessions.get_mut(&session_id) else {
+                                continue;
+                            };
                             if !model.is_empty() {
                                 accum.model = model;
                             }

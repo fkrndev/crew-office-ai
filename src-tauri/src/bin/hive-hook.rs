@@ -83,10 +83,14 @@ fn main() {
             .to_string()
     };
 
+    // Per-launch shared secret (HIVE_TOKEN, injected next to HIVE_SOCK) — the
+    // HookServer rejects any envelope without it. Missing → still sent empty
+    // (the server drops it), never a crash.
     let envelope = serde_json::json!({
         "agent_id": payload.get("agent_id"),
         "event": event,
         "payload": payload,
+        "token": env::var("HIVE_TOKEN").unwrap_or_default(),
     });
 
     let timeout = Duration::from_secs(5);

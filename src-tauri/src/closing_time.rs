@@ -204,6 +204,11 @@ impl ClosingTime {
 
     /// Router observer — one routed message. Returns Some(phase) when the
     /// state advanced ("progress" | "conclusion-rejected" | "complete").
+    ///
+    /// The `inner` mutex only covers the in-memory state transition; the
+    /// registry read and the rejection mail (file writes + a git commit) run
+    /// OUTSIDE it, so `is_active`/`progress`/`poll_timeout` never stall behind
+    /// disk or git.
     pub fn on_routed(
         &self,
         hive: &crate::hive::Hive,
@@ -212,18 +217,26 @@ impl ClosingTime {
         subject: &str,
         targets: &[String],
     ) -> Option<&'static str> {
-        let mut g = self.inner.lock().unwrap();
-        let a = g.as_mut()?;
-        if is_ack(subject) && a.workers.contains(from) && targets.contains(&a.god_id) {
-            if a.acked.insert(from.to_string()) {
-                return Some("progress");
+        // Registry snapshot only when this can be the verdict.
+        let reg = if is_complete(subject) {
+            hive.registry()
+        } else {
+            Vec::new()
+        };
+        let pending: Vec<String> = {
+            let mut g = self.inner.lock().unwrap();
+            let a = g.as_mut()?;
+            if is_ack(subject) && a.workers.contains(from) && targets.contains(&a.god_id) {
+                if a.acked.insert(from.to_string()) {
+                    return Some("progress");
+                }
+                return None;
             }
-            return None;
-        }
-        if is_complete(subject) && from == a.god_id {
+            if !(is_complete(subject) && from == a.god_id) {
+                return None;
+            }
             // Trust but VERIFY: a premature COMPLETE must not close the floor.
             // Dead workers are excused — their ACK can never arrive.
-            let reg = hive.registry();
             let pending: Vec<String> = a
                 .workers
                 .iter()
@@ -234,25 +247,25 @@ impl ClosingTime {
                 })
                 .cloned()
                 .collect();
-            if !pending.is_empty() {
-                let names = pending.join(", ");
-                let _ = hive.send_virtual(
-                    "human",
-                    "god",
-                    "refuse",
-                    "CLOSING TIME — conclusion rejected, workers still missing",
-                    &format!(
-                        "The harness is still missing a CLOSING-TIME-ACK from: {names}.\n\
-                         The app stays open until every worker has confirmed its memory is saved.\n\
-                         Chase the stragglers (re-send the closing-time instruction to each), wait for their ACKs, then send CLOSING-TIME-COMPLETE again."
-                    ),
-                );
-                return Some("conclusion-rejected");
+            if pending.is_empty() {
+                a.concluded = true;
+                return Some("complete");
             }
-            a.concluded = true;
-            return Some("complete");
-        }
-        None
+            pending
+        };
+        let names = pending.join(", ");
+        let _ = hive.send_virtual(
+            "human",
+            "god",
+            "refuse",
+            "CLOSING TIME — conclusion rejected, workers still missing",
+            &format!(
+                "The harness is still missing a CLOSING-TIME-ACK from: {names}.\n\
+                 The app stays open until every worker has confirmed its memory is saved.\n\
+                 Chase the stragglers (re-send the closing-time instruction to each), wait for their ACKs, then send CLOSING-TIME-COMPLETE again."
+            ),
+        );
+        Some("conclusion-rejected")
     }
 
     /// Tick check — Some("timeout") once past the deadline (until re-armed).
@@ -273,5 +286,95 @@ impl ClosingTime {
             .unwrap()
             .as_ref()
             .is_some_and(|a| a.concluded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hive::{Hive, RegistryEntry};
+
+    fn hive_with(tag: &str, ids: &[(&str, bool)]) -> Hive {
+        let root = std::env::temp_dir().join(format!("oa-closing-{tag}-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&root).unwrap();
+        for (id, god) in ids {
+            hive.register_agent(&RegistryEntry {
+                id: (*id).into(),
+                name: (*id).into(),
+                provider: "claude".into(),
+                is_god: *god,
+                status: "idle".into(),
+                cwd: root.display().to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        hive
+    }
+
+    fn live(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The whole chain: god's `to:"human"` COMPLETE must produce a Delivery
+    /// (the router loop feeds on_routed from it) and conclude the protocol.
+    #[test]
+    fn god_to_human_complete_reaches_the_observer_and_concludes() {
+        let hive = hive_with("done", &[("god", true), ("w1", false)]);
+        let ct = ClosingTime::default();
+        let mut control = crate::control::ControlRegistry::default();
+        let live_ids = live(&["god", "w1"]);
+        ct.start(&hive, &mut control, &live_ids).unwrap();
+
+        // Worker ACK → god.
+        let acks = hive
+            .send_virtual("w1", "god", "inform", "CLOSING-TIME-ACK", "saved")
+            .unwrap();
+        assert_eq!(acks.len(), 1);
+        assert_eq!(
+            ct.on_routed(&hive, &live_ids, &acks[0].from, &acks[0].subject, &[acks[0].to.clone()]),
+            Some("progress")
+        );
+
+        // God → human: used to yield ZERO deliveries (self-filter), so the
+        // observer never saw it and closing time could never conclude.
+        let before = hive.inbox("god").unwrap().len();
+        let done = hive
+            .send_virtual("god", "human", "inform", "CLOSING-TIME-COMPLETE", "all saved")
+            .unwrap();
+        assert_eq!(done.len(), 1, "god→human must emit a Delivery");
+        assert_eq!(done[0].to, "human");
+        assert!(done[0].needs_human && !done[0].bounced);
+        // ...without looping back into god's own inbox.
+        assert_eq!(hive.inbox("god").unwrap().len(), before);
+        assert_eq!(
+            ct.on_routed(&hive, &live_ids, &done[0].from, &done[0].subject, &[done[0].to.clone()]),
+            Some("complete")
+        );
+        assert!(ct.concluded());
+    }
+
+    #[test]
+    fn premature_complete_is_rejected_without_holding_the_state_lock() {
+        let hive = hive_with("early", &[("god", true), ("w1", false)]);
+        let ct = ClosingTime::default();
+        let mut control = crate::control::ControlRegistry::default();
+        let live_ids = live(&["god", "w1"]);
+        ct.start(&hive, &mut control, &live_ids).unwrap();
+        let r = ct.on_routed(
+            &hive,
+            &live_ids,
+            "god",
+            "CLOSING-TIME-COMPLETE",
+            &["human".to_string()],
+        );
+        assert_eq!(r, Some("conclusion-rejected"));
+        assert!(!ct.concluded());
+        // The rejection mail landed in god's inbox.
+        assert!(hive
+            .inbox("god")
+            .unwrap()
+            .iter()
+            .any(|m| m.subject.contains("conclusion rejected")));
     }
 }

@@ -11,8 +11,9 @@
 //! NOT a forced `{decision:'block'}` continuation, which upstream removed for
 //! bypassing terminal-draft/HITL safety.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -21,6 +22,50 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::AppState;
+
+/// Per-launch shared secret for the hook socket. Handed to every agent as
+/// `HIVE_TOKEN` and required on each envelope, so an arbitrary local process
+/// that merely finds the loopback port cannot forge agent events.
+pub fn hook_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(crate::misc::random_hex32)
+}
+
+/// Hard cap on one request line — an envelope is a small JSON object; this
+/// bounds what a misbehaving local client can make us buffer.
+const MAX_REQUEST_BYTES: u64 = 1 << 20;
+
+/// Concurrent in-flight connections served at once. Hook calls are short; the
+/// cap keeps a connect-flood from spawning unbounded threads.
+const MAX_CONNECTIONS: usize = 64;
+
+static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Releases an `ACTIVE_CONNS` slot on drop (also on panic/early return).
+struct ConnSlot;
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Reserve a connection slot, or None when the server is at capacity.
+fn try_acquire_slot() -> Option<ConnSlot> {
+    if ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+        ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    Some(ConnSlot)
+}
+
+/// Constant-time byte comparison (length is not secret — the token is a fixed
+/// width hex string).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
 #[derive(Debug, Deserialize)]
 pub struct HookEnvelope {
@@ -42,32 +87,44 @@ impl HookServer {
         thread::spawn(move || {
             for conn in listener.incoming() {
                 let Ok(stream) = conn else { continue };
+                // At capacity → drop (close) the connection without a thread.
+                let Some(slot) = try_acquire_slot() else {
+                    continue;
+                };
                 let app = handle.clone();
-                thread::spawn(move || serve_conn(app, stream));
+                thread::spawn(move || {
+                    let _slot = slot;
+                    serve_conn(app, stream)
+                });
             }
         });
         Ok(Self { addr })
     }
 }
 
-fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut line = String::new();
-    if BufReader::new(&stream).read_line(&mut line).is_err() {
-        return;
+/// Parse + authenticate one request line. `None` = reject (malformed JSON,
+/// missing/wrong `token`, unknown shape) — the caller closes silently.
+///
+/// Two wire shapes share this socket (hooks.ts handle() reads the
+/// UNWRAPPED cth-hook payload — `hook_event_name` is the event):
+///   - native hive-hook binary wraps:   { agent_id, event, payload, token }
+///   - bundled JS bridges (Pi extension, OpenCode plugin) post the raw
+///     cth-hook-shaped payload directly: { hook_event_name, agent_id, …, token }
+/// For the latter, event = hook_event_name and the payload IS the whole
+/// line (upstream's HookPayload — tool_name/session_id/etc. at top level).
+/// BOTH shapes must carry the per-launch token.
+fn parse_envelope(line: &str, token: &str) -> Option<HookEnvelope> {
+    let mut raw = serde_json::from_str::<Value>(line.trim()).ok()?;
+    let presented = raw.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+        return None;
     }
-    let Ok(raw) = serde_json::from_str::<Value>(line.trim()) else {
-        return;
-    };
-    // Two wire shapes share this socket (hooks.ts handle() reads the
-    // UNWRAPPED cth-hook payload — `hook_event_name` is the event):
-    //   - native hive-hook binary wraps:   { agent_id, event, payload }
-    //   - bundled JS bridges (Pi extension, OpenCode plugin) post the raw
-    //     cth-hook-shaped payload directly: { hook_event_name, agent_id, … }
-    // For the latter, event = hook_event_name and the payload IS the whole
-    // line (upstream's HookPayload — tool_name/session_id/etc. at top level).
-    let env = if raw.get("hook_event_name").is_some() {
-        HookEnvelope {
+    // The secret is not part of any event payload — never let it flow on.
+    if let Some(o) = raw.as_object_mut() {
+        o.remove("token");
+    }
+    if raw.get("hook_event_name").is_some() {
+        Some(HookEnvelope {
             agent_id: raw
                 .get("agent_id")
                 .and_then(|v| v.as_str())
@@ -77,12 +134,26 @@ fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
             payload: raw,
-        }
+        })
     } else {
-        let Ok(env) = serde_json::from_value::<HookEnvelope>(raw) else {
-            return;
-        };
-        env
+        serde_json::from_value::<HookEnvelope>(raw).ok()
+    }
+}
+
+fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let mut line = String::new();
+    // Bounded read: a client that never sends a newline can't grow `line`
+    // past the cap.
+    if BufReader::new((&stream).take(MAX_REQUEST_BYTES))
+        .read_line(&mut line)
+        .is_err()
+    {
+        return;
+    }
+    let Some(env) = parse_envelope(&line, hook_token()) else {
+        return;
     };
     let response = handle(&app, &env);
     let mut out = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
@@ -118,10 +189,7 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
                 // `id` is an AGENT id (the hook payload's AGENT_ID) — the PTY
                 // map is keyed by pty id, so translate first.
                 if let Some(pty_id) = st.pty_for_agent(id) {
-                    let mut ptys = st.ptys.lock().unwrap();
-                    if let Some(h) = ptys.get_mut(&pty_id) {
-                        let _ = h.write(&format!("{cmd}\r"));
-                    }
+                    crate::pty::write_pty(&st, &pty_id, &format!("{cmd}\r"));
                 }
             }
         }
@@ -242,7 +310,11 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     }
 
     match event.as_str() {
-        "Stop" | "SubagentStop" => {
+        // A subagent finishing is NOT the parent going idle — marking the
+        // parent idle would arm the idle-nudge/compact-drain/finished toast
+        // while it is still working.
+        "SubagentStop" => json!({}),
+        "Stop" => {
             // Upstream: respect an upstream Stop hook that already re-entered.
             if p.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
                 return json!({});
@@ -416,8 +488,8 @@ pub(crate) fn fleet_rows(st: &AppState) -> Vec<Value> {
     let extras = crate::hive_admin::all_extras(&st.hive);
     // Lifetime usd (reset-corrected fold) first; session usd is the cold
     // fallback — upstream's exact preference (index.ts:1305-1315).
-    let mut totals = crate::cost_lifetime::CostLedgerTotals::default();
-    totals.refresh_fully(&st.hive.cost_ledger_path());
+    // (incremental, shared fold — only newly appended ledger bytes are read)
+    let totals = st.hive.lifetime_usd();
     st.hive
         .registry()
         .iter()
@@ -439,7 +511,8 @@ pub(crate) fn fleet_rows(st: &AppState) -> Vec<Value> {
                 .unwrap_or(0);
             let session_usd = (sample.map(|s| s.usd).unwrap_or(0.0) * 10_000.0).round() / 10_000.0;
             let usd = totals
-                .usd_for(&a.id)
+                .as_ref()
+                .map(|t| t.get(&a.id).copied().unwrap_or(0.0))
                 .map(|u| (u * 10_000.0).round() / 10_000.0)
                 .unwrap_or(session_usd);
             let last_tool = st.telemetry.spans(&a.id).last().map(|s| s.tool.clone());
@@ -529,5 +602,60 @@ fn injected_context(st: &AppState, agent_id: &str, event: &str, p: &Value) -> Va
                 "additionalContext": parts.join("\n\n")
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOK: &str = "deadbeefdeadbeefdeadbeefdeadbeef";
+
+    #[test]
+    fn native_envelope_requires_token() {
+        let ok = format!(r#"{{"agent_id":"a1","event":"Stop","payload":{{"x":1}},"token":"{TOK}"}}"#);
+        let env = parse_envelope(&ok, TOK).expect("valid token accepted");
+        assert_eq!(env.agent_id.as_deref(), Some("a1"));
+        assert_eq!(env.event.as_deref(), Some("Stop"));
+        let bad = r#"{"agent_id":"a1","event":"Stop","payload":{},"token":"nope"}"#;
+        assert!(parse_envelope(bad, TOK).is_none());
+        let missing = r#"{"agent_id":"a1","event":"Stop","payload":{}}"#;
+        assert!(parse_envelope(missing, TOK).is_none());
+        let non_string = format!(r#"{{"agent_id":"a1","event":"Stop","token":123}}"#);
+        assert!(parse_envelope(&non_string, TOK).is_none());
+    }
+
+    #[test]
+    fn raw_bridge_shape_requires_token_and_strips_it() {
+        let ok = format!(
+            r#"{{"hook_event_name":"PreToolUse","agent_id":"a2","tool_name":"Bash","token":"{TOK}"}}"#
+        );
+        let env = parse_envelope(&ok, TOK).expect("valid token accepted");
+        assert_eq!(env.event.as_deref(), Some("PreToolUse"));
+        assert_eq!(env.payload.get("tool_name").and_then(|v| v.as_str()), Some("Bash"));
+        assert!(env.payload.get("token").is_none(), "secret must not flow into the payload");
+        let bad = r#"{"hook_event_name":"PreToolUse","agent_id":"a2"}"#;
+        assert!(parse_envelope(bad, TOK).is_none());
+        assert!(parse_envelope("not json", TOK).is_none());
+    }
+
+    #[test]
+    fn constant_time_eq_semantics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn connection_slots_are_capped_and_released() {
+        let mut held = Vec::new();
+        while let Some(s) = try_acquire_slot() {
+            held.push(s);
+            assert!(held.len() <= MAX_CONNECTIONS);
+        }
+        assert_eq!(held.len(), MAX_CONNECTIONS);
+        held.pop();
+        assert!(try_acquire_slot().is_some(), "a released slot is reusable");
     }
 }

@@ -23,6 +23,7 @@
  * lifecycle in session.ts is tool-agnostic, so it survives the swap unchanged.
  */
 import { tool } from '@openai/agents-realtime';
+import { lastSegment } from '@shared/pathUtil';
 
 // ─── spoken-prose formatting helpers ────────────────────────────────────────
 
@@ -70,8 +71,7 @@ function clip(s: string, n: number): string {
 /** The trailing folder name of a path — speech-friendly (the persona avoids
  *  reading full file paths aloud unless asked). e.g. /a/b/cth-voice-tools → cth-voice-tools. */
 function shortDir(p: string): string {
-  const parts = (p || '').replace(/\/+$/, '').split('/').filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : p;
+  return lastSegment(p);
 }
 
 /** Strip markdown to plain speakable prose (headers, emphasis, bullets, links,

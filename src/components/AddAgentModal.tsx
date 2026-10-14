@@ -11,6 +11,8 @@ import { type AccentColorName } from '@/design/tokens';
 import type { HireManifest } from '@shared/hire';
 import { hireQueueProgress } from '@shared/hireQueue';
 import { MCP_CATALOG } from '@shared/mcpCatalog';
+import { isComposingKey } from '@shared/imeGuard';
+import { examplePath } from '@shared/platformLabels';
 import { sanitizeTemplates, type AgentTemplate } from '@shared/agentTemplates';
 import {
   OSS_LOCAL_PICKS,
@@ -129,7 +131,7 @@ const SECTIONS: { key: SectionKey; labelKey: string; hintKey: string }[] = [
 ];
 
 function basename(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 function uniqueId(name: string): string {
@@ -466,12 +468,15 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
 
   const importHire = async () => {
     setError(undefined);
+    // cth.importHireFiles folds the backend's single-file answer into
+    // {ok, manifests, errors, error}; a cancelled picker is {ok:false, error:'cancelled'}.
     const res = await window.cth.importHireFiles();
-    if (res.manifests.length > 0) enqueuePendingHires(res.manifests);
-    if (res.errors.length > 0) {
-      const noun = res.errors.length === 1 ? 'file' : 'files';
-      setError(`Skipped ${res.errors.length} invalid ${noun}: ${res.errors.join(' · ')}`);
-    } else if (!res.ok && res.error && res.error !== 'cancelled') {
+    const manifests = res?.manifests ?? [];
+    const errors = res?.errors ?? [];
+    if (manifests.length > 0) enqueuePendingHires(manifests);
+    if (errors.length > 0) {
+      setError(tr('addAgent.hireSkipped', { n: errors.length, errors: errors.join(' · ') }));
+    } else if (!res?.ok && res?.error && res.error !== 'cancelled') {
       setError(res.error);
     }
   };
@@ -491,6 +496,20 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     if (!command.trim()) { setError(tr('addAgent.errCommand')); setSection('engine'); return; }
 
     setBusy(true);
+    try {
+      await spawnFromForm();
+    } catch (e) {
+      // A throwing bridge (spawn or the ShardX probe) must not leave the modal
+      // stuck on "spawning…" with every control disabled.
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** The spawn proper — validated form state in, agent on the floor out.
+   *  `submit` owns `busy`, so this may throw or return early freely. */
+  const spawnFromForm = async () => {
     const id = uniqueId(name);
     const ptyId = `pty-${id}`;
     // ShardX consent: an agent asking for the browser needs the local chain
@@ -555,8 +574,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       }
     });
     if (!spawnRes.ok) {
-      setBusy(false);
-      setError(spawnRes.error ?? 'spawn failed');
+      setError(spawnRes.error ?? tr('addAgent.spawnFailed'));
       return;
     }
     // #2 — the requested resume session id wasn't found anywhere; main fell back
@@ -591,7 +609,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
         ? tr('addAgent.needsKey', { provider: spawnRes.needsKey })
         : spawnRes.needsShardx
           ? tr('addAgent.needsShardx')
-          : resuming && spawnRes.resumeNotFound ? 'session not found — fresh start' : 'starting up',
+          : resuming && spawnRes.resumeNotFound ? tr('addAgent.statusResumeMissing') : tr('addAgent.statusStarting'),
       progress: 0,
       currentStation: 'desk',
       ptyId,
@@ -626,7 +644,6 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
         onConfigChange?.(updated);
       } catch { /* best-effort */ }
     }
-    setBusy(false);
     if (pendingHire) {
       advanceHireReview();
     } else {
@@ -806,7 +823,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       value={tplLabel}
                       onChange={(e) => setTplLabel(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') saveTemplate();
+                        if (e.key === 'Enter' && !isComposingKey(e)) saveTemplate();
                         if (e.key === 'Escape') { setTplSaving(false); setTplLabel(''); }
                       }}
                       placeholder={tr('addAgent.templateLabelPlaceholder')}
@@ -1001,8 +1018,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                               </button>
                               <button
                                 onClick={() => unregisterProject(r)}
-                                title={`Remove ${basename(r)} from this list. The folder itself is left alone.`}
-                                aria-label={`Remove ${basename(r)} from the project list`}
+                                title={tr('addAgent.removeProjectTitle', { name: basename(r) })}
+                                aria-label={tr('addAgent.removeProjectAria', { name: basename(r) })}
                                 style={{
                                   padding: '3px 6px 1px 2px',
                                   background: 'transparent',
@@ -1024,7 +1041,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         <input
                           value={cwd}
                           onChange={(e) => { setCwd(e.target.value); if (error) setError(undefined); }}
-                          placeholder={tr('addAgent.projectPlaceholder')}
+                          placeholder={examplePath('your-project')}
                           style={{ ...inputStyle, flex: 1, fontFamily: 'var(--cth-font-mono)', fontSize: 13 }}
                         />
                         <PixelButton variant="secondary" size="md" onClick={pickFolder}>

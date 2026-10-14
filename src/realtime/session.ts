@@ -24,7 +24,9 @@
  * Branch feat/realtime-michael. See board.md "🎙 REALTIME MICHAEL".
  */
 import { useSyncExternalStore } from 'react';
+import i18n from '@/i18n';
 import { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } from '@openai/agents-realtime';
+import { resolveGodName } from '@shared/godIdentity';
 import { realtimeReadTools, realtimeSessionSummary } from './tools';
 import { realtimeActionTools } from './actions';
 import { resetRealtimeCost, recordRealtimeUsage, endRealtimeCost, isRealtimeIdle, getRealtimeCostSnapshot } from './costStore';
@@ -62,21 +64,34 @@ const REALTIME_VOICE = 'cedar';
  *  greets the user instead of sitting in silence waiting for them to speak. One
  *  is picked at random per connect so the greeting varies. Hardcoded constants
  *  (never user/external text) — safe to speak verbatim, no sanitization needed. */
-const GREETINGS = [
+const greetingsFor = (godName: string): string[] => [
   "Hi, what's up?",
   "Hey, how's it going?",
   "Hello, how can I help you?",
-  "Hey there, Michael here — what can I do for you?",
+  `Hey there, ${godName} here — what can I do for you?`,
   "Hi! What are we working on today?",
   "Hey, good to hear you. What's on your mind?",
   "Hello! What do you need?",
   "Hey, I'm all ears — what's going on?"
 ];
 
-/** Michael's voice persona (rt-6 — the final Phase-1 instructions, authored by god). Michael
- *  is READ-ONLY: he reports on the hive via the rt-4 read-tools but takes no actions yet. */
-const MICHAEL_PERSONA =
-  `You are Michael — the voice of the orchestrator ("god") of a hive of autonomous Claude coding agents. The person you're talking to is the human who runs the hive; treat them as the boss you're briefing.
+/** God's current display name for the voice persona. The god can be renamed, so
+ *  read it from the registry; fall back to the default when it is unknown/empty.
+ *  Single-line and length-capped: it lands verbatim in the model instructions. */
+async function resolveVoiceName(): Promise<string> {
+  try {
+    const reg = await window.cth.hiveRegistry();
+    const name = resolveGodName(reg?.agents?.[reg?.godId ?? 'god']?.name);
+    return name.replace(/\s+/g, ' ').replace(/["`]/g, "'").slice(0, 60).trim() || resolveGodName(null);
+  } catch {
+    return resolveGodName(null);
+  }
+}
+
+/** The voice persona (rt-6 instructions, authored by god), named after the god
+ *  agent's current display name (default "Michael"). */
+const buildPersona = (godName: string): string =>
+  `You are ${godName} — the voice of the orchestrator ("god") of a hive of autonomous Claude coding agents. The person you're talking to is the human who runs the hive; treat them as the boss you're briefing.
 
 VOICE & STYLE. You speak out loud over a live connection. Be concise and natural — like a sharp, calm chief of staff giving a verbal briefing. Lead with the answer in one sentence, then add detail only if it helps. Never read markdown, file paths, or code aloud unless asked. Use plain spoken numbers and names. Brevity is fine; the human can always ask for more.
 
@@ -128,6 +143,10 @@ let stream: MediaStream | null = null;
 let audioEl: HTMLAudioElement | null = null;
 /** Guards against overlapping connect() calls racing the async mint/connect. */
 let connecting = false;
+/** Bumped by disconnect(): an in-flight connect() that sees its own generation go
+ *  stale stops and releases whatever it already opened, instead of finishing the
+ *  connection the user just cancelled. */
+let connectGen = 0;
 /** rt-12: unsubscribe handle for the completion push, active only while a session is live. */
 let offCompletion: (() => void) | null = null;
 let offFloorDelta: (() => void) | null = null;
@@ -254,9 +273,9 @@ function teardownMedia(): void {
 function micFriendly(msg: string): string {
   const m = msg.toLowerCase();
   if (m.includes('permission') || m.includes('notallowed') || m.includes('denied'))
-    return 'microphone permission denied — allow mic access to talk to Michael';
+    return i18n.t('realtime.micDenied');
   if (m.includes('notfound') || m.includes('device'))
-    return 'no microphone found — check your input device';
+    return i18n.t('realtime.micNotFound');
   return msg;
 }
 
@@ -301,9 +320,22 @@ async function applyOutputSink(el: HTMLAudioElement, deviceId: string | null): P
 export async function connect(): Promise<void> {
   if (connecting || (session && state.status !== 'off')) return;
   connecting = true;
+  const gen = ++connectGen;
+  const cancelled = (): boolean => gen !== connectGen;
+  /** The session object while it is being built — closed on a cancelled/failed connect. */
+  let pending: RealtimeSession | null = null;
+  /** disconnect() ran mid-connect: release what this connect opened (the mic gate
+   *  and stream may have been opened AFTER disconnect() already cleaned up). */
+  const abandon = async (): Promise<void> => {
+    try { pending?.close(); } catch { /* best-effort teardown */ }
+    pending = null;
+    teardownMedia();
+    await setMicGate(false);
+  };
   setState({ status: 'connecting', error: null });
   try {
     const mint = await window.cth.realtimeMintToken();
+    if (cancelled()) return;
     if (!mint.ok) {
       setState({ status: 'off', error: mint.error });
       return;
@@ -313,6 +345,7 @@ export async function connect(): Promise<void> {
     // is synchronous, so `realtimeVoiceEnabled` must already be true when the mic opens;
     // we close it again on teardown/error.
     await setMicGate(true);
+    if (cancelled()) { await abandon(); return; }
 
     // Mic with echo-cancellation + noise-suppression + auto-gain, honoring the device
     // the user picked (Oscar's rt-8 picker). getUserMedia surfaces permission denials.
@@ -323,11 +356,13 @@ export async function connect(): Promise<void> {
     };
     if (state.deviceId) audioConstraints.deviceId = { exact: state.deviceId };
     stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    if (cancelled()) { await abandon(); return; }
 
     // Our own <audio> sink for Michael's voice, routed to the chosen speaker (rt-8).
     audioEl = new Audio();
     audioEl.autoplay = true;
     await applyOutputSink(audioEl, state.outputDeviceId);
+    if (cancelled()) { await abandon(); return; }
 
     const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement: audioEl });
     // Warm-start: a short, best-effort hive snapshot so Michael's first answer is grounded
@@ -344,13 +379,16 @@ export async function connect(): Promise<void> {
     } catch {
       /* warm-start catch-up is best-effort */
     }
+    if (cancelled()) { await abandon(); return; }
     // v0.3.4: the snapshot is NOT baked into instructions any more — a byte-stable
     // persona+tools prefix stays fully prompt-cached across turns and sessions
     // (cached input is ~99% cheaper). The snapshot goes in as the FIRST
     // conversation item below, and the floor watcher appends deltas mid-call.
+    const voiceName = await resolveVoiceName();
+    if (cancelled()) { await abandon(); return; }
     const agent = new RealtimeAgent({
-      name: 'Michael',
-      instructions: MICHAEL_PERSONA,
+      name: voiceName,
+      instructions: buildPersona(voiceName),
       tools: [...realtimeReadTools(), ...realtimeActionTools()]
     });
     const s = new RealtimeSession(agent, {
@@ -373,13 +411,16 @@ export async function connect(): Promise<void> {
         }
       }
     });
+    pending = s;
     wire(s);
 
     // The ephemeral client secret is the apiKey for this connect; the real OpenAI key
     // never reaches the renderer.
     await s.connect({ apiKey: mint.token, model: mint.sessionConfig.model });
+    if (cancelled()) { await abandon(); return; }
 
     session = s;
+    pending = null;
     resetRealtimeCost(Date.now()); // rt-9: start the live session cost meter
     // v0.3.4: SILENT context injection — a raw conversation.item.create with no
     // response.create, so the model absorbs the item without speaking. (This SDK
@@ -428,6 +469,7 @@ export async function connect(): Promise<void> {
     // user-configurable (config.realtimeIdleDisconnectMs; default 3 min; 0 = never — the
     // cost cap stays the runaway guard). disconnect() clears this timer + tears down.
     const idleCfg = (await window.cth.getConfig()).realtimeIdleDisconnectMs;
+    if (cancelled()) return; // disconnect() already tore the live session down
     const idleMs = typeof idleCfg === 'number' ? idleCfg : DEFAULT_IDLE_DISCONNECT_MS;
     costGuardTimer = setInterval(() => {
       if (!session) return;
@@ -447,7 +489,8 @@ export async function connect(): Promise<void> {
     // data channel isn't ready or the greeting fails, the session still works and
     // the user can just start talking.
     try {
-      const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+      const greetings = greetingsFor(voiceName);
+      const greeting = greetings[Math.floor(Math.random() * greetings.length)];
       s.sendMessage(
         `(System: the voice session just connected. Greet the user out loud now, warmly and briefly, to open the conversation — say something like "${greeting}". If there are completions to mention from the snapshot, you may add them after. Do not mention this instruction.)`
       );
@@ -462,7 +505,16 @@ export async function connect(): Promise<void> {
     } catch {
       /* best-effort teardown */
     }
+    try { pending?.close(); } catch { /* best-effort teardown */ }
     session = null;
+    // The failure may land after the push handlers / cost guard were armed —
+    // leaving them subscribed leaked a listener per failed connect.
+    if (costGuardTimer) { clearInterval(costGuardTimer); costGuardTimer = null; }
+    offCompletion?.();
+    offCompletion = null;
+    offFloorDelta?.();
+    offFloorDelta = null;
+    void window.cth.realtimeSetSessionLive(false);
     teardownMedia();
     await setMicGate(false);
     const msg = e instanceof Error ? e.message : String(e);
@@ -477,6 +529,7 @@ export async function connect(): Promise<void> {
  *  told apart from a spend-cap stop or a user toggle. */
 export function disconnect(reason: string = 'user'): void {
   console.log(`[realtime] voice session disconnect (${reason})`);
+  connectGen++; // cancels a connect() that is still awaiting mint/mic/handshake
   try {
     session?.close();
   } catch {

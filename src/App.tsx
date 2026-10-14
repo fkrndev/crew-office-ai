@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore, selectedAgent } from '@/store/store';
 import { startMockLoop, stopMockLoop } from '@/store/mockEvents';
@@ -6,6 +6,7 @@ import type { HarnessConfig } from '@/store/config';
 import { DEFAULT_ORG_TRIGGER } from '@shared/triggers';
 import { OfficeFloor } from '@/scene/office/OfficeFloor';
 import { useHive } from '@/hooks/useHive';
+import { useRestoreTeam, dismissRestorePrompt } from '@/hooks/useRestoreTeam';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { useGodNameSync } from '@/i18n/useGodNameSync';
 import { useDirectionSync } from '@/i18n/useDirection';
@@ -81,6 +82,24 @@ export function App() {
   const [quitWarn, setQuitWarn] = useState<{ ptyCount: number } | null>(null);
   const [closing, setClosing] = useState<ClosingTimeState | null>(null);
   const [vpWidth, setVpWidth] = useState<number>(window.innerWidth);
+  // Why the first config read failed (null = loading / fine), and a counter that
+  // re-runs the load effect for the Retry button.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // A dismissible banner for failures the user would otherwise never see
+  // (a deep-link hire that could not be imported).
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Failures that happen deep in the tree with no UI of their own (a queued
+  // message that could not be delivered) surface through the banner below.
+  useEffect(() => {
+    const onNotice = (e: Event): void => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (text) setNotice(text);
+    };
+    window.addEventListener('cth:notice', onNotice);
+    return () => window.removeEventListener('cth:notice', onNotice);
+  }, []);
 
   // Deep link into Settings from anywhere in the tree. Settings' open state is
   // local to App, so a nested control (e.g. "set it now" beside a disabled Talk
@@ -97,41 +116,50 @@ export function App() {
     return () => window.removeEventListener('cth:open-settings', onOpenSettings);
   }, []);
 
+  // Adopt a FULL config read: the state plus the store mirrors derived from it.
+  const applyConfig = useCallback((c: HarnessConfig) => {
+    setConfig(c);
+    // Mirror the Free Flow flag into the store so the composer mic button shows
+    // only when enabled (Settings keeps this in sync on save).
+    useStore.getState().setFreeflowEnabled(!!c.freeflowEnabled);
+    // Mirror boolean key-presence ONLY (never the key value) so the composer can
+    // show the voice button disabled-with-tooltip when Free Flow is on but no
+    // Groq key is set (Settings keeps this in sync on save).
+    useStore.getState().setHasGroqKey(!!c.groqApiKey);
+    // Mirror the active office theme so OfficeFloor renders it (gated on the
+    // tvShowOffices flag; off = always the office). Settings keeps this synced.
+    useStore.getState().setOfficeTheme(c.tvShowOffices ? (c.officeTheme ?? 'office') : 'office');
+    // Mirror the triggers so Settings → Connections and the Command Center's
+    // Triggers tab read one list, not two copies that drift — whichever surface
+    // saves calls these same setters and the other repaints. No extra IPC: main
+    // deep-fills both fields on every config read (withTriggerDefaults), so
+    // getConfig() already serves what listWebhooks()/getOrgTrigger() would.
+    // `c` is typed as the PRELOAD's HarnessConfig, which hasn't picked the two
+    // fields up yet (another lane's file); the renderer mirror type declares them.
+    const withTriggers = c as HarnessConfig;
+    useStore.getState().setWebhookTriggers(withTriggers.webhookTriggers ?? []);
+    useStore.getState().setOrgTrigger(withTriggers.orgTrigger ?? DEFAULT_ORG_TRIGGER);
+  }, []);
+
   // Initial config load
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     window.cth.getConfig().then(c => {
-      if (cancelled) return;
-      setConfig(c);
-      // Mirror the Free Flow flag into the store so the composer mic button shows
-      // only when enabled (Settings keeps this in sync on save).
-      useStore.getState().setFreeflowEnabled(!!c.freeflowEnabled);
-      // Mirror boolean key-presence ONLY (never the key value) so the composer can
-      // show the voice button disabled-with-tooltip when Free Flow is on but no
-      // Groq key is set (Settings keeps this in sync on save).
-      useStore.getState().setHasGroqKey(!!c.groqApiKey);
-      // Mirror the active office theme so OfficeFloor renders it (gated on the
-      // tvShowOffices flag; off = always the office). Settings keeps this synced.
-      useStore.getState().setOfficeTheme(c.tvShowOffices ? (c.officeTheme ?? 'office') : 'office');
-      // Mirror the triggers so Settings → Connections and the Command Center's
-      // Triggers tab read one list, not two copies that drift — whichever surface
-      // saves calls these same setters and the other repaints. No extra IPC: main
-      // deep-fills both fields on every config read (withTriggerDefaults), so
-      // getConfig() already serves what listWebhooks()/getOrgTrigger() would.
-      // `c` is typed as the PRELOAD's HarnessConfig, which hasn't picked the two
-      // fields up yet (another lane's file); the renderer mirror type declares them.
-      const withTriggers = c as HarnessConfig;
-      useStore.getState().setWebhookTriggers(withTriggers.webhookTriggers ?? []);
-      useStore.getState().setOrgTrigger(withTriggers.orgTrigger ?? DEFAULT_ORG_TRIGGER);
+      if (!cancelled) applyConfig(c);
+    }).catch((err: unknown) => {
+      // A rejected first read used to leave a blank cream screen forever — say
+      // what failed and let the user retry.
+      if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
     });
     // Mirror BYOK OpenAI key presence (boolean only; the key never leaves main) so the
     // Realtime Michael voice toggle can gate on it. Lives in the secret broker, not
     // config — so fetch it rather than derive from c.
     window.cth.realtimeHasOpenAiKey().then(has => {
       if (!cancelled) useStore.getState().setHasOpenAiKey(has);
-    });
+    }).catch(() => { /* key presence stays "no" — the voice toggle just reads disabled */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [applyConfig, loadAttempt]);
 
   // Free Flow entry point B — hold-Option (⌥) to talk. In-renderer push-to-talk
   // for whichever agent the user is viewing; gated on the flag, terminal-safe
@@ -139,8 +167,18 @@ export function App() {
   useHoldOptionToTalk();
 
   // Config subscription — the copy loaded above would otherwise go stale the
-  // moment anything saves a setting.
-  useEffect(() => window.cth.onConfigChanged(setConfig), []);
+  // moment anything saves a setting. The backend emits PARTIAL payloads ({} after
+  // a voice set-setting action, {autoMode} from set_auto_mode); replacing the
+  // whole config with one dropped onboardingComplete and bounced the user back
+  // into the wizard. Merge what the payload carries, and when it is not a full
+  // config re-read so the store mirrors (voice/Free Flow flags) refresh too.
+  useEffect(() => window.cth.onConfigChanged((payload) => {
+    const patch = (payload && typeof payload === 'object' ? payload : {}) as Partial<HarnessConfig>;
+    setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
+    if (!('onboardingComplete' in patch)) {
+      window.cth.getConfig().then((c) => applyConfig(c)).catch(() => { /* the merge above stands */ });
+    }
+  }), [applyConfig]);
 
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
@@ -153,23 +191,38 @@ export function App() {
     setAddAgentOpen(false);
   };
   useEffect(() => {
-    const unsub = window.cth.onHireImport?.((m) => {
-      enqueuePendingHires([m]);
-      setAddAgentOpen(true);
-    });
+    let alive = true;
+    // The deep link carries a manifest SOURCE (https URL): the backend fetches +
+    // validates it, then the manifest joins the review queue.
+    const importSource = (src: string) => {
+      window.cth.hireFetch(src).then((res) => {
+        if (!alive) return;
+        if (res?.ok && res.manifest) {
+          enqueuePendingHires([res.manifest]);
+          setAddAgentOpen(true);
+        } else {
+          setNotice(t('app.hireFailed', { error: t('app.hireInvalid') }));
+        }
+      }).catch((err: unknown) => {
+        if (alive) setNotice(t('app.hireFailed', { error: err instanceof Error ? err.message : String(err) }));
+      });
+    };
+    // The backend parks every deep-link source on disk AND emits it; draining
+    // clears the parked copy so it is not imported a second time next launch.
+    const drain = (live?: string) => {
+      Promise.resolve(window.cth.drainPendingHires?.()).catch(() => null).then((parked) => {
+        const sources = new Set<string>();
+        if (typeof parked === 'string' && parked) sources.add(parked);
+        if (live) sources.add(live);
+        sources.forEach(importSource);
+      });
+    };
+    const unsub = window.cth.onHirePending?.((src) => drain(typeof src === 'string' ? src : undefined));
     // Pull anything that arrived before this subscription existed (cold-start
     // deep links; packaged renderers load too fast for push-on-load).
-    void window.cth.drainPendingHires?.().then((queued) => {
-      if (queued && queued.length > 0) {
-        enqueuePendingHires(queued);
-        setAddAgentOpen(true);
-      }
-    });
-    return unsub;
-  }, [enqueuePendingHires, setAddAgentOpen]);
-  useEffect(() => window.cth.onHireError?.((info) => {
-    console.error('[hire] import failed:', info.error);
-  }), []);
+    drain();
+    return () => { alive = false; unsub?.(); };
+  }, [enqueuePendingHires, setAddAgentOpen, t]);
 
   // Closing-time progress: drives the quit dialog's "wrapping up" view. The
   // dialog stays up through the whole protocol; on 'complete' the main process
@@ -181,17 +234,22 @@ export function App() {
   }), []);
 
   const startClosingTime = async () => {
+    setClosing(null); // a retry clears the previous failure
     try {
-      const res = await window.cth.startClosingTime();
-      if (!res.ok) setClosing({ phase: 'error', acked: 0, total: 0, error: res.error });
+      // Resolves the live worker count once the protocol is armed; only a
+      // rejection (e.g. no god running to brief) is a failure.
+      await window.cth.startClosingTime();
     } catch (err) {
       // A throwing bridge must not leave the user unable to close the app —
-      // surface it as a failed closing phase, not a silent dead modal.
-      setClosing({ phase: 'error', acked: 0, total: 0, error: String(err) });
+      // surface the real reason as a failed closing phase, not a silent dead modal.
+      setClosing({
+        phase: 'error', acked: 0, total: 0,
+        error: err instanceof Error ? err.message : String(err)
+      });
     }
   };
   const cancelClosingTime = () => {
-    void window.cth.cancelClosingTime();
+    void Promise.resolve(window.cth.cancelClosingTime()).catch(() => { /* nothing armed */ });
     setClosing(null);
   };
 
@@ -200,6 +258,11 @@ export function App() {
   // hook) so Michael doesn't boot against the current home while the user may be
   // about to switch to a different one.
   useHive(hiveOpened ? config : null);
+
+  // Last session's team: at boot the hook only ASKS (see the prompt below) —
+  // nothing is respawned until the user presses Restore.
+  const { restorePrompt, restoreTeam } = useRestoreTeam(hiveOpened ? config : null);
+  const restorableAgents = useStore((s) => s.restorableAgents);
 
   // Pre-warm a persistent terminal for every live agent so its output is
   // buffered from spawn. Switching agents then re-attaches an already-rendered
@@ -261,6 +324,26 @@ export function App() {
   }, []);
 
   if (!config) {
+    if (loadError) {
+      return (
+        <div style={{
+          width: '100vw', height: '100vh', background: 'var(--cth-cream-100)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div style={{ width: 420, maxWidth: '92vw' }}>
+            <PixelPanel variant="dialog" title={t('app.loadFailedTitle')} noPadding>
+              <div role="alert" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <p style={{ margin: 0, fontSize: 13, lineHeight: '20px' }}>{t('app.loadFailedBody')}</p>
+                <code style={{ fontSize: 12, wordBreak: 'break-word', color: 'var(--cth-ink-700)' }}>{loadError}</code>
+                <PixelButton variant="primary" size="md" onClick={() => setLoadAttempt((n) => n + 1)}>
+                  {t('app.retry')}
+                </PixelButton>
+              </div>
+            </PixelPanel>
+          </div>
+        </div>
+      );
+    }
     return <div style={{ width: '100vw', height: '100vh', background: 'var(--cth-cream-100)' }} />;
   }
 
@@ -297,7 +380,9 @@ export function App() {
           borderBottom: '1px solid var(--cth-ink-300)',
           display: 'flex',
           alignItems: 'center',
-          paddingLeft: 96,
+          // macOS draws its traffic lights over this bar; Windows/Linux keep the
+          // native frame above it, so there is no gutter to reserve there.
+          paddingLeft: window.cth.platform === 'darwin' ? 96 : 12,
           paddingRight: 12,
           gap: 12,
           userSelect: 'none'
@@ -305,7 +390,7 @@ export function App() {
       >
         <img
           src={brandLogo}
-          alt="Munder Difflin"
+          alt={t('app.productName')}
           style={{ height: 20, width: 'auto', display: 'block' }}
         />
         {/* v0.3.7: the version is no longer inert text — it doubles as the
@@ -417,14 +502,14 @@ export function App() {
               pointerEvents: 'none'
             }}>
               <div style={{ pointerEvents: 'auto', width: 360 }}>
-                <PixelPanel variant="dialog" title="EMPTY FLOOR" noPadding>
+                <PixelPanel variant="dialog" title={t('app.emptyFloorTitle')} noPadding>
                   <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <p style={{ margin: 0, fontSize: 13, lineHeight: '20px' }}>
-                      No agents on the floor yet. Spawn one to see real claude output stream in here.
+                      {t('app.emptyFloorBody')}
                     </p>
                     <PixelButton variant="primary" size="md" onClick={() => setAddAgentOpen(true)}>
                       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                        <Icon name="plus" /> add agent
+                        <Icon name="plus" /> {t('app.addAgent')}
                       </span>
                     </PixelButton>
                   </div>
@@ -507,15 +592,68 @@ export function App() {
           closing={closing}
           onCancel={() => {
             if (closing) cancelClosingTime();
-            window.cth.cancelClose();
+            void Promise.resolve(window.cth.cancelClose()).catch(() => { /* nothing armed */ });
             setQuitWarn(null);
           }}
-          onConfirm={() => { void window.cth.confirmClose().catch((err) => {
-            console.error('[close] confirmClose threw:', err);
-            setQuitWarn(null); // don't trap the user — let them retry or force-quit
-          }); }}
+          // "Kill N & quit" / "force quit now": the backend kills every PTY and
+          // exits. The modal shows a rejection and re-enables its buttons.
+          onConfirm={() => window.cth.forceQuit()}
           onClosingTime={startClosingTime}
         />
+      )}
+
+      {notice && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed', top: 44, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 900, maxWidth: '80vw',
+            display: 'flex', alignItems: 'flex-start', gap: 10,
+            padding: '8px 12px',
+            background: 'var(--cth-coral-light)',
+            boxShadow: 'inset 0 0 0 1.5px var(--cth-ink-500)',
+            fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)'
+          }}
+        >
+          <span style={{ wordBreak: 'break-word' }}>{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            aria-label={t('common.close')}
+            style={{
+              border: 'none', background: 'transparent', cursor: 'pointer',
+              color: 'var(--cth-ink-900)', fontSize: 14, lineHeight: '20px', padding: 0
+            }}
+          >✕</button>
+        </div>
+      )}
+
+      {restorePrompt && restorableAgents.length > 0 && !quitWarn && (
+        <div
+          role="alertdialog"
+          aria-label={t('restorePrompt.title')}
+          style={{
+            position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 900, maxWidth: '90vw',
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+            padding: '10px 14px',
+            background: 'var(--cth-paper-100)',
+            boxShadow: 'inset 0 0 0 1.5px var(--cth-ink-500), 4px 4px 0 var(--cth-ink-300)',
+            fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)'
+          }}
+        >
+          <span style={{ wordBreak: 'break-word' }}>
+            {t('restorePrompt.question', {
+              n: restorableAgents.length,
+              names: restorableAgents.map((a) => a.name).join(', ')
+            })}
+          </span>
+          <PixelButton variant="primary" size="sm" onClick={() => { void restoreTeam(); }}>
+            {t('restorePrompt.restore')}
+          </PixelButton>
+          <PixelButton variant="secondary" size="sm" onClick={dismissRestorePrompt}>
+            {t('restorePrompt.skip')}
+          </PixelButton>
+        </div>
       )}
 
       {fullscreenAgentId && <FullscreenTerminal config={config} />}

@@ -90,6 +90,93 @@ pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, Stri
     Ok(true)
 }
 
+/// Decoded-size cap for a pasted image (the renderer sends whole screenshots).
+const MAX_PASTED_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+/// Pasted-image retention: files older than this or beyond the newest
+/// `PASTED_IMAGES_KEEP` are pruned on every new paste.
+const PASTED_IMAGES_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+const PASTED_IMAGES_KEEP: usize = 100;
+
+/// File extension for recognised raster-image magic bytes, None otherwise.
+fn sniff_image_ext(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("png")
+    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// Delete `paste-*` files in `dir` older than `max_age` or beyond the newest
+/// `keep`. Best-effort — a locked file just survives to the next sweep.
+fn prune_pasted_images(dir: &Path, max_age: std::time::Duration, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("paste-"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().unwrap_or(now), e.path()))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (i, (mtime, path)) in files.iter().enumerate() {
+        let age = now.duration_since(*mtime).unwrap_or_default();
+        if i >= keep || age > max_age {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Decode a pasted image (base64, optionally a `data:image/...;base64,` URL),
+/// validate size + magic bytes, and write it to a fresh file under `dir`.
+/// Returns the file's absolute path.
+fn save_pasted_image(dir: &Path, base64: &str) -> Result<PathBuf, String> {
+    let s = base64.trim();
+    let s = match s.find("base64,") {
+        Some(i) => &s[i + 7..],
+        None => s,
+    }
+    .trim();
+    // Reject before decoding so a hostile payload can't balloon memory.
+    if s.len() / 4 * 3 > MAX_PASTED_IMAGE_BYTES + 3 {
+        return Err("image too large (max 20 MB)".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() > MAX_PASTED_IMAGE_BYTES {
+        return Err("image too large (max 20 MB)".into());
+    }
+    let ext = sniff_image_ext(&bytes).ok_or_else(|| "not a recognised image".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let uid = uuid::Uuid::new_v4().simple().to_string();
+    let path = dir.join(format!("paste-{}-{}.{ext}", crate::misc::now_ms(), &uid[..8]));
+    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    prune_pasted_images(
+        dir,
+        std::time::Duration::from_secs(PASTED_IMAGES_MAX_AGE_SECS),
+        PASTED_IMAGES_KEEP,
+    );
+    Ok(path)
+}
+
+/// Paste-flow companion to `clipboard_save_image`: persist a pasted
+/// screenshot under `<harness home>/pasted-images/` so the renderer can attach
+/// it by path. Returns `{ok: true, path}` (absolute).
+#[tauri::command(async)]
+pub fn clipboard_image_to_file(app: AppHandle, base64: String) -> Result<Value, String> {
+    let dir = harness_home(&app).join("pasted-images");
+    let path = save_pasted_image(&dir, &base64)?;
+    Ok(json!({ "ok": true, "path": path.to_string_lossy() }))
+}
+
 // ─── app lifecycle / desktop integration ────────────────────────────────────
 
 /// app:resetAll — stop everything, then wipe the harness-owned state under
@@ -238,6 +325,26 @@ pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, Stri
     Ok(true)
 }
 
+/// app:forceQuit — the "force quit" buttons (closing time taking too long, a
+/// wedged shutdown). Kills every live PTY (process trees included) and exits
+/// the process; skips the graceful closing-time protocol by design.
+#[tauri::command(async)]
+pub fn app_force_quit(app: AppHandle) -> Result<bool, String> {
+    let st = state(&app);
+    let handles: Vec<crate::pty::PtyHandle> = st
+        .ptys
+        .lock()
+        .map(|mut m| m.drain().map(|(_, h)| h).collect())
+        .unwrap_or_default();
+    for mut h in handles {
+        let _ = h.kill();
+    }
+    st.pty_to_agent.lock().unwrap().clear();
+    st.agent_to_pty.lock().unwrap().clear();
+    app.exit(0);
+    Ok(true)
+}
+
 /// terminal:openAtFolder — spawn a system terminal at a folder.
 #[tauri::command(async)]
 pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, String> {
@@ -251,14 +358,22 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
     }
     #[cfg(windows)]
     {
+        // The folder rides Command::current_dir — never the command line:
+        // cmd.exe would re-parse `&`/`^`/`%` in it as commands and wt.exe
+        // treats `;` as a subcommand separator.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         let path_env = crate::pty::user_shell_path();
         let spawned = if crate::pty::resolve_program("wt", &path_env).is_some() {
-            std::process::Command::new("cmd")
-                .args(["/c", "start", "", "wt", "-d", p.as_str()])
+            std::process::Command::new("wt.exe")
+                .args(["-d", "."])
+                .current_dir(&p)
                 .spawn()
         } else {
-            std::process::Command::new("cmd")
-                .args(["/c", "start", "", "cmd", "/k", "cd", "/d", p.as_str()])
+            std::process::Command::new("cmd.exe")
+                .arg("/k")
+                .current_dir(&p)
+                .creation_flags(CREATE_NEW_CONSOLE)
                 .spawn()
         };
         spawned.map_err(|e| e.to_string())?;
@@ -337,10 +452,51 @@ pub fn fs_stat_abs(app: AppHandle, path: String) -> Result<Value, String> {
     }
 }
 
+/// Folders the user picked through `dialog_choose_folder` this session —
+/// a real OS dialog gesture, so they count as write-approved roots (the
+/// session-export flow writes into a folder that is not an agent workspace).
+static PICKED_FOLDERS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Every directory the renderer may legitimately use as an fs root: agent
+/// cwds from the registry (+ their main repo), live isolation worktrees, the
+/// harness home, and dialog-picked folders. Canonicalized for comparison.
+fn known_workspace_roots(st: &crate::commands::AppState) -> Vec<PathBuf> {
+    let mut raw: Vec<PathBuf> = Vec::new();
+    for a in st.hive.registry() {
+        if a.cwd.is_empty() {
+            continue;
+        }
+        let cwd = PathBuf::from(expand_tilde(&a.cwd));
+        if let Some(main) = crate::git_ops::main_repo_root(&cwd) {
+            raw.push(PathBuf::from(main));
+        }
+        raw.push(cwd);
+    }
+    for (wt, orig) in st.worktree_paths.lock().unwrap().values() {
+        raw.push(wt.clone());
+        raw.push(orig.clone());
+    }
+    raw.push(st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf());
+    raw.extend(PICKED_FOLDERS.lock().unwrap().iter().cloned());
+    raw.into_iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect()
+}
+
+/// `root` must canonicalize to (or inside) one of `known` — a renderer-chosen
+/// root would otherwise make safe_resolve's confinement meaningless.
+fn root_in_workspaces(root: &Path, known: &[PathBuf]) -> bool {
+    let Ok(real) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    known.iter().any(|k| real.starts_with(k))
+}
+
 /// fs:readBinary — raw bytes for an absolute path the text reader refuses
 /// (images et al.), base64 on the wire. Same pre-stat + post-read cap as
 /// upstream so a file that grows mid-read can't slip past the memory
-/// guarantee.
+/// guarantee. Only image/PDF types (what the previews render) — this is not a
+/// general file-exfiltration read.
 #[tauri::command(async)]
 pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
     let _ = app;
@@ -348,6 +504,10 @@ pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
         return Err("bad request".into());
     }
     let abs = expand_tilde(&path);
+    let mime = mime_for(Path::new(&abs));
+    if !(mime.starts_with("image/") || mime == "application/pdf") {
+        return Err("unsupported file type".into());
+    }
     let meta = std::fs::metadata(&abs).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a regular file".into());
@@ -380,7 +540,13 @@ pub fn fs_write_file(
     rel: String,
     content: String,
 ) -> Result<Value, String> {
-    let _ = app;
+    // The root comes from the renderer, so it is only trusted when it IS a
+    // known workspace — otherwise "confined" would mean "confined to
+    // whatever the caller says".
+    let root = expand_tilde(&root);
+    if !root_in_workspaces(Path::new(&root), &known_workspace_roots(&state(&app))) {
+        return Err("path escapes the workspace".into());
+    }
     let abs = crate::fs_ops::safe_resolve(Path::new(&root), &rel)
         .ok_or_else(|| "path escapes the workspace".to_string())?;
     if let Some(parent) = abs.parent() {
@@ -446,7 +612,17 @@ pub fn dialog_choose_folder(app: AppHandle) -> Result<Value, String> {
         .set_title("Pick a folder")
         .blocking_pick_folder()
     {
-        Some(fp) => Ok(json!({ "ok": true, "path": fp.to_string() })),
+        Some(fp) => {
+            let picked = fp.to_string();
+            // A user-picked folder is a legitimate fs_write_file root.
+            if let Ok(real) = std::fs::canonicalize(&picked) {
+                let mut roots = PICKED_FOLDERS.lock().unwrap();
+                if !roots.contains(&real) {
+                    roots.push(real);
+                }
+            }
+            Ok(json!({ "ok": true, "path": picked }))
+        }
         None => Ok(json!({ "ok": false, "error": "cancelled" })),
     }
 }
@@ -583,8 +759,8 @@ pub fn provider_key_clear(app: AppHandle, provider: String) -> Result<bool, Stri
 /// Whether the serve thread has been spawned this session, and whether
 /// webhook_stop has consumed the server's stop latch. WebhookServer::run
 /// never resets that latch, so a stop in this port is one-way for the session.
-static WEBHOOK_BOUND: AtomicBool = AtomicBool::new(false);
-static WEBHOOK_LATCHED: AtomicBool = AtomicBool::new(false);
+pub(crate) static WEBHOOK_BOUND: AtomicBool = AtomicBool::new(false);
+pub(crate) static WEBHOOK_LATCHED: AtomicBool = AtomicBool::new(false);
 /// The port webhook_start actually bound (may differ from config when the
 /// caller passed an override); status probes this, falling back to config.
 static WEBHOOK_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
@@ -634,7 +810,7 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
         }
         WEBHOOK_BOUND.store(false, Ordering::SeqCst);
         if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
-            let _ = child.kill();
+            crate::misc::kill_process_tree(&mut child);
         }
     });
     // Public tunnel (openTunnel, non-fatal) — mint AFTER the bind so the URL
@@ -661,7 +837,7 @@ pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
     WEBHOOK_BOUND.store(false, Ordering::SeqCst);
     WEBHOOK_LATCHED.store(true, Ordering::SeqCst);
     if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
-        let _ = child.kill();
+        crate::misc::kill_process_tree(&mut child);
     }
     Ok(true)
 }
@@ -874,29 +1050,35 @@ pub fn config_change_home(
         st.persist.lock().unwrap().close();
         let mut copied: Vec<String> = Vec::new();
         let mut move_errs: Vec<String> = Vec::new();
-        for name in ["hive", "palace"] {
-            let src = cur.join(name);
-            let dst = canon_new.join(name);
-            if src.exists() {
-                match copy_dir_recursive(&src, &dst) {
-                    Ok(()) => copied.push(dst.display().to_string()),
-                    Err(e) => move_errs.push(format!("{}: {e}", src.display())),
-                }
+        // EVERYTHING the home holds is state — hive, palace, knowledge,
+        // secrets (DPAPI blobs), integrations/records, bin helpers,
+        // slack-files, trigger history, roster, db, config … — so copy every
+        // top-level entry rather than a hand-kept list that rots. Only live
+        // git worktrees are left behind (their .git metadata points at the
+        // old repo paths; a copy would be a broken checkout).
+        const MOVE_SKIP: &[&str] = &["worktrees"];
+        let entries = std::fs::read_dir(&cur).map_err(|e| format!("read home: {e}"))?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if MOVE_SKIP.iter().any(|s| name == std::ffi::OsStr::new(s)) {
+                continue;
             }
-        }
-        for name in [
-            "roster.json",
-            "harness.db",
-            "harness.db-wal",
-            "harness.db-shm",
-            "config.json",
-        ] {
-            let src = cur.join(name);
-            if src.exists() {
-                match std::fs::copy(&src, canon_new.join(name)) {
-                    Ok(_) => copied.push(canon_new.join(name).display().to_string()),
-                    Err(e) => move_errs.push(format!("{}: {e}", src.display())),
-                }
+            let src = entry.path();
+            let dst = canon_new.join(&name);
+            // Links are never followed (a junction inside would copy a whole
+            // foreign tree, or fail the move on a dir link).
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let res = if ft.is_dir() {
+                copy_dir_recursive(&src, &dst)
+            } else {
+                std::fs::copy(&src, &dst).map(|_| ())
+            };
+            match res {
+                Ok(()) => copied.push(dst.display().to_string()),
+                Err(e) => move_errs.push(format!("{}: {e}", src.display())),
             }
         }
         if !move_errs.is_empty() {
@@ -941,7 +1123,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let target = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue; // never follow links/junctions out of the tree
+        }
+        if ft.is_dir() {
             copy_dir_recursive(&entry.path(), &target)?;
         } else {
             std::fs::copy(entry.path(), target)?;
@@ -1224,4 +1410,84 @@ pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
     });
     st.persist.lock().unwrap().set_kv("org_trigger", &next);
     Ok(next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("oa-cm-{tag}-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::canonicalize(d).unwrap()
+    }
+
+    const PNG_1X1_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn pasted_image_is_saved_with_data_url_prefix_and_rejects_non_images() {
+        let dir = tmp("paste").join("pasted-images");
+        let p = save_pasted_image(&dir, PNG_1X1_B64).unwrap();
+        assert!(p.starts_with(&dir) && p.is_absolute());
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("paste-") && name.ends_with(".png"), "{name}");
+        assert_eq!(&std::fs::read(&p).unwrap()[1..4], b"PNG");
+        // data: URL prefix accepted; names are unique.
+        let p2 = save_pasted_image(&dir, &format!("data:image/png;base64,{PNG_1X1_B64}")).unwrap();
+        assert_ne!(p, p2);
+        // Non-image bytes and bad base64 are refused and leave no file.
+        let txt = base64::engine::general_purpose::STANDARD.encode(b"hello world, not an image");
+        assert!(save_pasted_image(&dir, &txt).unwrap_err().contains("image"));
+        assert!(save_pasted_image(&dir, "!!!not base64!!!").unwrap_err().contains("base64"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        // Oversize (> 20 MB decoded) is refused.
+        let mut big = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        big.resize(MAX_PASTED_IMAGE_BYTES + 1, 0);
+        let big_b64 = base64::engine::general_purpose::STANDARD.encode(&big);
+        assert!(save_pasted_image(&dir, &big_b64).unwrap_err().contains("too large"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn pasted_images_prune_by_count_and_age() {
+        let dir = tmp("paste-prune");
+        for i in 0..5 {
+            std::fs::write(dir.join(format!("paste-{i}.png")), b"x").unwrap();
+            // distinct mtimes, ascending with i
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        std::fs::write(dir.join("keep-me.txt"), b"x").unwrap();
+        prune_pasted_images(&dir, std::time::Duration::from_secs(3600), 3);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["keep-me.txt", "paste-2.png", "paste-3.png", "paste-4.png"]);
+        // Zero max-age drops everything pasted, never foreign files.
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        prune_pasted_images(&dir, std::time::Duration::ZERO, 100);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_root_must_be_inside_a_known_workspace() {
+        let ws = tmp("ws");
+        let other = tmp("other");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        let known = vec![ws.clone()];
+        assert!(root_in_workspaces(&ws, &known));
+        assert!(root_in_workspaces(&ws.join("sub"), &known));
+        // A renderer-chosen root elsewhere, a parent, a traversal spelling,
+        // and a nonexistent dir are all refused.
+        assert!(!root_in_workspaces(&other, &known));
+        assert!(!root_in_workspaces(ws.parent().unwrap(), &known));
+        assert!(!root_in_workspaces(&ws.join("sub").join("..").join("..").join(other.file_name().unwrap()), &known));
+        assert!(!root_in_workspaces(&ws.join("missing"), &known));
+        assert!(!root_in_workspaces(&ws, &[]));
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&other);
+    }
 }

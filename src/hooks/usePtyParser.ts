@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useStore, type ToolKind, type StationKind } from '@/store/store';
 import { createAnsiStripper } from '@/components/ansiText';
+import i18n from '@/i18n';
 
 // Tool call lines look like: `● Read SPEC.md`, `● Bash npm test`, `● Edit src/foo.ts`
 const TOOL_RE = /●\s+([A-Za-z][A-Za-z_]*)(?:\s+(.+))?/g;
@@ -59,10 +60,12 @@ export function usePtyParser(agentId: string) {
       window.clearTimeout(idleTimerRef.current);
     }
     idleTimerRef.current = window.setTimeout(() => {
+      // A pty that exited meanwhile is 'ghost' (disconnected) — not idle.
+      if (useStore.getState().agents.find((a) => a.id === agentId)?.status === 'ghost') return;
       // No new tool calls for ~4 s → assume the model went idle
       updateAgent(agentId, {
         status: 'idle',
-        action: 'awaiting',
+        action: i18n.t('agentStatus.awaiting'),
         carrying: undefined,
         currentStation: 'desk'
       });
@@ -155,21 +158,21 @@ export function usePtyParser(agentId: string) {
       if (isGod) {
         updateAgent(agentId, {
           status: 'blocked',
-          action: 'waiting on you',
+          action: i18n.t('agentStatus.waitingOnYou'),
           currentStation: 'mailbox',
           blockReason: {
-            summary: 'Waiting for your reply',
-            detail: 'Claude is waiting for input. Check the terminal for the exact prompt.',
+            summary: i18n.t('agentStatus.blockSummary'),
+            detail: i18n.t('agentStatus.blockDetail'),
             actions: [
-              { label: 'Approve', kind: 'approve', send: 'y\r' },
-              { label: 'Deny',    kind: 'deny',    send: 'n\r' }
+              { label: i18n.t('agentStatus.approve'), kind: 'approve', send: 'y\r' },
+              { label: i18n.t('agentStatus.deny'), kind: 'deny',    send: 'n\r' }
             ]
           }
         });
       } else {
         updateAgent(agentId, {
           status: 'waiting',
-          action: 'waiting on god',
+          action: i18n.t('agentStatus.waitingOnGod'),
           currentStation: 'desk',
           blockReason: undefined
         });
