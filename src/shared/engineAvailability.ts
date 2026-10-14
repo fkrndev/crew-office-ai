@@ -9,6 +9,10 @@
  * (`tools:status`, which already resolves every engine binary on PATH) into one
  * answer per provider so the wizard can say so BEFORE the pick is committed.
  *
+ * The answer is informational: onboarding never blocks on it (the user may pick
+ * any engine; missing ones are installed automatically where an installer
+ * exists, and otherwise the user is told to install them).
+ *
  * Pure and electron-free on purpose so it is testable from node --test.
  */
 import type { AgentProvider } from './agentProvider';
@@ -51,13 +55,8 @@ export function classifyEngineAvailability(
   };
 }
 
-/** Whether the wizard must refuse to move on with this engine selected. Only the
- *  proven dead end blocks; an unknown probe never locks a user out. */
-export function engineBlocksOnboarding(a: EngineAvailability): boolean {
-  return a.state === 'not-installable';
-}
-
-/** One short line for the badge on each engine row. */
+/** English fallback text for the badge on each engine row. The wizard renders
+ *  the localized `engineAvailabilityBadgeKey` instead. */
 export function engineAvailabilityBadge(a: EngineAvailability): string | null {
   switch (a.state) {
     case 'installed': return 'INSTALLED';
@@ -67,12 +66,40 @@ export function engineAvailabilityBadge(a: EngineAvailability): string | null {
   }
 }
 
-/** The explanation shown under the picker when the selected engine cannot boot.
- *  Written for someone who does not know what a CLI engine is: what happened,
- *  then what to do next. */
-export function engineAvailabilityMessage(a: EngineAvailability, label: string): string | null {
-  if (a.state !== 'not-installable') return null;
-  return `${label} is not installed on this computer and the app has no installer for it, ` +
-    `so Michael could not start. Install it first, then press "check again". ` +
-    `Or pick Claude Code, which installs itself on first run.`;
+/** i18n key for the badge on each engine row (null = no badge). Picking ANY
+ *  engine is allowed in onboarding: a missing engine with an installer is set up
+ *  automatically on first start, and one without an installer only gets a
+ *  heads-up (never a blocked Next button). */
+export function engineAvailabilityBadgeKey(a: EngineAvailability): string | null {
+  switch (a.state) {
+    case 'installed': return 'onboarding.orchestrator.badgeInstalled';
+    case 'installs-on-first-run': return 'onboarding.orchestrator.badgeInstallsOnFirstRun';
+    case 'not-installable': return 'onboarding.orchestrator.badgeNotInstalled';
+    default: return null;
+  }
+}
+
+/** Which engine the onboarding step should PRESELECT for the orchestrator.
+ *
+ *  The wizard used to hard-code Claude Code — fine for a Claude user, wrong for
+ *  someone who only has Hermes (or Codex…) installed: they had to notice and
+ *  re-pick, and a default of an engine that is not on the machine is a first run
+ *  that installs something they never asked for. Order:
+ *   1. Claude Code, if it is installed (it stays the app's long-standing default);
+ *   2. otherwise Hermes, if installed (the preferred non-Claude engine);
+ *   3. otherwise the first other INSTALLED engine in picker order;
+ *   4. otherwise Claude Code (nothing is installed, or the probe has not run —
+ *      it is the engine whose installer the app runs on first spawn).
+ *  `eligible` is the picker's own order, so a suggestion can never be an engine
+ *  the user cannot select. */
+export function suggestOrchestratorEngine(
+  statuses: readonly ToolStatus[] | undefined,
+  eligible: readonly AgentProvider[]
+): AgentProvider {
+  const installed = (p: AgentProvider) =>
+    eligible.includes(p) && classifyEngineAvailability(statuses, p).state === 'installed';
+  if (installed('claude')) return 'claude';
+  if (installed('hermes')) return 'hermes';
+  const other = eligible.find((p) => installed(p));
+  return other ?? 'claude';
 }

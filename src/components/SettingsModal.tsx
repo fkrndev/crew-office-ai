@@ -92,10 +92,10 @@ const slackLabelStyle: CSSProperties = {
 /** The exact connect walkthrough shown behind the i icon. Steps 6 & 7 spell out
  *  the both-lists requirement: subscribe to message.channels / message.groups in
  *  BOTH "Subscribe to bot events" AND "Subscribe to events on behalf of users". */
-const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
+const SLACK_CONNECT_STEPS = `Connect Agent Office to Slack
 
 1. api.slack.com/apps -> Create New App -> From scratch. Name it
-   "Munder Difflin" and pick your workspace.
+   "Agent Office" and pick your workspace.
 2. Basic Information -> Signing Secret -> copy it into the
    "Signing secret" field here.
 3. OAuth & Permissions -> Bot Token Scopes: add
@@ -117,7 +117,7 @@ const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
      message.channels
      message.groups
 8. Save Changes, reinstall if Slack prompts, then invite the bot
-   to your channel:  /invite @MunderDifflin`;
+   to your channel:  /invite @AgentOffice`;
 
 /** The request/response contract shown behind the webhook i icon. Every webhook
  *  shares one server and one tunnel and is told apart by its id in the path, so
@@ -827,7 +827,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       onClick={busy ? undefined : requestClose}
       style={{
         position: 'fixed', inset: 0,
-        background: 'rgba(26, 19, 32, 0.7)',
+        background: 'rgba(15, 28, 46, 0.7)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 300
       }}
@@ -837,7 +837,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
         style={{
           width: 840, maxWidth: '92vw', maxHeight: '88vh',
           display: 'flex', flexDirection: 'column',
-          filter: 'drop-shadow(4px 4px 0 rgba(26, 19, 32, 0.25))'
+          filter: 'drop-shadow(4px 4px 0 rgba(15, 28, 46, 0.25))'
         }}
       >
         <PixelPanel
@@ -873,7 +873,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                       style={{
                         textAlign: 'left', cursor: changeBusy ? 'default' : 'pointer',
                         padding: '10px 12px', background: 'var(--cth-paper-100)', border: 'none',
-                        boxShadow: `inset 0 0 0 ${selected ? 2 : 1}px ${selected ? 'var(--cth-ink-900)' : 'var(--cth-ink-300)'}`,
+                        boxShadow: `inset 0 0 0 ${selected ? 2 : 1}px ${selected ? 'var(--cth-brand)' : 'var(--cth-ink-300)'}`,
                         display: 'flex', flexDirection: 'column', gap: 3
                       }}
                     >
@@ -890,7 +890,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
               </div>
 
               {changeErr && (
-                <div style={{ fontSize: 12, lineHeight: '18px', color: '#6E1423' }}>{changeErr}</div>
+                <div style={{ fontSize: 12, lineHeight: '18px', color: 'var(--cth-danger-ink)' }}>{changeErr}</div>
               )}
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -961,7 +961,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           display: 'block', width: '100%', textAlign: 'left',
                           padding: '10px 16px 8px',
                           border: 'none',
-                          borderLeft: active ? '3px solid var(--cth-lemon)' : '3px solid transparent',
+                          borderLeft: active ? '3px solid var(--cth-brand)' : '3px solid transparent',
                           background: active ? 'var(--cth-ink-900)' : 'transparent',
                           color: active ? 'var(--cth-cream-50)' : 'var(--cth-ink-700)',
                           fontFamily: 'var(--cth-font-display)',
@@ -1305,6 +1305,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               onClick={() => { setBrkEnabled(!brkEnabled); }}>
                               {brkEnabled ? t('common.on') : t('common.off')}
                             </PixelButton>
+                          </div>
+                          <div style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                            {t('settings.autonomy.usageNote')}
                           </div>
                           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, ...slackLabelStyle }}>
@@ -1669,7 +1672,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                         )}
 
                         {/* Public surface warning. Loud, not buried. */}
-                        <span style={{ fontSize: 12, lineHeight: '16px', color: '#6E1423' }}>
+                        <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger-ink)' }}>
                           {t('settings.connections.webhookWarning')}
                         </span>
 
@@ -2002,7 +2005,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                       <div style={{
                         fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
-                        color: '#6E1423'
+                        color: 'var(--cth-danger-ink)'
                       }}>{t('settings.general.dangerZone')}</div>
                       <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-700)' }}>
                         {t('settings.general.dangerDesc', { godName })}

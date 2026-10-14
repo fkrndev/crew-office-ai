@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  validateHireManifest, parseHireDeepLink, isAllowedManifestUrl, HIRE_SPEC_V1
+  validateHireManifest, parseHireDeepLink, isAllowedManifestUrl, HIRE_SPEC_V1, LEGACY_HIRE_SPEC_V1
 } from '@/shared/hire';
 import { selectBroadcastTargets } from '@/shared/broadcast';
 import { isDurableRole, preferredAgentRole, roleForHiveSpawn } from '@/shared/agentRole';
@@ -15,6 +15,12 @@ describe('validateHireManifest', () => {
   it('accepts a minimal valid manifest', () => {
     const r = validateHireManifest(base);
     expect(r.ok).toBe(true);
+  });
+
+  it('still accepts the legacy upstream spec tag and normalizes it', () => {
+    const r = validateHireManifest({ spec: LEGACY_HIRE_SPEC_V1, name: 'Reviewer' });
+    expect(r.ok).toBe(true);
+    expect(r.manifest?.spec).toBe(HIRE_SPEC_V1);
   });
 
   it('rejects non-objects and wrong spec', () => {
@@ -56,14 +62,14 @@ describe('validateHireManifest', () => {
 });
 
 describe('hire deep-link gate', () => {
-  it('only the munderdifflin://hire?src= link shape parses', () => {
-    expect(parseHireDeepLink('munderdifflin://hire?src=https://ok.example/m.json'))
+  it('only the agent-office://hire?src= link shape parses', () => {
+    expect(parseHireDeepLink('agent-office://hire?src=https://ok.example/m.json'))
       .toBe('https://ok.example/m.json');
-    expect(parseHireDeepLink('munderdifflin:hire?src=https://ok.example/m.json'))
+    expect(parseHireDeepLink('agent-office:hire?src=https://ok.example/m.json'))
       .toBe('https://ok.example/m.json');
     expect(parseHireDeepLink('javascript:alert(1)')).toBeNull();
-    expect(parseHireDeepLink('munderdifflin://not-hire?src=https://x/m.json')).toBeNull();
-    expect(parseHireDeepLink('munderdifflin://hire')).toBeNull(); // no src
+    expect(parseHireDeepLink('agent-office://not-hire?src=https://x/m.json')).toBeNull();
+    expect(parseHireDeepLink('agent-office://hire')).toBeNull(); // no src
   });
   it('manifest URLs are https-only outside loopback — file:// etc. never fetch', () => {
     expect(isAllowedManifestUrl(new URL('https://x.com/m.json'))).toBe(true);

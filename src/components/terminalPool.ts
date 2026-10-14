@@ -1022,8 +1022,8 @@ function linkHoverHint(term: Terminal): { show: (e: MouseEvent) => void; hide: (
       zIndex: '20',
       padding: '2px 6px',
       font: '12px/16px var(--cth-font-ui, sans-serif)',
-      color: 'var(--cth-ink-900, #1a1320)',
-      background: 'var(--cth-cream-100, #fff8e7)',
+      color: 'var(--cth-ink-900, #0f1c2e)',
+      background: 'var(--cth-cream-100, #eef2f6)',
       boxShadow: 'inset 0 0 0 1px var(--cth-ink-700, #333)',
       pointerEvents: 'none',
       whiteSpace: 'nowrap'

@@ -59,8 +59,10 @@ describe('clampPercent / installerUrl', () => {
     expect(clampPercent(42.6)).toBe(43);
   });
   it('builds the right asset name per platform; manualDownloadUrl honours downloadUrl', () => {
-    expect(installerUrl('0.4.7', 'win32', 'x64')).toContain('Munder-Difflin-0.4.7-win-x64-setup.exe');
-    expect(installerUrl('v0.4.7', 'darwin', 'arm64')).toContain('mac-arm64.dmg');
+    expect(installerUrl('0.4.7', 'win32', 'x64'))
+      .toBe('https://github.com/fkrndev/crew-office-ai/releases/download/v0.4.7/Agent.Office_0.4.7_x64-setup.exe');
+    expect(installerUrl('v0.4.7', 'darwin', 'arm64')).toContain('Agent.Office_0.4.7_aarch64.dmg');
+    expect(installerUrl('0.4.7', 'linux', 'x64')).toContain('Agent.Office_0.4.7_amd64.AppImage');
     const st = { state: 'available-manual', version: '0.4.7', downloadUrl: 'https://x/custom' } as UpdateStatus;
     expect(manualDownloadUrl(st, 'win32', 'x64')).toBe('https://x/custom');
   });

@@ -156,7 +156,7 @@ export function SetupPanel({ onDone }: { onDone?: () => void } = {}) {
           <div style={{ fontSize: 12, color: 'var(--cth-ink-500)', marginTop: 2 }}>
             {tools === null
               ? t('setupPanel.checking')
-              : t('setupPanel.summary', { ready: readyCount, total: tools.length, missing: missingEssential.length })}
+              : t('setupPanel.summary', { ready: readyCount, total: tools.length, missing: missingEssential.length ? t('setupPanel.missingSuffix', { n: missingEssential.length }) : '' })}
           </div>
         </div>
         <PixelButton variant="ghost" size="md" onClick={() => void refresh()} disabled={busy}>

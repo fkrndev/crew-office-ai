@@ -176,15 +176,7 @@
     "whatsNew": "apa yang baru",
     "whatsNewTitle": "Tampilkan catatan rilis untuk pembaruan yang terakhir diberitahukan kepadamu",
     "reportProblem": "laporkan masalah",
-    "fullChangelog": "changelog lengkap →",
-    "announcement": "Pengumuman",
-    "proLaunch": "v0.5.0 hadir dengan Munder Difflin Pro.",
-    "proCommunityFree": "Community tetap gratis, tetap terbuka, dan terus mendapat pembaruan.",
-    "proParagraph": "Pro hadir dengan fitur dan integrasi baru, dengan lebih banyak lagi dirilis sepanjang tahun, dan tetap selangkah di depan Community, untuk power user yang menginginkan potensi penuh coding agent dan agent harness. Roadmap Pro juga mencakup aplikasi mobile.",
-    "foundersWallTitle": "Namamu di Dinding Pendiri?",
-    "foundersWallBody": "Sebulan Munder Difflin Pro gratis, lalu diskon 50% untuk paket tahunan. Untuk 100 orang pertama di dinding itu.",
-    "seeTheWall": "lihat dindingnya",
-    "joinDiscord": "gabung Discord"
+    "fullChangelog": "changelog lengkap →"
   },
   "officeTheme": {
     "title": "Tema Kantor",
@@ -207,7 +199,7 @@
     "deleteSwitch": "hapus {{count}} & ganti",
     "notBuiltWarning": "Tema ini ({{label}}) belum dibuat — office-mu akan terlihat sama, tapi agent-mu tetap dihapus. Pilih tema yang sudah ada, atau pindah setelah tema ini rilis.",
     "blurbs": {
-      "office": "Dunder Mifflin — lantai aslinya",
+      "office": "Lantai kantor yang asli",
       "friends": "Kedai kopi Central Perk",
       "brooklyn99": "Ruang kerja detektif Distrik 99",
       "siliconvalley": "Hacker Hostel",
@@ -249,7 +241,7 @@
     "general": {
       "homeFolder": "Folder rumah",
       "environment": "Lingkungan",
-      "keepAwake": "Jaga Mac tetap terjaga saat agen berjalan",
+      "keepAwake": "Jaga komputer tetap terjaga saat agen berjalan",
       "keepAwakeDesc": "Mencegah layar tidur agar jadwal dan terminal tetap berjalan tepat waktu. Menguras baterai — paling baik saat tersambung daya.",
       "simpleMode": "Jelaskan dengan bahasa sederhana",
       "simpleModeDesc": "Agen memberimu penjelasan dalam bahasa sehari-hari, bukan singkatan teknis.",
@@ -258,7 +250,7 @@
       "desktopNotificationsDesc": "Toast bawaan saat agen selesai atau butuh masukanmu.",
       "maintenance": "Pemeliharaan",
       "autoCompact": "Pemadatan otomatis terjadwal",
-      "autoCompactDesc": "Mengantrekan /compact untuk setiap agen sesuai jadwal (setiap jam secara default; interval di tab Pemicu). Nonaktif secara default — agen yang berjalan lama bisa kehabisan konteks tanpanya.",
+      "autoCompactDesc": "Mengantrekan perintah compact milik tiap engine (/compact, /compress…) untuk setiap agen sesuai jadwal (setiap jam secara default; interval di tab Pemicu). Engine tanpa perintah yang dikenal (Crush, Copilot, Cursor, OpenClaw, custom) dilewati. Nonaktif secara default — agen yang berjalan lama bisa kehabisan konteks tanpanya.",
       "autoUpdate": "Pembaruan otomatis",
       "autoUpdateDesc": "Memeriksa rilis GitHub dan mengunduh pembaruan di latar belakang; kamu yang memilih kapan restart. Tidak pernah restart sendiri.",
       "telemetry": "Statistik penggunaan anonim",
@@ -274,7 +266,7 @@
     },
     "agentsModels": {
       "defaultModel": "Model agen default",
-      "defaultModelDesc": "Setiap agen Claude yang baru di-spawn (termasuk {{godName}}) mulai dengan model ini kecuali dipilih per agen. Ditandai \"· default\" di pemilih model.",
+      "defaultModelDesc": "Agen Claude Code ({{godName}} termasuk bila berjalan di Claude) mulai dengan model ini kecuali dipilih per agen. Engine lain mengambil model dari kolom per-engine di bawah atau dari konfigurasinya sendiri. Ditandai \"· default\" di pemilih model.",
       "savedNote": "tersimpan — berlaku untuk agen yang baru di-spawn",
       "saveFailed": "gagal menyimpan",
       "advanced": "Lanjutan",
@@ -309,7 +301,8 @@
       "orchSpawnOnDesc": "{{godName}} bisa merekrut sendiri. Setiap agent yang ia mulai menghabiskan token yang tidak kamu setujui.",
       "orchSpawnOffDesc": "Hanya kamu. {{godName}} masih bisa meminta, dan permintaannya menunggu di antrean alih-alih gagal.",
       "orchSpawnOnBtn": "aku dan {{godName}}",
-      "orchSpawnOffBtn": "hanya aku"
+      "orchSpawnOffBtn": "hanya aku",
+      "usageNote": "Batas token, laju, dan USD hanya melihat engine yang melaporkan penggunaan. Agen Hermes tidak melaporkan apa pun, jadi batas ini tidak bisa menghentikannya — batas repeated-tool dan error-storm (serta Hold) tetap berlaku."
     },
     "memory": {
       "semanticMemory": "Memori semantik",
@@ -378,7 +371,7 @@
       "voiceChat": "Chat suara dengan {{godName}}",
       "voiceChatDesc": "Bicara dengan orkestrator secara real time. Aktifkan dari tab {{godName}}; pilih mikrofon dan speaker yang dipakai loop suara di sini.",
       "openaiKey": "Kunci API OpenAI · suara",
-      "openaiKeyDesc1": "Bicara dengan {{godName}} berjalan di Realtime API OpenAI — suara masuk, suara keluar, lewat koneksi live ke {{model}}. Itu layanan yang berbeda dari langganan Claude tempat agen-agenmu berjalan, jadi butuh kunci API OpenAI sendiri.",
+      "openaiKeyDesc1": "Bicara dengan {{godName}} berjalan di Realtime API OpenAI — suara masuk, suara keluar, lewat koneksi live ke {{model}}. Itu layanan yang berbeda dari langganan dan login tempat agen-agenmu berjalan, jadi butuh kunci API OpenAI sendiri.",
       "openaiKeyDesc2": "Tempel sekali di bawah. Ia terenkripsi di mesin ini dan tidak pernah ditampilkan lagi — setiap sesi suara mencetak token berumur pendeknya sendiri darinya, dan kuncinya tidak pernah meninggalkan komputermu. Ini kunci OpenAI yang sama yang terdaftar di Agen & Model; mengisinya di salah satu tempat sudah cukup.",
       "keyPlaceholderSaved": "kunci tersimpan — tempel yang baru untuk menggantinya",
       "save": "Simpan",
@@ -552,7 +545,7 @@
     "saveAsProjectTitle": "Simpan folder ini ke proyekmu agar nanti tinggal sekali klik",
     "gitIsolation": "Isolasi git (worktree sendiri)",
     "resumeSession": "Lanjutkan session ID (opsional)",
-    "resumePlaceholder": "tempel session id Claude untuk melanjutkan percakapannya",
+    "resumePlaceholder": "tempel session id {{provider}} untuk melanjutkan percakapannya",
     "folderFromSession": "folder diambil dari sesi: {{path}}",
     "resumeNote": "Akan melanjutkan sesi ini di folder yang dipilih (isolasi git nonaktif).",
     "provider": "Provider",
@@ -567,9 +560,7 @@
     "ossByok": "Via provider OSS · BYOK",
     "ossLocalTitle": "{{slug}} · butuh ~{{ram}} RAM — pull dengan: ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · atur {{keyEnv}} di Pengaturan → AI Engines",
-    "byokNote": "Kunci BYOK & endpoint lokal untuk engine ini ada di Pengaturan → AI Engines. Baru dengan model lokal? Baca jalankan di model terbuka atau siapkan di Mac Mini. Live end-to-end masih menunggu pemanggilan model sungguhan (verifikasi di perangkat).",
-    "runOnOpenModels": "jalankan di model terbuka",
-    "setUpMacMini": "siapkan di Mac Mini",
+    "byokNote": "Kunci BYOK & endpoint lokal untuk engine ini ada di Pengaturan → AI Engines. Live end-to-end masih menunggu pemanggilan model sungguhan (verifikasi di perangkat).",
     "command": "Command",
     "commandAuto": "Command (mode auto aktif)",
     "templates": "Template",
@@ -622,7 +613,7 @@
     "shardxSetupIncomplete": "Setup ShardX belum selesai — agen dijalankan tanpa tools browser. Ulangi dari Pengaturan → MCP.",
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
     "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama.",
-    "needsKey": "⚠ {{provider}} butuh API key — isi di Pengaturan → AI Engines",
+    "needsKey": "⚠ {{provider}} tidak menemukan API key dari aplikasi ini. Jika muncul prompt setup, selesaikan di terminal agen (Hermes: `hermes setup`), atau simpan key di Pengaturan → Agents & Models",
     "needsShardx": "⚠ butuh setup shardx — jalankan Pengaturan → MCP → Set up",
     "hireSkipped": "Melewati {{n}} berkas tidak valid: {{errors}}",
     "spawnFailed": "gagal menjalankan agen",
@@ -633,7 +624,7 @@
   },
   "onboarding": {
     "titles": {
-      "persona": "SELAMAT DATANG DI MUNDER DIFFLIN",
+      "persona": "SELAMAT DATANG DI AGENT OFFICE",
       "welcome": "KENALI KANTORMU",
       "home": "LANGKAH 1 DARI 4 · RUMAH HARNESS",
       "homePlain": "LANGKAH 1 DARI 4 · RUMAH UNTUK APLIKASI",
@@ -646,7 +637,7 @@
     },
     "persona": {
       "headline": "KLON DIRIMU, BEKERJA 24/7",
-      "body": "Munder Difflin mengubah CLI agent yang sudah kamu pakai menjadi klon dirimu — yang menjalankan kantor berisi agen-agen jangka panjang dan terus bekerja saat kamu pergi. Ia mengatur semua yang ada di sekitar mereka: konteks, memori, tugas, pemicu, lingkungan, file, dan integrasi.",
+      "body": "Agent Office mengubah CLI agent yang sudah kamu pakai menjadi klon dirimu — yang menjalankan kantor berisi agen-agen jangka panjang dan terus bekerja saat kamu pergi. Ia mengatur semua yang ada di sekitar mereka: konteks, memori, tugas, pemicu, lingkungan, file, dan integrasi.",
       "bodyLocal": " Semuanya berjalan di mesin ini.",
       "ask": "PERTAMA — SIAPA KAMU? (kami sesuaikan setup-nya)",
       "technicalTitle": "SAYA TEKNIS",
@@ -661,8 +652,8 @@
       "features": {
         "engines": {
           "label": "SEBELAS ENGINE, SATU KANTOR",
-          "desc": "Claude Code, Codex, Grok, Kimi, Antigravity, Qwen, OpenCode, Crush, pi, Copilot & Cursor — agen live di satu lantai.",
-          "descPlain": "Sebelas asisten AI — Claude, Codex, Cursor, Gemini, Grok, dan lainnya — bekerja berdampingan di satu kantor bersama."
+          "desc": "Claude Code, Hermes, Codex, Grok, Kimi, Antigravity, Qwen, OpenCode, Crush, pi, Copilot, Cursor & OpenClaw — agen live di satu lantai.",
+          "descPlain": "Banyak asisten AI — Claude, Hermes, Codex, Cursor, Gemini, Grok, dan lainnya — bekerja berdampingan di satu kantor bersama."
         },
         "clone": {
           "label": "{{godName}} ADALAH KLONMU",
@@ -697,7 +688,8 @@
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — menjalankan model Qwen lokal di mesinmu",
       "gemini": "Gemini CLI - Google Gemini",
-      "cursor": "Cursor Agent CLI — memakai kredit Cursor-mu (Luna, Composer, …)"
+      "cursor": "Cursor Agent CLI — memakai kredit Cursor-mu (Luna, Composer, …)",
+      "hermes": "Hermes — Nous Research. Memakai provider dan model dari setup Hermes-mu sendiri."
     },
     "home": {
       "descPlain": "Buat folder kosong baru untuk dijadikan rumah aplikasi. Semua yang diingat aplikasi — pengaturannya sendiri dan memori agen-agenmu — disimpan di sini. Sesuatu seperti ~/HarnessAgents cocok. Kami akan membuatkannya jika belum ada.",
@@ -711,9 +703,14 @@
     "orchestrator": {
       "descPlain": "{{godName}} adalah klonmu — ia membaca permintaanmu, memecah jadi tugas, dan menyerahkan ke agent yang tepat. Ia bos di floor; kamu tetap bosnya. Pilih engine AI apa yang menggerakkan ia.",
       "desc": "{{godName}} adalah klonmu — bos di floor yang baru saja kamu temui. Ia menriage permintaanmu, memberi tugas, dan mengelola tim, sambil mengeskalasi apa pun yang benar-benar butuh kamu. Pilih engine dan model yang menggerakkan ia; beri ia model konteks-lebih-panjang, kapabilitas-lebih-tinggi.",
-      "cliAgentPlain": "<strong>CLI agent</strong> adalah asisten coding AI yang berjalan di komputermu — yang populer adalah Claude Code (Anthropic), Codex (OpenAI), dan Antigravity (Google Gemini). <strong>Klonmu</strong> adalah yang selalu aktif dan menjalankan seluruh kantormu. Kami merekomendasikan Claude Code di Opus 4.8 (1M). Kamu bisa menambah atau mengganti yang lain nanti.",
-      "cliAgent": "Setiap opsi adalah <strong>engine CLI</strong> (Claude Code, Codex, Antigravity/Gemini, atau proxy lokal seperti Qwen). Engine bertanda INSTALLED sudah ada di mesin ini; INSTALLS ON FIRST RUN berarti aplikasi mengaturnya saat {{godName}} pertama mulai. <strong>Klonmu</strong> ({{godName}}) adalah engine yang mengorkestrasi seluruh kantor. Disarankan: Claude Code · Opus 4.8 · 1M. Provider lain bisa dipasang per agent nanti.",
-      "recommended": "DIREKOMENDASIKAN",
+      "cliAgentPlain": "<strong>CLI agent</strong> adalah asisten coding AI yang berjalan di komputermu — yang populer adalah Claude Code (Anthropic), Hermes (Nous Research), Codex (OpenAI), dan Antigravity (Google Gemini). <strong>Klonmu</strong> adalah yang selalu aktif dan menjalankan seluruh kantormu. Pilih yang mana saja — lencana TERPASANG menunjukkan apa yang sudah ada di komputer ini, dan yang belum ada dipasang otomatis saat pertama kali dijalankan. Kamu bisa menambah atau mengganti yang lain nanti.",
+      "cliAgent": "Setiap opsi adalah <strong>engine CLI</strong> — agen coding yang sudah kamu jalankan di terminal (Claude Code, Hermes, Codex, Antigravity/Gemini, atau proxy lokal seperti Qwen). Pilih yang mana saja: engine bertanda TERPASANG sudah ada di mesin ini; yang bertanda DIPASANG SAAT PERTAMA JALAN diatur otomatis oleh aplikasi saat {{godName}} pertama mulai. <strong>Klonmu</strong> ({{godName}}) adalah engine yang mengorkestrasi seluruh kantor — pilih yang benar-benar kamu pakai. Provider lain bisa dipasang per agent nanti.",
+      "recommended": "DISARANKAN",
+      "badgeInstalled": "TERPASANG",
+      "badgeInstallsOnFirstRun": "DIPASANG SAAT PERTAMA JALAN",
+      "badgeNotInstalled": "BELUM TERPASANG",
+      "autoInstallNote": "{{label}} belum ada di komputer ini — aplikasi memasangnya otomatis saat {{godName}} pertama kali mulai. Kamu bisa lanjut.",
+      "noInstallerNote": "{{label}} belum terpasang dan aplikasi tidak bisa memasangnya otomatis. Kamu tetap bisa memilihnya dan lanjut, tetapi pasang sendiri sebelum {{godName}} mulai, lalu tekan \"periksa lagi\".",
       "workersOnly": "KHUSUS PEKERJA",
       "workersOnlyHint": "Belum bisa mengosongkan inbox, jadi belum bisa menjalankan klonmu — tetap tersedia saat merekrut worker.",
       "model": "Model",
@@ -734,8 +731,8 @@
       "autoLabel": "BEKERJA OTONOM (MODE AUTO)",
       "autoOnPlain": "Aktif. Agen mengerjakan tugas tanpa berhenti bertanya — pengalaman paling mulus.",
       "autoOffPlain": "Nonaktif. Agen berhenti dan bertanya kepadamu sebelum mengubah file atau menjalankan perintah.",
-      "autoOn": "Aktif. Agen tidak pernah berhenti — Claude menjalankan bypassPermissions, Codex melewati approvals + sandbox, dst.",
-      "autoOff": "Nonaktif. Setiap agen bertanya sebelum edit / perintah shell (default Claude, codex -a untrusted, …).",
+      "autoOn": "Aktif. Agen tidak pernah berhenti — Claude menjalankan bypassPermissions, Codex tidak pernah bertanya (sandbox workspace tetap), Hermes berjalan dengan --yolo (melewati prompt persetujuan), dst.",
+      "autoOff": "Nonaktif. Setiap agen bertanya sebelum edit / perintah shell (default Claude, codex -a untrusted, persetujuan Hermes, …).",
       "autoNotePlain": "Paling cocok saat agen bekerja di proyeknya sendiri. Kamu bisa mengubahnya nanti, termasuk untuk agen tertentu.",
       "autoNote": "Default yang tepat untuk pengalaman \"ruang kendali\"; tapi rawan mencelakai diri sendiri di repo produksi. Timpa per agen di dialog Tambah Agen.",
       "reliabilityHead": "JAGA SEMUANYA TETAP BERJALAN SAAT KAMU PERGI",
@@ -748,7 +745,7 @@
       "openAtLogin": "BUKA SAAT LOGIN",
       "openAtLoginDesc": "Buka ulang harness setelah reboot agar misi terjadwal lanjut sendiri. Tanpa prompt — langsung berlaku.",
       "shareStats": "BAGIKAN STATISTIK PENGGUNAAN ANONIM",
-      "shareStatsDesc": "Segelintir event anonim (aplikasi dibuka, agen di-spawn, fitur dipakai) yang membantu meningkatkan Munder Difflin — tidak pernah prompt, kode, path file, atau output agen. Daftar lengkap di TELEMETRY.md; ubah kapan saja di Pengaturan.",
+      "shareStatsDesc": "Segelintir event anonim (aplikasi dibuka, agen di-spawn, fitur dipakai) yang membantu meningkatkan Agent Office — tidak pernah prompt, kode, path file, atau output agen. Daftar lengkap di TELEMETRY.md; ubah kapan saja di Pengaturan.",
       "stayAwake": "TETAP TERJAGA SAAT TERSAMBUNG DAYA (MANUAL)",
       "stayAwakeDescMac": "macOS hanya mengizinkan kamu mengatur ini sendiri. Di Battery → Options, aktifkan \"Prevent automatic sleeping when the display is off\" (saat di adaptor daya) agar timer tetap berjalan dengan layar tertidur. Tanpa pengaturan pencegah tidur, Mac tetap benar-benar tidur — pekerjaan selamat dan mengejar ketinggalan saat bangun.",
       "stayAwakeDescWindows": "Windows hanya mengizinkan kamu mengatur ini sendiri. Di Settings → System → Power & battery → Screen, blank & sleep, atur \"On battery power, put my device to sleep\" dan \"When plugged in\" ke Never (atau perbesar nilainya) agar timer tetap berjalan. Tanpa pengaturan pencegah tidur, Windows tetap benar-benar tidur — pekerjaan selamat dan mengejar ketinggalan saat bangun.",
@@ -760,7 +757,6 @@
     },
     "errPickHome": "Pilih folder rumah harness dulu.",
     "errCreateHome": "tidak bisa membuat rumah harness",
-    "errEngineNotInstalled": "{{label}} belum terinstal. Instal dulu lalu tekan \"periksa ulang\", atau pilih engine lain.",
     "checking": "memeriksa…",
     "checkAgain": "periksa lagi",
     "installInstructions": "petunjuk pemasangan"
@@ -860,7 +856,7 @@
     "docs": "dok →",
     "askDesc": "{{godName}} bisa memasang {{count}} tool rekomendasi yang hilang untukmu. Ini mengisi kotak dispatch-nya — tidak ada yang jalan sampai kamu tekan dispatch.",
     "askDescPlural": "{{godName}} bisa memasang {{count}} tool rekomendasi yang hilang untukmu. Ini mengisi kotak dispatch-nya — tidak ada yang jalan sampai kamu tekan dispatch.",
-    "allReady": "Semua yang direkomendasikan sudah terinstal. Engine satu per satu di atas bersifat opsional — siapkan hanya yang kamu pakai.",
+    "allReady": "Tidak ada yang penting yang kurang. Engine agen bersifat opsional — siapkan hanya yang kamu pakai.",
     "askMichael": "minta {{godName}} menyiapkan semuanya",
     "sections": {
       "prerequisites": {
@@ -875,11 +871,12 @@
         "title": "Engine agen",
         "blurb": "CLI tempat agenmu berjalan. Kamu butuh yang benar-benar kamu pakai — bukan semuanya."
       }
-    }
+    },
+    "missingSuffix": " · {{n}} kurang"
   },
   "aiEngines": {
     "providers": "PROVIDER ENGINE AI (bawa kunci sendiri)",
-    "providersDesc": "Kunci API + endpoint lokal untuk engine OpenCode, Crush, pi.dev, dan Qwen. Kunci disimpan tulis-saja (terenkripsi saat diam; tidak pernah ditampilkan lagi) dan hanya dipakai saat engine itu di-spawn. Claude Code dan Codex memakai login mereka sendiri.",
+    "providersDesc": "Kunci API + endpoint lokal untuk engine OpenCode, Crush, pi.dev, Qwen, OpenClaw, dan Hermes. Kunci disimpan tulis-saja (terenkripsi saat diam; tidak pernah ditampilkan lagi) dan hanya dipakai saat engine itu di-spawn. Claude Code dan Codex memakai login mereka sendiri.",
     "apiKeys": "KUNCI API",
     "setCheck": "terisi ✓",
     "keyStoredPlaceholder": "•••••••• (tersimpan — ketik untuk mengganti)",
@@ -889,16 +886,15 @@
     "cleared": "dihapus",
     "localEndpoint": "ENDPOINT LOKAL · MODEL DEFAULT (PER ENGINE)",
     "defaultModelPlaceholder": "model default (provider/model)",
-    "runningOpenModels": "Menjalankan model terbuka? Panduan langkah demi langkah:",
-    "runOnOpenModels": "jalankan Munder Difflin di model terbuka",
-    "setUpMacMini": "siapkan di Mac Mini",
     "autoModeCaveat": "⚠ Di mode auto engine ini jalan dengan akses filesystem + shell penuh (tanpa sandbox) — seperti mode bypass Claude. Matikan mode auto (Umum) agar mereka tanya dulu.",
     "removeKey": "hapus kunci",
-    "baseUrlPlaceholder": "base-URL"
+    "baseUrlPlaceholder": "base-URL",
+    "keysScope": "Untuk Hermes ini hanya cadangan: jika ~/.hermes sudah punya provider (kamu sudah menjalankan `hermes setup`), itu yang dipakai dan ini boleh kosong. Tidak berpengaruh untuk Claude Code maupun Codex.",
+    "hermesHint": "Hanya cadangan — kosongkan jika kamu sudah menjalankan `hermes setup`. Bila belum ada provider, aplikasi mengisi home Hermes privat agen dengan endpoint kompatibel OpenAI ini (mis. https://api.deepseek.com), model di sebelah kanan (format id Hermes, mis. anthropic/claude-sonnet-4), dan key yang cocok di atas. Hanya ~/.hermes yang disalin; Hermes yang disimpan di tempat lain (Windows: %LOCALAPPDATA%\\hermes) tidak."
   },
   "mcpDefaults": {
     "title": "Server MCP default",
-    "desc": "Server-server ini digabungkan ke pengaturan sesi setiap agen baru. Server aman aktif secara default; server tulis/secret nonaktif sampai kamu setuju. Perubahan berlaku di spawn agen berikutnya — agen yang sedang berjalan tidak terpengaruh.",
+    "desc": "Server-server ini digabungkan ke pengaturan sesi setiap agen baru (untuk Hermes: ditulis ke config.yaml-nya). Server aman aktif secara default; server tulis/secret nonaktif sampai kamu setuju. Perubahan berlaku di spawn agen berikutnya — agen yang sedang berjalan tidak terpengaruh.",
     "toggleNote": "{{id}}: {{state}}",
     "couldNotSave": "tidak bisa menyimpan",
     "tiers": {
@@ -976,7 +972,7 @@
     "downloadingHeadline": "Mengunduh v{{version}}",
     "downloadingDetail": "{{percent}}% selesai. Kamu bisa terus bekerja; restart-nya kamu yang memicu.",
     "downloadedHeadline": "v{{version}} siap diinstal",
-    "downloadedDetail": "Restart Munder Difflin untuk menyelesaikan pembaruan dari v{{v}}.",
+    "downloadedDetail": "Restart Agent Office untuk menyelesaikan pembaruan dari v{{v}}.",
     "restartBtn": "Restart untuk memperbarui",
     "manualDetail": "Instalasi ini tidak bisa memperbarui dirinya sendiri — unduh dari halaman rilis.",
     "manualDetailReason": "Instalasi ini tidak bisa memperbarui dirinya sendiri ({{reason}}) — unduh dari halaman rilis.",
@@ -1003,7 +999,7 @@
     "webhooks": "WEBHOOK",
     "webhooksBlurb": "Biarkan sistem luar mengirim pekerjaan masuk.",
     "organisation": "ORGANISASI",
-    "organisationBlurb": "Biarkan Munder Difflin milik rekan tim mengirim pesan ke milikmu."
+    "organisationBlurb": "Biarkan Agent Office milik rekan tim mengirim pesan ke milikmu."
   },
   "orgSection": {
     "acceptMessages": "Terima pesan dari organisasimu",
@@ -1208,7 +1204,7 @@
     "openIdeAria": "Buka IDE",
     "openTerminalTip": "Buka aplikasi terminal sistem di {{cwd}} — shell biasa di folder agen ini, terpisah dari terminal milik agen.",
     "openTerminalAria": "Buka terminal sistem di folder agen ini",
-    "focusTitle": "MUNDER DIFFLIN · MODE FOKUS",
+    "focusTitle": "AGENT OFFICE · MODE FOKUS",
     "restoringTeam": "memulihkan timmu…",
     "restorableTitle": "{{name}} — bisa dipulihkan dari sesi terakhir",
     "dismissTitle": "Buang {{name}} — hapus permanen dari daftar restore",
@@ -1278,7 +1274,8 @@
     "catalogUnreachable": "tidak bisa menjangkau katalog",
     "offline": "offline",
     "searchOffline": "Cari skill bawaan…",
-    "offlineNote": "{{count}} skill sudah dibundel di app — install tanpa internet."
+    "offlineNote": "{{count}} skill sudah dibundel di app — install tanpa internet.",
+    "engineNote": "Skill di sini disimpan di ~/.claude/skills dan dibaca oleh Claude Code. Hermes punya skill sendiri (pakai /skills di dalam Hermes, atau `hermes skills`), jadi skill yang dipasang dari tab ini tidak sampai ke agen Hermes."
   },
   "workersTab": {
     "stopping": "menghentikan",
@@ -1622,7 +1619,7 @@
     "addAgent": "tambah agent",
     "productName": "Agent Office",
     "emptyFloorTitle": "LANTAI KOSONG",
-    "emptyFloorBody": "Belum ada agen di lantai. Buat satu untuk melihat output claude yang sebenarnya mengalir di sini.",
+    "emptyFloorBody": "Belum ada agen di lantai. Buat satu untuk melihat output terminal langsungnya mengalir di sini.",
     "loadFailedTitle": "GAGAL MEMULAI",
     "loadFailedBody": "Aplikasi tidak dapat membaca pengaturannya, jadi belum bisa dibuka.",
     "retry": "coba lagi",
@@ -1707,7 +1704,7 @@
     "switchingTo": "beralih ke {{provider}}…",
     "archived": "diarsipkan",
     "blockSummary": "Menunggu balasan Anda",
-    "blockDetail": "Claude menunggu masukan. Periksa terminal untuk melihat perintah persisnya.",
+    "blockDetail": "Agen menunggu masukan. Periksa terminal untuk melihat perintah persisnya.",
     "approve": "Setujui",
     "deny": "Tolak"
   },
@@ -1717,5 +1714,14 @@
     "failed": "{{n}} gagal — {{details}}",
     "nothing": "tidak ada yang perlu dipulihkan",
     "spawnFailed": "gagal memulai"
+  },
+  "providerNotes": {
+    "hermes": {
+      "modelHint": "Opsional — pakai format id yang diharapkan provider Hermes-mu (mis. anthropic/claude-sonnet-4). Kosongkan untuk memakai model dari konfigurasi Hermes-mu sendiri (`hermes model`).",
+      "autoNote": "Mode auto menjalankan Hermes dengan --yolo: ia berhenti meminta persetujuan sebelum perintah berbahaya. Itu melewati prompt persetujuan — bukan sandbox.",
+      "firstRunHint": "Start pertama: jika Hermes meminta setup provider, jalankan `hermes setup` (atau `hermes model`) sekali di terminal, atau simpan key dan endpoint di Pengaturan → Agents & Models. Setiap agen punya home Hermes privat sendiri, disalin dari ~/.hermes saat pertama kali mulai."
+    },
+    "noUsage": "{{provider}} tidak melaporkan token atau biaya, jadi meter biaya, indikator konteks, dan anggaran token agen ini tetap kosong.",
+    "ownSkills": "Skill dari tab Skills dipasang untuk Claude Code. {{provider}} membaca folder skill-nya sendiri, jadi skill itu tidak muncul untuk agen ini."
   }
 }

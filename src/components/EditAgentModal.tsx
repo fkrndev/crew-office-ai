@@ -4,6 +4,8 @@ import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { SpritePortrait } from './SpritePortrait';
 import { ProviderLogo } from './ProviderLogo';
+import { ProviderNotes } from './ProviderNotes';
+import { capabilitiesForProvider } from '@shared/providerCapabilities';
 import { useStore, type Agent } from '@/store/store';
 import { OFFICE_CAST, type OfficeCharacterName } from '@/scene/office/cast';
 import { useEscape } from '@/hooks/useEscape';
@@ -118,7 +120,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
       onClick={requestClose}
       style={{
         position: 'fixed', inset: 0,
-        background: 'rgba(26, 19, 32, 0.6)',
+        background: 'rgba(15, 28, 46, 0.6)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 500
       }}
@@ -248,12 +250,19 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                   {modelsForProvider(provider).length === 0 ? (
                     // Catalog-empty providers (hermes, openclaw, kimi…)
                     // take a freeform --model string; empty = CLI default.
-                    <input
-                      value={model ?? ''}
-                      onChange={(e) => setModel(e.target.value.trim() || undefined)}
-                      placeholder={t('fullscreenTerminal.cliDefault')}
-                      style={{ padding: '4px 8px', fontFamily: 'var(--cth-font-mono)', fontSize: 12, border: '1px solid var(--cth-ink-300)', background: 'var(--cth-cream-50)', color: 'var(--cth-ink-900)' }}
-                    />
+                    <>
+                      <input
+                        value={model ?? ''}
+                        onChange={(e) => setModel(e.target.value.trim() || undefined)}
+                        placeholder={t('fullscreenTerminal.cliDefault')}
+                        style={{ padding: '4px 8px', fontFamily: 'var(--cth-font-mono)', fontSize: 12, border: '1px solid var(--cth-ink-300)', background: 'var(--cth-cream-50)', color: 'var(--cth-ink-900)' }}
+                      />
+                      {capabilitiesForProvider(provider).modelHintKey && (
+                        <span style={{ display: 'block', marginTop: 4, fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                          {t(capabilitiesForProvider(provider).modelHintKey!)}
+                        </span>
+                      )}
+                    </>
                   ) : (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {(() => {
@@ -291,6 +300,7 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               <span style={{ fontSize: 12, color: 'var(--cth-ink-500)', lineHeight: '16px' }}>
                 {t('editAgent.engineNote')}
               </span>
+              <ProviderNotes provider={provider} autoMode={!!config?.autoMode && !!preset.autoFlag} />
             </Section>
 
               </div>

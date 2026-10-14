@@ -859,7 +859,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
                 )}
                 {modelProvidersForAgent(a.isGod).map((preset) => (
                   <optgroup key={preset.id} label={preset.label}>
-                    {modelsForProvider(preset.id).map((model) => {
+                    {(modelsForProvider(preset.id).length > 0 ? modelsForProvider(preset.id) : [{ label: t('addAgent.cliDefaultModel') } as { id?: string; label: string }]).map((model) => {
                       // `defaultModel` is a Claude model id, so it can only mark
                       // an entry in the Claude group.
                       const isHarnessDefault = preset.id === 'claude'

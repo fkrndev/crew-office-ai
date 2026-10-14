@@ -2,45 +2,48 @@
 // Any change here must also update tokens.css.
 
 export const colors = {
+  // v0.5 re-theme (light values; mirrors tokens.css): cool slate neutrals,
+  // navy ink, teal brand.
   cream: {
-    50: 0xfffdf5,
-    100: 0xfff8e7,
-    200: 0xf4e9c7,
-    300: 0xe8d9a0
+    50: 0xf7f9fb,
+    100: 0xeef2f6,
+    200: 0xe1e8ef,
+    300: 0xcbd6e1
   },
   paper: {
-    100: 0xfcfaf0,
-    200: 0xf0ead2
+    100: 0xfbfcfd,
+    200: 0xedf1f5
   },
   ink: {
-    900: 0x1a1320,
-    700: 0x3d2e4a,
-    500: 0x6b5878,
-    300: 0xa899b5,
-    100: 0xd9cfe0
+    900: 0x0f1c2e,
+    700: 0x2c3e55,
+    500: 0x50627a,
+    300: 0x8a9baf,
+    100: 0xccd6e1
   },
+  brand: 0x1b9890,
   // v0.3.4 recalibration: same hues, professional saturation (mirrors tokens.css)
   accent: {
-    coral: 0xd96a62,
-    coralLight: 0xf3d3cd,
-    mint: 0x5ca97a,
-    mintLight: 0xd2e7da,
-    sky: 0x4f9faf,
-    skyLight: 0xcfe5e9,
-    lemon: 0xdcab3c,
-    lemonLight: 0xf3e4bc,
-    lilac: 0x9482d3,
-    lilacLight: 0xe0daf2,
-    peach: 0xd99168,
-    peachLight: 0xf3daca
+    coral: 0xda5f66,
+    coralLight: 0xf7d6d8,
+    mint: 0x41aa84,
+    mintLight: 0xcfebdf,
+    sky: 0x3b93d6,
+    skyLight: 0xd0e5f7,
+    lemon: 0xe1ae2e,
+    lemonLight: 0xf5e7be,
+    lilac: 0x8478e0,
+    lilacLight: 0xdedaf7,
+    peach: 0xde8f6f,
+    peachLight: 0xf5dccc
   },
   status: {
-    idle: 0xa199ab,
-    thinking: 0x4f9faf,
-    working: 0xdcab3c,
-    blocked: 0xd96a62,
-    success: 0x5ca97a,
-    ghost: 0xd9d3de
+    idle: 0x9aa7b8,
+    thinking: 0x3b93d6,
+    working: 0xe1ae2e,
+    blocked: 0xda5f66,
+    success: 0x41aa84,
+    ghost: 0xd3dce6
   },
   world: {
     grassLight: 0xd4eab0,

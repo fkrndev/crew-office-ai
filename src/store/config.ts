@@ -333,9 +333,16 @@ export function modelsForProviderAtVersion(
   appVersion: string,
   providers: Record<string, CatalogModel[]> = CATALOG.providers
 ): ModelOption[] {
-  // An unknown provider falls back to the Claude list, as the hardcoded dispatch
-  // did. 'custom' is a real key holding an empty list, not a missing one.
-  const entries = providers[provider] ?? providers.claude ?? [];
+  // An UNKNOWN provider id (not one of the presets) falls back to the Claude
+  // list, as the hardcoded dispatch did. A KNOWN preset with no catalog entry
+  // (hermes, openclaw — their model ids are whatever the user's own CLI config
+  // accepts) gets an EMPTY list so every picker shows its freeform field.
+  // Falling back to Claude there handed Hermes users a Fable/Opus/Sonnet picker,
+  // and choosing one produced `hermes chat --model claude-opus-…`.
+  // 'custom' is a real key holding an empty list, not a missing one.
+  const entries = providers[provider] ??
+    (AGENT_PROVIDER_PRESETS.some((p) => p.id === provider) ? [] : providers.claude) ??
+    [];
   return entries
     .filter((model) => offeredAtVersion(model, appVersion))
     .map((model) => (model.id === undefined ? { label: model.label } : { id: model.id, label: model.label }));
@@ -385,6 +392,21 @@ export function onboardingEngineChoices(): {
     (preset) => preset.id !== 'custom' && !eligible.includes(preset)
   );
   return { eligible, workersOnly };
+}
+
+/** Which engine the Add Agent dialog PRESELECTS. An explicitly non-Claude
+ *  `defaultCommand` wins; otherwise it follows the engine the user picked for the
+ *  orchestrator in onboarding (`godProvider`), so someone who runs everything on
+ *  Hermes is not handed a Claude form to correct on every hire. Claude stays the
+ *  fallback — this never rewrites the stored default, it only changes what the
+ *  dialog starts on (every chip is still one click away). */
+export function defaultAgentProvider(
+  config: Pick<HarnessConfig, 'defaultCommand' | 'godProvider'>
+): AgentProvider {
+  const fromCommand = inferAgentProvider(config.defaultCommand);
+  if (fromCommand !== 'claude') return fromCommand;
+  const god = config.godProvider;
+  return god && god !== 'custom' && AGENT_PROVIDER_PRESETS.some((p) => p.id === god) ? god : 'claude';
 }
 
 /** Native <select> values must carry both provider and model because each

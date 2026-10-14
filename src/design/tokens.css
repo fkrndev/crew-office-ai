@@ -1,42 +1,66 @@
 /* Design tokens — mirrors tokens.ts. Update both together. */
 :root {
   /* Base */
-  --cth-cream-50:  #FFFDF5;
-  --cth-cream-100: #FFF8E7;
-  --cth-cream-200: #F4E9C7;
-  --cth-cream-300: #E8D9A0;
-  --cth-paper-100: #FCFAF0;
-  --cth-paper-200: #F0EAD2;
+  /* Base — cool slate-blue neutrals (v0.5 re-theme: replaces the warm
+     cream/paper ramp). Token NAMES are unchanged; only the values moved. */
+  --cth-cream-50:  #F7F9FB;
+  --cth-cream-100: #EEF2F6;
+  --cth-cream-200: #E1E8EF;
+  --cth-cream-300: #CBD6E1;
+  --cth-paper-100: #FBFCFD;
+  --cth-paper-200: #EDF1F5;
 
-  /* Ink */
-  --cth-ink-900: #1A1320;
-  --cth-ink-700: #3D2E4A;
-  --cth-ink-500: #6B5878;
-  --cth-ink-300: #A899B5;
-  --cth-ink-100: #D9CFE0;
+  /* Ink — deep navy. Measured (WCAG) against cream-50/100/200 + paper-100/200:
+       ink-900  13.9-16.7:1   primary text
+       ink-700   8.8-10.6:1   secondary text
+       ink-500   5.0-6.1:1    tertiary / hints
+       ink-300   2.3-2.8:1    structural 1px borders (light theme has always
+                              run ~2.2-2.6; the dark theme holds the 3.0 floor)
+       ink-100   1.2-1.4:1    dividers, meant to recede */
+  --cth-ink-900: #0F1C2E;
+  --cth-ink-700: #2C3E55;
+  --cth-ink-500: #50627A;
+  --cth-ink-300: #8A9BAF;
+  --cth-ink-100: #CCD6E1;
+
+  /* Brand — teal. The "primary / selected / focus" colour (primary button,
+     focus ring, input focus, links, selected cards). Accent fill: pair it with
+     --cth-on-accent (navy), never ink-900-on-brand in dark. Light: navy text on
+     it is 4.85:1 and it is 3.1-3.4:1 against the light surfaces (UI-component
+     floor 3:1). Dark: the lifted teal below. */
+  --cth-brand: #1B9890;
+  --cth-brand-hover: #3DA7A1;  /* primary-button hover: lifts toward white (navy text 5.9:1) */
+  --cth-brand-ink:   #176D6E;  /* brand as TEXT (links): 4.9-5.9:1 on the five surfaces */
+  --cth-danger-ink:  #9E2B3B;  /* error/consent TEXT: 5.9-7.1:1 on the five surfaces */
 
   /* Accents — v0.3.4 recalibration: same hues, professional saturation.
      The originals (#FFD93D, #FF6B6B, …) were full-saturation arcade tones that
      read as noise at UI density; these sit in the calmer band that products
-     like Linear/Radix use — recognizable color, no glare. */
-  --cth-coral: #D96A62;       --cth-coral-light: #F3D3CD;
-  --cth-mint:  #5CA97A;       --cth-mint-light:  #D2E7DA;
-  --cth-sky:   #4F9FAF;       --cth-sky-light:   #CFE5E9;
-  --cth-lemon: #DCAB3C;       --cth-lemon-light: #F3E4BC;
-  --cth-lilac: #9482D3;       --cth-lilac-light: #E0DAF2;
-  --cth-peach: #D99168;       --cth-peach-light: #F3DACA;
+     like Linear/Radix use — recognizable color, no glare.
+     v0.5: nudged cooler/cleaner to sit on the slate neutrals — mint toward
+     teal-green, sky toward a clear blue, lilac toward indigo, coral a touch
+     toward rose. Meanings are unchanged. Navy text on every accent fill is
+     >= 4.7:1 (--cth-on-accent). */
+  --cth-coral: #DA5F66;       --cth-coral-light: #F7D6D8;
+  --cth-mint:  #41AA84;       --cth-mint-light:  #CFEBDF;
+  --cth-sky:   #3B93D6;       --cth-sky-light:   #D0E5F7;
+  --cth-lemon: #E1AE2E;       --cth-lemon-light: #F5E7BE;
+  --cth-lilac: #8478E0;       --cth-lilac-light: #DEDAF7;
+  --cth-peach: #DE8F6F;       --cth-peach-light: #F5DCCC;
 
-  /* Status — same recalibration; hue meanings unchanged */
-  --cth-status-idle:     #A199AB;
-  --cth-status-thinking: #4F9FAF;
-  --cth-status-working:  #DCAB3C;
-  --cth-status-waiting:  #6D87D6;
-  --cth-status-blocked:  #D96A62;
-  --cth-status-success:  #5CA97A;
-  --cth-status-ghost:    #D9D3DE;
-  --cth-status-compacting: #8F7CC7; /* #5C — mid-/compact, "boxing up context" */
-  --cth-status-looping:    #D6903F; /* #5C — circuit-breaker armed (runaway) */
-  --cth-status-typing:     #C89838; /* unsent text on the prompt — queue is held */
+  /* Status — same recalibration; hue meanings unchanged. Thinking (sky, hue 206)
+     and waiting (blue, hue 226) and compacting (indigo, hue 246) are kept
+     ~20 degrees apart so the three blues stay distinguishable. */
+  --cth-status-idle:     #9AA7B8;
+  --cth-status-thinking: #3B93D6;
+  --cth-status-working:  #E1AE2E;
+  --cth-status-waiting:  #5F7BDB;
+  --cth-status-blocked:  #DA5F66;
+  --cth-status-success:  #41AA84;
+  --cth-status-ghost:    #D3DCE6;
+  --cth-status-compacting: #7C72D0; /* #5C — mid-/compact, "boxing up context" */
+  --cth-status-looping:    #D68A3C; /* #5C — circuit-breaker armed (runaway) */
+  --cth-status-typing:     #C99A35; /* unsent text on the prompt — queue is held */
 
   /* Spacing */
   --cth-space-0: 0px;
@@ -79,7 +103,7 @@
   --cth-lh-mono:       20px;
 
   /* Hard drop shadow — no blur, softer than before */
-  --cth-shadow-hard: 3px 3px 0 rgba(26, 19, 32, 0.14);
+  --cth-shadow-hard: 3px 3px 0 rgba(15, 28, 46, 0.14);
 
   /* Panel borders — v0.3.4: single hairlines. The old three-layer package
      boxed every surface in thick chrome; structure now comes from surface
@@ -89,7 +113,7 @@
      accents are LIGHT surfaces in BOTH themes, so this is dark in both — using
      ink-900 here inverts with the theme and paints near-white on a pale accent,
      which is the one place the theme switch actively hurts legibility. */
-  --cth-on-accent: #1A1320;
+  --cth-on-accent: #0F1C2E;
 
   --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
   --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-ink-300);
@@ -102,71 +126,81 @@
    by design/theme.ts as data-cth-theme on <html>; the terminal palette and
    per-agent Claude session themes follow the same switch.
 
-   THE BUG THIS FIXES. Text was never the problem — ink-900 measured 11-14:1 and
-   ink-700 8-9.6:1 against every surface. `ink-300` was, at 1.73-2.09:1. That
-   token is not decoration: it is this app's entire structural language, used
-   187 times and 93 of those as `inset 0 0 0 1px` — the border on every button,
-   input, panel, card and chip. Below ~3:1 a 1px line is not perceivable, so in
-   dark mode the edges defining every control simply were not there, and the UI
-   read as flat washes of grey. ink-300 is now 3.12-3.59:1 and ink-100 stays
-   deliberately quieter (1.47-1.69:1) for dividers that should recede.
+   THE BUG THIS FIXES. Text was never the problem — ink-900 measured 10-14:1 and
+   ink-700 6.5-9:1 against every surface. `ink-300` was, at 1.73-2.09:1 (in the
+   previous ramp). That token is not decoration: it is this app's entire
+   structural language, used 187 times and 93 of those as `inset 0 0 0 1px` —
+   the border on every button, input, panel, card and chip. Below ~3:1 a 1px
+   line is not perceivable, so in dark mode the edges defining every control
+   simply were not there, and the UI read as flat washes of grey. ink-300 is
+   now 3.58-4.27:1 on the five main surfaces (3.08:1 on the hover-only
+   cream-300) and ink-100 stays deliberately quieter (1.47-1.76:1) for dividers
+   that should recede.
 
    NOT BLACK, AND NOT WHITE. A first pass took the ground to #0E0E11 and text to
    #EDECEA, which measured beautifully and read as harsh: near-black behind
    near-white is maximum contrast, and maximum contrast is not the same as
-   comfortable. The ground now sits at luminance 0.009-0.020 (visibly lifted off
-   black, still unambiguously a dark theme) and text at 0.71 rather than 0.84 —
-   a warm off-white. Everything still clears its floor with room to spare.
+   comfortable. The ground now sits at luminance 0.008-0.019(visibly lifted off
+   black, still unambiguously a dark theme) and text at ~0.74 rather than 0.84 —
+   a cool off-white. Everything still clears its floor with room to spare.
 
    Every value below is verified against WCAG contrast for the five surfaces it
-   can appear on: body text >= 4.5, structural borders >= 3.0. Accents are held
-   to a narrow luminance band (0.36-0.44) so no single hue fluoresces against
-   the black and colour never becomes the thing carrying the layout. */
+   can appear on (cream-50/100/200, paper-100/200): body text >= 4.5,
+   structural borders >= 3.0. Accents are held to a narrow luminance band
+   (0.36-0.44) so no single hue fluoresces against the black and colour never
+   becomes the thing carrying the layout. Palette generation + measurements:
+   cool blue-slate neutrals, teal brand. */
 :root[data-cth-theme='dark'] {
   /* Base surfaces — a graded elevation ramp, darkest where light mode was
-     lightest. Neutral with a whisper of the brand's violet warmth. */
-  --cth-cream-50:  #17171B;   /* app ground — dark, deliberately NOT black */
-  --cth-cream-100: #1D1D22;
-  --cth-cream-200: #26262C;
-  --cth-cream-300: #313139;
-  --cth-paper-100: #1A1A1F;   /* cards, inputs, terminals */
-  --cth-paper-200: #222229;
+     lightest. Blue-slate, a cool counterpart to the light theme's navy ink. */
+  --cth-cream-50:  #12161C;   /* app ground — dark, deliberately NOT black */
+  --cth-cream-100: #181D25;
+  --cth-cream-200: #20262F;
+  --cth-cream-300: #2A313C;
+  --cth-paper-100: #151A21;   /* cards, inputs, terminals */
+  --cth-paper-200: #1C222A;
 
   /* Ink → off-white text ramp (never #FFF — glare) */
-  --cth-ink-900: #DEDBD6;   /* 10.9-13.0:1 — primary text, warm off-white */
-  --cth-ink-700: #B3B0AC;   /*  7.0-8.3:1  — secondary text */
-  --cth-ink-500: #96919F;   /*  4.9-5.8:1  — tertiary / hints */
-  --cth-ink-300: #787684;   /*  3.4-4.0:1  — BORDERS. must stay >= 3.0 */
-  --cth-ink-100: #3E3D46;   /*  1.4-1.7:1  — dividers, meant to recede */
+  --cth-ink-900: #DAE0E8;   /* 11.5-13.7:1 — primary text, cool off-white */
+  --cth-ink-700: #AEB8C4;   /*  7.6-9.0:1  — secondary text */
+  --cth-ink-500: #8F9BAA;   /*  5.4-6.4:1  — tertiary / hints */
+  --cth-ink-300: #6F7C8C;   /*  3.6-4.3:1  — BORDERS. must stay >= 3.0 */
+  --cth-ink-100: #38414D;   /*  1.5-1.8:1  — dividers, meant to recede */
+
+  /* Brand — lifted teal: 5.5-7.7:1 on the surfaces, navy on-accent text 7.2:1 */
+  --cth-brand: #3DBAB0;
+  --cth-brand-hover: #5AC4BC;
+  --cth-brand-ink:   #74C7C4;  /* 7.8-9.3:1 */
+  --cth-danger-ink:  #F0A0A8;  /* 7.5-8.9:1 */
 
   /* Accents — one step lighter/softer than the light set so they read on dark
-     without fluorescing */
-  --cth-coral: #E08C82;       --cth-mint:  #74C096;
-  --cth-sky:   #6FB3C4;       --cth-lemon: #CFAA57;
-  --cth-lilac: #A896E3;       --cth-peach: #DFA57F;
+     without fluorescing (luminance 0.36-0.43, 5.1-8.3:1 on the surfaces) */
+  --cth-coral: #E58B90;       --cth-mint:  #5BC09A;
+  --cth-sky:   #68AFEA;       --cth-lemon: #CEAB52;
+  --cth-lilac: #A097F0;       --cth-peach: #E0A183;
 
   /* Accent "-light" fills double as chip/selection backgrounds — deep muted
-     versions so light text (ink-900) stays readable on top. */
-  --cth-coral-light: #3B2724;
-  --cth-mint-light:  #1E3227;
-  --cth-sky-light:   #1F3238;
-  --cth-lemon-light: #332C1D;
-  --cth-lilac-light: #2B2740;
-  --cth-peach-light: #352822;
+     versions so light text (ink-900) stays readable on top (>= 10:1). */
+  --cth-coral-light: #3A252B;
+  --cth-mint-light:  #173329;
+  --cth-sky-light:   #1B3047;
+  --cth-lemon-light: #332D1B;
+  --cth-lilac-light: #25284A;
+  --cth-peach-light: #36291F;
 
   /* Status — dark-tuned counterparts (same hue language) */
-  --cth-status-idle:     #6F6C77;
-  --cth-status-thinking: #64ACBB;
-  --cth-status-working:  #D8B052;
-  --cth-status-waiting:  #8095DC;
-  --cth-status-blocked:  #DF8078;
-  --cth-status-success:  #6FB88B;
-  /* The quietest status, but still a MARK the user must be able to find — at
-     the old #3D3C44 it measured 1.54:1 on the new ground and simply vanished. */
-  --cth-status-ghost:    #6C6A76;
-  --cth-status-compacting: #9D8BD2;
-  --cth-status-looping:    #D69A55;
-  --cth-status-typing:     #CBA24A;
+  --cth-status-idle:     #6C7888;
+  --cth-status-thinking: #62A8E0;
+  --cth-status-working:  #CEAB52;
+  --cth-status-waiting:  #8AA0EE;
+  --cth-status-blocked:  #E58A8E;
+  --cth-status-success:  #5ABB98;
+  /* The quietest status, but still a MARK the user must be able to find — a
+     dimmer value measured ~1.5:1 on the ground and simply vanished. 2.7-3.8:1. */
+  --cth-status-ghost:    #667384;
+  --cth-status-compacting: #A39AEC;
+  --cth-status-looping:    #D49A55;
+  --cth-status-typing:     #C9A24C;
 
   /* Hard shadow reads as depth, not void */
   --cth-shadow-hard: 4px 4px 0 rgba(0, 0, 0, 0.45);

@@ -18,8 +18,7 @@ import {
   OSS_LOCAL_PICKS,
   OSS_PROVIDER_PICKS,
   localSlugFor,
-  hasOssQuickPicks,
-  OSS_BLOG_LINKS
+  hasOssQuickPicks
 } from '@shared/ossModels';
 import {
   type AgentProvider,
@@ -29,9 +28,12 @@ import {
   tokenizeCommand,
   modelsForProvider,
   inferAgentProvider,
+  defaultAgentProvider,
   providerPreset,
   isClaudeProvider
 } from '@/store/config';
+import { capabilitiesForProvider } from '@shared/providerCapabilities';
+import { ProviderNotes } from './ProviderNotes';
 import { useRtl } from '@/i18n/useDirection';
 import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 
@@ -49,7 +51,6 @@ const ossGroupHead: CSSProperties = {
   fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
   color: 'var(--cth-ink-500)', textTransform: 'uppercase', marginBottom: 4
 };
-const ossLink: CSSProperties = { color: 'var(--cth-ink-900)', textDecoration: 'underline', cursor: 'pointer' };
 
 // One-click briefing templates — fill Description + Goal with a sharp, ready-to-run
 // role so a user isn't staring at a blank field (item 7). The template BRIEFINGS
@@ -87,14 +88,14 @@ const DESCRIPTION_TEMPLATES: { labelKey: string; description: string; goal: stri
 // the exact JSON shape the importer accepts and ends with a fill-in section so the
 // user adds their own details (item 7). Kept in sync with the HireManifest schema
 // (src/shared/hire.ts) — provider allowlist is claude | codex | antigravity | cursor.
-const HIRE_PROMPT = `You are designing a "hire" — a ready-to-spawn AI agent for Munder Difflin, an app that runs a team of CLI coding agents. Output ONE JSON object (a hire manifest) and nothing else.
+const HIRE_PROMPT = `You are designing a "hire" — a ready-to-spawn AI agent for Agent Office, an app that runs a team of CLI coding agents. Output ONE JSON object (a hire manifest) and nothing else.
 
 Make the agent genuinely useful: give it a sharp role, a concrete standing goal, and a description that makes it behave like an expert operator of its CLI engine (Claude Code, Codex, or Antigravity/Gemini). It should know how to use the terminal, read and edit files, run and inspect commands, lean on available skills and MCP tools, keep notes in memory, and work autonomously toward its goal without hand-holding.
 
 Return EXACTLY this shape (omit optional fields you don't need; keep the spec string verbatim):
 
 {
-  "spec": "munder-difflin/hire@1",
+  "spec": "agent-office/hire@1",
   "name": "Jim",
   "description": "one-line role — what this agent is for",
   "goal": "standing directive injected on every prompt — specific and outcome-oriented",
@@ -187,10 +188,13 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     return m.commandFlags?.length ? `${base} ${m.commandFlags.join(' ')}` : base;
   };
 
-  // Default provider follows whatever the global default command is (claude
-  // unless the user reconfigured it); the model only carries over for Claude.
-  const initialProvider = inferAgentProvider(config.defaultCommand);
-  const initialModel = isClaudeProvider(initialProvider) ? config.defaultModel : undefined;
+  // Default provider follows the global default command when that was
+  // reconfigured, else the engine picked for the orchestrator (see
+  // defaultAgentProvider); the model carries over from the matching default.
+  const initialProvider = defaultAgentProvider(config);
+  const initialModel = isClaudeProvider(initialProvider)
+    ? config.defaultModel
+    : config.providerDefaultModels?.[initialProvider];
 
   const [name, setName] = useState(pendingHire?.name ?? 'Jim');
   const [character, setCharacter] = useState<OfficeCharacterName>(knownCharacter(pendingHire?.character));
@@ -238,6 +242,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     setCommand(buildSpawnCommand(config, nextModel, id));
   };
   const preset = providerPreset(provider);
+  const modelHintKey = capabilitiesForProvider(provider).modelHintKey;
   const [goal, setGoal] = useState(pendingHire?.goal ?? '');
   const [isolate, setIsolate] = useState(pendingHire?.isolate ?? false);
   // Per-agent opt-in for non-default MCP servers (write/secret catalog ids).
@@ -656,7 +661,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       onClick={busy ? undefined : onClose}
       style={{
         position: 'fixed', inset: 0,
-        background: 'rgba(26, 19, 32, 0.6)',
+        background: 'rgba(15, 28, 46, 0.6)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         // Must sit above fullscreen terminal/file overlays (250/280) and their
         // hover popovers. The fullscreen Add Agent button uses this same modal.
@@ -1132,7 +1137,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         value={resumeSessionId}
                         onChange={(e) => { setResumeSessionId(e.target.value); setFolderNote(undefined); }}
                         onBlur={resolveFolderFromSession}
-                        placeholder={tr('addAgent.resumePlaceholder')}
+                        placeholder={tr('addAgent.resumePlaceholder', { provider: preset.label })}
                         style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)', fontSize: 13 }}
                       />
                       {folderNote && (
@@ -1192,12 +1197,19 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         // Catalog-empty providers (hermes, openclaw, kimi,
                         // antigravity…) take a freeform --model string; empty
                         // stays on the CLI's own configured default.
-                        <input
-                          value={model ?? ''}
-                          onChange={(e) => pickModel(e.target.value.trim() || undefined)}
-                          placeholder={tr('addAgent.cliDefaultModel')}
-                          style={inputStyle}
-                        />
+                        <>
+                          <input
+                            value={model ?? ''}
+                            onChange={(e) => pickModel(e.target.value.trim() || undefined)}
+                            placeholder={tr('addAgent.cliDefaultModel')}
+                            style={inputStyle}
+                          />
+                          {modelHintKey && (
+                            <span style={{ display: 'block', marginTop: 4, fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                              {tr(modelHintKey)}
+                            </span>
+                          )}
+                        </>
                       ) : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {(() => {
@@ -1286,18 +1298,6 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     {(provider === 'opencode' || provider === 'crush' || provider === 'pi' || provider === 'qwen') && (
                       <div style={{ fontSize: 12, color: 'var(--cth-ink-500)', lineHeight: '16px', margin: '2px 0 6px' }}>
                         {tr('addAgent.byokNote')}
-                        {' '}
-                        <a
-                          href={OSS_BLOG_LINKS.openModels}
-                          onClick={(e) => { e.preventDefault(); void window.cth.openExternal(OSS_BLOG_LINKS.openModels); }}
-                          style={ossLink}
-                        >{tr('addAgent.runOnOpenModels')}</a>
-                        {' '}
-                        <a
-                          href={OSS_BLOG_LINKS.macMini}
-                          onClick={(e) => { e.preventDefault(); void window.cth.openExternal(OSS_BLOG_LINKS.macMini); }}
-                          style={ossLink}
-                        >{tr('addAgent.setUpMacMini')}</a>.
                       </div>
                     )}
 
@@ -1305,18 +1305,11 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       <input
                         value={command}
                         onChange={(e) => { setCommand(e.target.value); if (error) setError(undefined); }}
-                        placeholder={
-                          provider === 'antigravity'
-                            ? 'agy'
-                            : provider === 'codex'
-                              ? 'codex'
-                              : provider === 'custom'
-                                ? 'your-agent-cli'
-                                : 'claude'
-                        }
+                        placeholder={preset.defaultCommand || 'your-agent-cli'}
                         style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }}
                       />
                     </Row>
+                    <ProviderNotes provider={provider} autoMode={config.autoMode && !!preset.autoFlag} />
                   </>
                 )}
 

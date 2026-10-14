@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
@@ -8,8 +8,10 @@ import { ProviderLogo } from './ProviderLogo';
 import { modelsForProvider, onboardingEngineChoices, type AgentProvider, type HarnessConfig } from '@/store/config';
 import { providerPreset } from '@shared/agentProvider';
 import {
-  classifyEngineAvailability, engineAvailabilityBadge, engineAvailabilityMessage, engineBlocksOnboarding
+  classifyEngineAvailability, engineAvailabilityBadgeKey,
+  suggestOrchestratorEngine
 } from '@shared/engineAvailability';
+import { capabilitiesForProvider, providerNoteKeys } from '@shared/providerCapabilities';
 import type { ToolStatus } from '@shared/toolCatalog';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { examplePath } from '@shared/platformLabels';
@@ -84,6 +86,7 @@ const PROVIDER_BLURB_KEYS: Partial<Record<AgentProvider, string>> = {
   claude: 'onboarding.providerBlurb.claude',
   codex: 'onboarding.providerBlurb.codex',
   antigravity: 'onboarding.providerBlurb.antigravity',
+  hermes: 'onboarding.providerBlurb.hermes',
   qwen: 'onboarding.providerBlurb.qwen',
   cursor: 'onboarding.providerBlurb.cursor'
 };
@@ -125,8 +128,24 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     finally { setProbing(false); }
   };
   useEffect(() => { void probeEngines(); }, []);
+  // Preselect an engine that is actually on this machine (Claude if installed,
+  // else Hermes, else the first installed one) instead of always Claude — until
+  // the user picks one themselves, after which the probe never overrides them.
+  const [userPickedEngine, setUserPickedEngine] = useState(false);
+  const suggestedEngine = useMemo(
+    () => suggestOrchestratorEngine(engines, onboardingEngineChoices().eligible.map((p) => p.id)),
+    [engines]
+  );
+  useEffect(() => {
+    if (userPickedEngine || suggestedEngine === godProvider) return;
+    setGodProvider(suggestedEngine);
+    setGodModel(providerPreset(suggestedEngine).recommendedOrchestratorModel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedEngine, userPickedEngine]);
   const selectedEngine = classifyEngineAvailability(engines, godProvider);
-  const engineBlocked = engineBlocksOnboarding(selectedEngine);
+  // Any engine may be picked. A missing one with an installer is set up on first
+  // start; one with no installer at all only earns a heads-up (never blocks Next).
+  const needsManualInstall = selectedEngine.state === 'not-installable';
 
   // Permissions & reliability toggles. These apply IMMEDIATELY on change (their
   // own IPC / OS state) "— they are NOT part of finish()'s config write. First-run
@@ -205,13 +224,6 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     try {
       const harnessHome = home.trim(); // whitespace-only is not a folder
       if (!harnessHome) { setError(t('onboarding.errPickHome')); setStep('home'); return; }
-      // The orchestrator step already refuses to advance on this, but a late probe
-      // result can change the answer after the user has moved on. Never write a
-      // godProvider that is known to be unable to boot.
-      if (engineBlocked) {
-        setError(t('onboarding.errEngineNotInstalled', { label: providerPreset(godProvider).label }));
-        setStep('orchestrator'); return;
-      }
       const ensure = await window.cth.ensureHarnessHome(harnessHome);
       if (!ensure.ok) {
         setError(ensure.error ?? t('onboarding.errCreateHome'));
@@ -242,7 +254,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       position: 'fixed', inset: 0,
       background: 'var(--cth-cream-200)',
       backgroundImage:
-        `repeating-linear-gradient(45deg, rgba(232, 217, 160, 0.4) 0 1px, transparent 1px 8px)`,
+        `repeating-linear-gradient(45deg, rgba(203, 214, 225, 0.4) 0 1px, transparent 1px 8px)`,
       // Scroll the overlay rather than clip the wizard. Step 2 lists every
       // installed CLI engine (8 rows + a model select), which is taller than a
       // 1080p-class window once the OS chrome is subtracted "— the panel was
@@ -412,20 +424,21 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     {plain ? (
                       <Trans i18nKey="onboarding.orchestrator.cliAgentPlain" components={{ strong: <strong /> }}>
                         A <strong>CLI agent</strong> is an AI coding assistant that runs on your
-                        computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and
-                        Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on
-                        one that runs your whole office. We recommend Claude Code on Opus 4.8 (1M).
-                        You can add or switch the others later.
+                        computer — popular ones are Claude Code (Anthropic), Hermes (Nous Research),
+                        Codex (OpenAI) and Antigravity (Google Gemini). <strong>Your clone</strong> is
+                        the always-on one that runs your whole office. Pick the one you already use —
+                        the INSTALLED badge shows what is on this computer. You can add or switch the
+                        others later.
                       </Trans>
                     ) : (
                       <Trans i18nKey="onboarding.orchestrator.cliAgent" components={{ strong: <strong /> }}>
-                        Each option is a <strong>CLI engine</strong> (Claude Code, Codex,
-                        Antigravity/Gemini, or a local proxy like Qwen). Engines marked
-                        INSTALLED are already on this machine; INSTALLS ON FIRST RUN means the app
-                        sets it up when Michael first starts.
+                        Each option is a <strong>CLI engine</strong> — the coding agent you already
+                        run in a terminal (Claude Code, Hermes, Codex, Antigravity/Gemini, or a local
+                        proxy like Qwen). Engines marked INSTALLED are already on this machine;
+                        INSTALLS ON FIRST RUN means the app sets it up when Michael first starts.
                         <strong> Your clone</strong> (Michael) is the engine that orchestrates the whole
-                        hive. Recommended: Claude Code · Opus 4.8 · 1M. Other providers can be wired
-                        per agent later.
+                        office — pick the one you actually use. Other providers can be wired per agent
+                        later.
                       </Trans>
                     )}
                   </span>
@@ -448,6 +461,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                           value={p.id}
                           checked={sel}
                           onChange={() => {
+                            setUserPickedEngine(true);
                             setGodProvider(p.id);
                             // Reset the model to the new provider's recommended pick so the
                             // dropdown below always shows a valid model for the chosen engine.
@@ -473,8 +487,9 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         </span>
                         {(() => {
                           const a = classifyEngineAvailability(engines, p.id);
-                          const badge = engineAvailabilityBadge(a);
-                          if (!badge) return null;
+                          const badgeKey = engineAvailabilityBadgeKey(a);
+                          if (!badgeKey) return null;
+                          const badge = t(badgeKey);
                           const bad = a.state === 'not-installable';
                           return (
                             <span title={a.path ?? undefined} style={{
@@ -486,7 +501,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                             }}>{badge}</span>
                           );
                         })()}
-                        {p.id === 'claude' && (
+                        {p.id === suggestedEngine && (
                           <span style={{
                             fontSize: 10, padding: '1px 5px', lineHeight: '16px',
                             background: 'var(--cth-lemon)',
@@ -533,13 +548,22 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     </label>
                   ))}
                 </div>
-                {engineBlocked && (
+                {selectedEngine.state === 'installs-on-first-run' && (
+                  <div style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-700)' }}>
+                    {t('onboarding.orchestrator.autoInstallNote', {
+                      label: providerPreset(godProvider).label, godName
+                    })}
+                  </div>
+                )}
+                {needsManualInstall && (
                   <div style={{
                     display: 'flex', flexDirection: 'column', gap: 8, padding: 10,
                     background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 2px var(--cth-ink-900)',
                     fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-900)'
                   }}>
-                    <span>{engineAvailabilityMessage(selectedEngine, providerPreset(godProvider).label)}</span>
+                    <span>{t('onboarding.orchestrator.noInstallerNote', {
+                      label: providerPreset(godProvider).label, godName
+                    })}</span>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <PixelButton variant="secondary" size="sm" onClick={() => { void probeEngines(); }} disabled={probing}>
                         {probing ? t('onboarding.checking') : t('onboarding.checkAgain')}
@@ -550,6 +574,19 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         </PixelButton>
                       )}
                     </div>
+                  </div>
+                )}
+                {/* Engine-specific heads-up (first-run setup, auto-mode meaning, what
+                    will not work) — data-driven, empty for Claude. */}
+                {providerNoteKeys(godProvider, { autoMode }).length > 0 && (
+                  <div style={{
+                    display: 'flex', flexDirection: 'column', gap: 4, padding: 10,
+                    background: 'var(--cth-lemon-light)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                    fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-700)'
+                  }}>
+                    {providerNoteKeys(godProvider, { autoMode }).map((k) => (
+                      <span key={k}>{t(k, { provider: providerPreset(godProvider).label })}</span>
+                    ))}
                   </div>
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -574,6 +611,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                       placeholder={t('onboarding.orchestrator.modelFreeform', 'CLI default')}
                       style={inputStyle}
                     />
+                  )}
+                  {modelsForProvider(godProvider).length === 0 && capabilitiesForProvider(godProvider).modelHintKey && (
+                    <div style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                      {t(capabilitiesForProvider(godProvider).modelHintKey!)}
+                    </div>
                   )}
                   <div style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
                     {t('onboarding.orchestrator.modelNote')}
@@ -788,17 +830,10 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         setError(t('onboarding.errPickHome'));
                         return;
                       }
-                      // Same idea for the engine: refuse here, with the reason on
-                      // screen, instead of letting a pick that cannot boot through
-                      // to a Michael that never starts.
-                      if (step === 'orchestrator' && engineBlocked) {
-                        setError(t('onboarding.errEngineNotInstalled', { label: providerPreset(godProvider).label }));
-                        return;
-                      }
                       setError(undefined);
                       setStep(nextStep(step));
                     }}
-                    disabled={(step === 'persona' && !audience) || (step === 'orchestrator' && engineBlocked)}
+                    disabled={step === 'persona' && !audience}
                   >
                     {step === 'welcome' ? t('onboarding.permissions.setItUp') : t('common.next')}
                   </PixelButton>

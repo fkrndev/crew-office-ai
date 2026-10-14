@@ -346,7 +346,7 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 280,
-        background: 'rgba(26, 19, 32, 0.6)',
+        background: 'rgba(15, 28, 46, 0.6)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24
       }}
     >

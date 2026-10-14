@@ -176,15 +176,7 @@
     "whatsNew": "what's new",
     "whatsNewTitle": "Show the release notes for the update you were last told about",
     "reportProblem": "report a problem",
-    "fullChangelog": "full changelog →",
-    "announcement": "Announcement",
-    "proLaunch": "v0.5.0 launches with Munder Difflin Pro.",
-    "proCommunityFree": "Community stays free, stays open, and keeps getting updates.",
-    "proParagraph": "Pro ships with new features and integrations, with more posted throughout the year, and it stays ahead of Community, for power users who want the full potential of coding agents and agent harnesses. The Pro roadmap also includes a mobile app.",
-    "foundersWallTitle": "On the Founders' Wall?",
-    "foundersWallBody": "A month of Munder Difflin Pro free, then 50% off the annual plan. For the first 100 people on the wall.",
-    "seeTheWall": "see the wall",
-    "joinDiscord": "join Discord"
+    "fullChangelog": "full changelog →"
   },
   "officeTheme": {
     "title": "Office Theme",
@@ -207,7 +199,7 @@
     "deleteSwitch": "delete {{count}} & switch",
     "notBuiltWarning": "This theme ({{label}}) is not built yet — your office will look the same, but your agents are still deleted. Pick a built theme, or switch after it ships.",
     "blurbs": {
-      "office": "Dunder Mifflin — the original floor",
+      "office": "The original office floor",
       "friends": "Central Perk coffee house",
       "brooklyn99": "The 99th precinct bullpen",
       "siliconvalley": "The Hacker Hostel",
@@ -249,7 +241,7 @@
     "general": {
       "homeFolder": "Home folder",
       "environment": "Environment",
-      "keepAwake": "Keep Mac awake while agents run",
+      "keepAwake": "Keep computer awake while agents run",
       "keepAwakeDesc": "Blocks display sleep so schedules and terminals keep firing on time. Costs battery — best on AC.",
       "simpleMode": "Explain things simply",
       "simpleModeDesc": "Agents brief you in plain language instead of engineering shorthand.",
@@ -258,7 +250,7 @@
       "desktopNotificationsDesc": "Native toasts when an agent finishes or needs your input.",
       "maintenance": "Maintenance",
       "autoCompact": "Scheduled auto-compact",
-      "autoCompactDesc": "Queue /compact for every agent on a schedule (hourly by default; interval in the Triggers tab). Off by default — long-running agents may overflow their context without it.",
+      "autoCompactDesc": "Queue each engine's own compact command (/compact, /compress…) for every agent on a schedule (hourly by default; interval in the Triggers tab). Engines with no known command (Crush, Copilot, Cursor, OpenClaw, custom) are skipped. Off by default — long-running agents may overflow their context without it",
       "autoUpdate": "Auto-update",
       "autoUpdateDesc": "Check GitHub releases and download updates in the background; you choose when to restart. Never restarts on its own.",
       "telemetry": "Anonymous usage stats",
@@ -274,7 +266,7 @@
     },
     "agentsModels": {
       "defaultModel": "Default agent model",
-      "defaultModelDesc": "Every newly spawned Claude agent ({{godName}} included) starts on this model unless picked per-agent. Marked \"· default\" in the model pickers.",
+      "defaultModelDesc": "Claude Code agents ({{godName}} included when it runs on Claude) start on this model unless picked per-agent. Other engines take their model from the per-engine field below or from their own config. Marked \"· default\" in the model pickers.",
       "savedNote": "saved — applies to newly spawned agents",
       "saveFailed": "save failed",
       "advanced": "Advanced",
@@ -309,7 +301,8 @@
       "orchSpawnOnDesc": "{{godName}} can hire on its own. Every agent it starts spends tokens you did not approve.",
       "orchSpawnOffDesc": "Only you. {{godName}} can still ask, and its request waits in the queue instead of failing.",
       "orchSpawnOnBtn": "me and {{godName}}",
-      "orchSpawnOffBtn": "only me"
+      "orchSpawnOffBtn": "only me",
+      "usageNote": "Token, rate and USD limits only see engines that report usage. Hermes agents report none, so these limits cannot stop them — the repeated-tool and error-storm limits (and Hold) still apply."
     },
     "memory": {
       "semanticMemory": "Semantic memory",
@@ -378,7 +371,7 @@
       "voiceChat": "Voice chat with {{godName}}",
       "voiceChatDesc": "Talk to the orchestrator in real time. Toggle it on from {{godName}}'s tab; choose which microphone and speaker the voice loop uses here.",
       "openaiKey": "OpenAI API key · voice",
-      "openaiKeyDesc1": "Talking to {{godName}} runs on OpenAI's Realtime API — speech in, speech out, over a live connection to {{model}}. That is a different service from the Claude subscription your agents run on, so it needs its own OpenAI API key.",
+      "openaiKeyDesc1": "Talking to {{godName}} runs on OpenAI's Realtime API — speech in, speech out, over a live connection to {{model}}. That is a different service from the subscriptions and logins your agents run on, so it needs its own OpenAI API key.",
       "openaiKeyDesc2": "Paste it once below. It is encrypted on this machine and never shown again — each voice session mints its own short-lived token from it, and the key itself never leaves your computer. It is the same OpenAI key listed under Agents & Models; setting it in either place is enough.",
       "keyPlaceholderSaved": "key saved — paste a new one to replace it",
       "save": "Save",
@@ -552,7 +545,7 @@
     "saveAsProjectTitle": "Save this folder to your projects so it's a one-click pick next time",
     "gitIsolation": "Git isolation (own worktree)",
     "resumeSession": "Resume session ID (optional)",
-    "resumePlaceholder": "paste a Claude session id to continue its conversation",
+    "resumePlaceholder": "paste a {{provider}} session id to continue its conversation",
     "folderFromSession": "folder set from session: {{path}}",
     "resumeNote": "Will resume this session in the chosen folder (git isolation disabled).",
     "provider": "Provider",
@@ -567,9 +560,7 @@
     "ossByok": "Via OSS provider · BYOK",
     "ossLocalTitle": "{{slug}} · needs ~{{ram}} RAM — pull with: ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · set {{keyEnv}} in Settings → AI Engines",
-    "byokNote": "BYOK keys & local endpoints for this engine live in Settings → AI Engines. New to local models? Read run on open models or set up on a Mac Mini. Live end-to-end is pending real model calls (verify on-device).",
-    "runOnOpenModels": "run on open models",
-    "setUpMacMini": "set up on a Mac Mini",
+    "byokNote": "BYOK keys & local endpoints for this engine live in Settings → AI Engines. Live end-to-end is pending real model calls (verify on-device).",
     "command": "Command",
     "commandAuto": "Command (auto mode on)",
     "templates": "Templates",
@@ -622,7 +613,7 @@
     "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP.",
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
     "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account.",
-    "needsKey": "⚠ {{provider}} needs an API key — set one in Settings → AI Engines",
+    "needsKey": "⚠ {{provider}} found no API key from this app. If it opens a setup prompt, finish it in the agent's terminal (Hermes: `hermes setup`), or save a key in Settings → Agents & Models",
     "needsShardx": "⚠ shardx setup needed — run Settings → MCP → Set up",
     "hireSkipped": "Skipped {{n}} invalid file(s): {{errors}}",
     "spawnFailed": "spawn failed",
@@ -633,7 +624,7 @@
   },
   "onboarding": {
     "titles": {
-      "persona": "WELCOME TO MUNDER DIFFLIN",
+      "persona": "WELCOME TO AGENT OFFICE",
       "welcome": "MEET YOUR OFFICE",
       "home": "STEP 1 OF 4 · HARNESS HOME",
       "homePlain": "STEP 1 OF 4 · A HOME FOR THE APP",
@@ -646,7 +637,7 @@
     },
     "persona": {
       "headline": "A CLONE OF YOU, WORKING 24/7",
-      "body": "Munder Difflin turns the CLI agent you already use into a clone of you — one that runs an office of long-running agents and keeps working while you're away. It manages everything around them: context, memory, tasks, triggers, environment, files, and integrations.",
+      "body": "Agent Office turns the CLI agent you already use into a clone of you — one that runs an office of long-running agents and keeps working while you're away. It manages everything around them: context, memory, tasks, triggers, environment, files, and integrations.",
       "bodyLocal": " Everything runs on this machine.",
       "ask": "FIRST — WHO ARE YOU? (we'll tailor the setup)",
       "technicalTitle": "I'M TECHNICAL",
@@ -661,8 +652,8 @@
       "features": {
         "engines": {
           "label": "ELEVEN ENGINES, ONE OFFICE",
-          "desc": "Claude Code, Codex, Grok, Kimi, Antigravity, Qwen, OpenCode, Crush, pi, Copilot & Cursor — live agents on one floor.",
-          "descPlain": "Eleven AI assistants — Claude, Codex, Cursor, Gemini, Grok and more — working side by side in one shared office."
+          "desc": "Claude Code, Hermes, Codex, Grok, Kimi, Antigravity, Qwen, OpenCode, Crush, pi, Copilot, Cursor & OpenClaw — live agents on one floor.",
+          "descPlain": "Many AI assistants — Claude, Hermes, Codex, Cursor, Gemini, Grok and more — working side by side in one shared office."
         },
         "clone": {
           "label": "{{godName}} IS YOUR CLONE",
@@ -697,7 +688,8 @@
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — runs a local Qwen model on your machine",
       "gemini": "Gemini CLI - Google Gemini",
-      "cursor": "Cursor Agent CLI — uses your Cursor credits (Luna, Composer, …)"
+      "cursor": "Cursor Agent CLI — uses your Cursor credits (Luna, Composer, …)",
+      "hermes": "Hermes — Nous Research. Uses the provider and model from your own Hermes setup."
     },
     "home": {
       "descPlain": "Create a new, empty folder for the app to call home. Everything the app remembers — its own settings and your agents' memory — is stored here. Something like ~/HarnessAgents works well. We'll create it for you if it doesn't exist.",
@@ -711,9 +703,14 @@
     "orchestrator": {
       "descPlain": "{{godName}} is your clone — it reads your requests, breaks them into tasks, and hands them to the right agent. It's the boss of the floor; you're still the boss of it. Choose which AI engine powers it.",
       "desc": "{{godName}} is your clone — the boss of the floor you just met. It triages your requests, assigns tasks, and manages the team, while escalating anything that genuinely needs you. Pick the engine and model that power it; give it a longer-context, higher-capability model.",
-      "cliAgentPlain": "A <strong>CLI agent</strong> is an AI coding assistant that runs on your computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on one that runs your whole office. We recommend Claude Code on Opus 4.8 (1M). You can add or switch the others later.",
-      "cliAgent": "Each option is a <strong>CLI engine</strong> (Claude Code, Codex, Antigravity/Gemini, or a local proxy like Qwen). Engines marked INSTALLED are already on this machine; INSTALLS ON FIRST RUN means the app sets it up when {{godName}} first starts. <strong>Your clone</strong> ({{godName}}) is the engine that orchestrates the whole office. Recommended: Claude Code · Opus 4.8 · 1M. Other providers can be wired per agent later.",
-      "recommended": "RECOMMENDED",
+      "cliAgentPlain": "A <strong>CLI agent</strong> is an AI coding assistant that runs on your computer — popular ones are Claude Code (Anthropic), Hermes (Nous Research), Codex (OpenAI) and Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on one that runs your whole office. Pick any of them — the INSTALLED badge shows what is already on this computer, and anything missing is installed automatically the first time it starts. You can add or switch the others later.",
+      "cliAgent": "Each option is a <strong>CLI engine</strong> — the coding agent you already run in a terminal (Claude Code, Hermes, Codex, Antigravity/Gemini, or a local proxy like Qwen). Pick any of them: INSTALLED engines are already on this machine; INSTALLS ON FIRST RUN ones are set up automatically when {{godName}} first starts. <strong>Your clone</strong> ({{godName}}) is the engine that orchestrates the whole office — pick the one you actually use. Other providers can be wired per agent later.",
+      "recommended": "SUGGESTED",
+      "badgeInstalled": "INSTALLED",
+      "badgeInstallsOnFirstRun": "INSTALLS ON FIRST RUN",
+      "badgeNotInstalled": "NOT INSTALLED",
+      "autoInstallNote": "{{label}} isn't on this computer yet — the app installs it automatically the first time {{godName}} starts. You can continue.",
+      "noInstallerNote": "{{label}} isn't installed and the app can't install it automatically. You can still pick it and continue, but install it yourself before {{godName}} starts, then press \"check again\".",
       "workersOnly": "WORKERS ONLY",
       "workersOnlyHint": "Can't drain inbox yet, so it can't run your clone — still available when hiring workers.",
       "model": "Model",
@@ -734,8 +731,8 @@
       "autoLabel": "WORK AUTONOMOUSLY (AUTO MODE)",
       "autoOnPlain": "On. Agents carry out tasks without stopping to ask — the smoothest experience.",
       "autoOffPlain": "Off. Agents pause and ask you before changing files or running commands.",
-      "autoOn": "On. Agents never pause — Claude runs bypassPermissions, Codex bypasses approvals + sandbox, etc.",
-      "autoOff": "Off. Each agent asks before edits / shell commands (Claude default, codex -a untrusted, …).",
+      "autoOn": "On. Agents never pause — Claude runs bypassPermissions, Codex never asks (workspace sandbox kept), Hermes runs --yolo (skips approval prompts), etc.",
+      "autoOff": "Off. Each agent asks before edits / shell commands (Claude default, codex -a untrusted, Hermes approvals, …).",
       "autoNotePlain": "Best when agents work in their own projects. You can change this later, including for individual agents.",
       "autoNote": "The right default for the \"control room\" experience; a foot-gun on production repos. Override per agent in the Add Agent dialog.",
       "reliabilityHead": "KEEP THINGS RUNNING WHILE YOU'RE AWAY",
@@ -748,7 +745,7 @@
       "openAtLogin": "OPEN AT LOGIN",
       "openAtLoginDesc": "Relaunch the harness after a reboot so scheduled missions resume on their own. No prompt — applies immediately.",
       "shareStats": "SHARE ANONYMOUS USAGE STATS",
-      "shareStatsDesc": "A handful of anonymous events (app opened, agent spawned, feature used) that help improve Munder Difflin — never prompts, code, file paths, or agent output. Full list in TELEMETRY.md; change anytime in Settings.",
+      "shareStatsDesc": "A handful of anonymous events (app opened, agent spawned, feature used) that help improve Agent Office — never prompts, code, file paths, or agent output. Full list in TELEMETRY.md; change anytime in Settings.",
       "stayAwake": "STAY AWAKE ON POWER (MANUAL)",
       "stayAwakeDescMac": "macOS only lets you set this one yourself. In Battery → Options, turn on \"Prevent automatic sleeping when the display is off\" (on power adapter) so timers keep firing with the display asleep. Without a sleep-preventing setting the Mac still truly sleeps — work survives and catches up on wake.",
       "stayAwakeDescWindows": "Windows only lets you set this one yourself. In Settings → System → Power & battery → Screen, blank & sleep, set \"On battery power, put my device to sleep\" and \"When plugged in\" to Never (or increase them) so timers keep firing. Without a sleep-preventing setting Windows still truly sleeps — work survives and catches up on wake.",
@@ -760,7 +757,6 @@
     },
     "errPickHome": "Pick a harness home folder first.",
     "errCreateHome": "could not create harness home",
-    "errEngineNotInstalled": "{{label}} is not installed. Install it and press \"check again\", or pick another engine.",
     "checking": "checking…",
     "checkAgain": "check again",
     "installInstructions": "install instructions"
@@ -860,7 +856,7 @@
     "docs": "docs →",
     "askDesc": "{{godName}} can install the {{count}} missing recommended tool for you. This fills in its dispatch box — nothing runs until you press dispatch.",
     "askDescPlural": "{{godName}} can install the {{count}} missing recommended tools for you. This fills in its dispatch box — nothing runs until you press dispatch.",
-    "allReady": "Everything recommended is installed. Individual engines above are optional — set up only the ones you use.",
+    "allReady": "Nothing essential is missing. Agent engines are optional — set up only the ones you use.",
     "askMichael": "ask {{godName}} to set up everything",
     "sections": {
       "prerequisites": {
@@ -875,11 +871,12 @@
         "title": "Agent engines",
         "blurb": "The CLIs your agents run on. You need whichever ones you actually use — not all of them."
       }
-    }
+    },
+    "missingSuffix": " · {{n}} missing"
   },
   "aiEngines": {
     "providers": "AI ENGINE PROVIDERS (bring your own key)",
-    "providersDesc": "API keys + local endpoints for the OpenCode, Crush, pi.dev and Qwen engines. Keys are stored write-only (encrypted at rest; never shown again) and used only when those engines spawn. Claude Code and Codex use their own login.",
+    "providersDesc": "API keys + local endpoints for the OpenCode, Crush, pi.dev, Qwen, OpenClaw and Hermes engines. Keys are stored write-only (encrypted at rest; never shown again) and used only when those engines spawn. Claude Code and Codex use their own login.",
     "apiKeys": "API KEYS",
     "setCheck": "set ✓",
     "keyStoredPlaceholder": "•••••••• (stored — type to replace)",
@@ -889,16 +886,15 @@
     "cleared": "cleared",
     "localEndpoint": "LOCAL ENDPOINT · DEFAULT MODEL (PER ENGINE)",
     "defaultModelPlaceholder": "default model (provider/model)",
-    "runningOpenModels": "Running open models? Step-by-step guides:",
-    "runOnOpenModels": "run Munder Difflin on open models",
-    "setUpMacMini": "set it up on a Mac Mini",
     "autoModeCaveat": "⚠ In auto mode these engines run with full filesystem + shell access (no sandbox) — like Claude's bypass mode. Turn auto mode off (General) to make them ask first.",
     "removeKey": "remove key",
-    "baseUrlPlaceholder": "base-URL"
+    "baseUrlPlaceholder": "base-URL",
+    "keysScope": "For Hermes these are a fallback: if ~/.hermes already has a provider (you ran `hermes setup`), that wins and these can stay empty. They do nothing for Claude Code or Codex.",
+    "hermesHint": "Fallback only — leave empty if you ran `hermes setup`. When no provider is configured, the app seeds the agent's private Hermes home with this OpenAI-compatible endpoint (e.g. https://api.deepseek.com), the model on the right (Hermes id format, e.g. anthropic/claude-sonnet-4) and the matching key above. Only ~/.hermes is copied; a Hermes kept elsewhere (Windows: %LOCALAPPDATA%\\hermes) is not."
   },
   "mcpDefaults": {
     "title": "Default MCP servers",
-    "desc": "These servers are merged into each new agent's session settings. Safe servers are on by default; write/secret servers are off until you consent. Changes take effect on the next agent spawn — running agents are not affected.",
+    "desc": "These servers are merged into each new agent's session settings (for Hermes: written into its config.yaml). Safe servers are on by default; write/secret servers are off until you consent. Changes take effect on the next agent spawn — running agents are not affected.",
     "toggleNote": "{{id}}: {{state}}",
     "couldNotSave": "could not save",
     "tiers": {
@@ -976,7 +972,7 @@
     "downloadingHeadline": "Downloading v{{version}}",
     "downloadingDetail": "{{percent}}% done. You can keep working; the restart is yours to trigger.",
     "downloadedHeadline": "v{{version}} is ready to install",
-    "downloadedDetail": "Restart Munder Difflin to finish updating from v{{v}}.",
+    "downloadedDetail": "Restart Agent Office to finish updating from v{{v}}.",
     "restartBtn": "Restart to update",
     "manualDetail": "This install can't update itself — download it from the release page.",
     "manualDetailReason": "This install can't update itself ({{reason}}) — download it from the release page.",
@@ -1003,7 +999,7 @@
     "webhooks": "WEBHOOKS",
     "webhooksBlurb": "Let an outside system post work in.",
     "organisation": "ORGANIZATION",
-    "organisationBlurb": "Let a teammate's Munder Difflin message yours."
+    "organisationBlurb": "Let a teammate's Agent Office message yours."
   },
   "orgSection": {
     "acceptMessages": "Accept messages from your organisation",
@@ -1208,7 +1204,7 @@
     "openIdeAria": "Open the IDE",
     "openTerminalTip": "Open your system terminal app in {{cwd}} — a normal shell in this agent's folder, separate from the agent's own terminal.",
     "openTerminalAria": "Open a system terminal in this agent's folder",
-    "focusTitle": "MUNDER DIFFLIN · FOCUS MODE",
+    "focusTitle": "AGENT OFFICE · FOCUS MODE",
     "restoringTeam": "restoring your team…",
     "restorableTitle": "{{name}} — restorable from last session",
     "dismissTitle": "Dismiss {{name}} — remove permanently from the restore list",
@@ -1278,7 +1274,8 @@
     "catalogUnreachable": "could not reach the catalog",
     "offline": "offline",
     "searchOffline": "Search bundled skills…",
-    "offlineNote": "{{count}} skills ship with the app — install without a network."
+    "offlineNote": "{{count}} skills ship with the app — install without a network.",
+    "engineNote": "Skills here live in ~/.claude/skills and are read by Claude Code. Hermes keeps its own skills (use /skills inside Hermes, or `hermes skills`), so skills installed from this tab do not reach Hermes agents."
   },
   "workersTab": {
     "stopping": "stopping",
@@ -1622,7 +1619,7 @@
     "addAgent": "add agent",
     "productName": "Agent Office",
     "emptyFloorTitle": "EMPTY FLOOR",
-    "emptyFloorBody": "No agents on the floor yet. Spawn one to see real claude output stream in here.",
+    "emptyFloorBody": "No agents on the floor yet. Spawn one to see its live terminal output stream in here.",
     "loadFailedTitle": "COULD NOT START",
     "loadFailedBody": "The app could not read its settings, so it cannot open yet.",
     "retry": "retry",
@@ -1707,7 +1704,7 @@
     "switchingTo": "switching to {{provider}}…",
     "archived": "archived",
     "blockSummary": "Waiting for your reply",
-    "blockDetail": "Claude is waiting for input. Check the terminal for the exact prompt.",
+    "blockDetail": "The agent is waiting for input. Check the terminal for the exact prompt.",
     "approve": "Approve",
     "deny": "Deny"
   },
@@ -1717,5 +1714,14 @@
     "failed": "{{n}} failed — {{details}}",
     "nothing": "nothing to restore",
     "spawnFailed": "spawn failed"
+  },
+  "providerNotes": {
+    "hermes": {
+      "modelHint": "Optional — use the id format your Hermes provider expects (e.g. anthropic/claude-sonnet-4). Leave blank to use the model from your own Hermes config (`hermes model`).",
+      "autoNote": "Auto mode starts Hermes with --yolo: it stops asking before dangerous commands. That skips approval prompts — it is not a sandbox.",
+      "firstRunHint": "First start: if Hermes asks to set up a provider, run `hermes setup` (or `hermes model`) once in a terminal, or save a key and endpoint in Settings → Agents & Models. Each agent gets its own private Hermes home, copied from ~/.hermes when it first starts."
+    },
+    "noUsage": "{{provider}} does not report tokens or cost, so this agent's cost meter, context gauge and token budgets stay empty.",
+    "ownSkills": "Skills from the Skills tab are installed for Claude Code. {{provider}} reads its own skills folder, so they won't show up for this agent."
   }
 }

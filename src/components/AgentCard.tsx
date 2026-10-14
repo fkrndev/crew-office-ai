@@ -118,8 +118,8 @@ export function AgentCard({
       }
     : {};
   const dropShadow = isGod
-    ? `2px 3px 0 0 rgba(26,19,32,${hover ? 0.2 : 0.14})`
-    : (hover ? '1px 2px 0 0 rgba(26,19,32,0.12)' : 'none');
+    ? `2px 3px 0 0 rgba(15,28,46,${hover ? 0.2 : 0.14})`
+    : (hover ? '1px 2px 0 0 rgba(15,28,46,0.12)' : 'none');
   // Ring first so it sits tight to the card, then the existing drop shadow.
   const outerShadow = [selectionRing, dropShadow === 'none' ? '' : dropShadow]
     .filter(Boolean).join(', ') || 'none';
@@ -168,7 +168,7 @@ export function AgentCard({
             position: 'absolute', right: -4, bottom: -5, zIndex: 2,
             width: 20, height: 18,
             background: 'var(--cth-sky)',
-            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 1px 2px 0 rgba(26,19,32,0.18)',
+            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 1px 2px 0 rgba(15,28,46,0.18)',
             transform: 'rotate(4deg)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-900)',

@@ -112,9 +112,10 @@ export function toolCatalog(): ToolSpec[] {
       label: p.label,
       kind: 'engine' as const,
       why: `Agent engine — ${p.defaultCommand}.`,
-      // Claude Code is the recommended engine and the only one the floor assumes
-      // by default, so it is the one engine "set up everything" will install.
-      essential: p.id === 'claude',
+      // No engine is "essential": people run whichever CLI(s) they already use
+      // (Claude, Hermes, Codex…). Marking Claude essential made "set up
+      // everything" offer to install Claude for someone who only uses Hermes.
+      essential: false,
       install: {
         posix: p.installCommand ?? p.nativeInstallCommand?.posix ?? '',
         win32: p.installCommand ?? p.nativeInstallCommand?.win32 ?? ''
@@ -133,6 +134,48 @@ export interface ToolStatus extends ToolSpec {
   detail?: string;
   /** `install` already resolved for the running platform. */
   installCommand: string;
+}
+
+/**
+ * The native `tools_status` command returns BARE probe rows —
+ * `{ id: 'claude', found, path }` keyed by binary name — while every renderer
+ * consumer (the Prerequisites panel, the onboarding engine badges) expects the
+ * catalog-shaped `ToolStatus` (`engine:<provider>` ids, label, kind, installCommand).
+ * With the raw rows the Prerequisites page rendered "3 of 11 ready" over an empty
+ * list and no engine ever got an INSTALLED badge. This joins the two:
+ *
+ *  - a row that is ALREADY catalog-shaped (has `kind`) passes through untouched;
+ *  - each engine catalog row is matched to a probe row by its binary
+ *    (`hermes chat` → `hermes`, `agy`, `cursor-agent` …) and gets found/path;
+ *  - catalog rows the native probe does not cover (git/uv/mempalace, and the
+ *    engines it skips: kimi, copilot, cursor) are OMITTED, not reported missing —
+ *    "not probed" must never read as "not installed".
+ */
+export function normalizeToolsProbe(
+  raw: unknown,
+  platform: string = 'win32'
+): ToolStatus[] {
+  if (!Array.isArray(raw)) return [];
+  const rows = raw.filter((r): r is Record<string, unknown> => !!r && typeof r === 'object');
+  if (rows.length > 0 && rows.every((r) => typeof r.kind === 'string')) return rows as unknown as ToolStatus[];
+  const probed = new Map<string, { found: boolean; path: string | null }>();
+  for (const r of rows) {
+    if (typeof r.id !== 'string') continue;
+    probed.set(r.id, { found: r.found === true, path: typeof r.path === 'string' ? r.path : null });
+  }
+  const out: ToolStatus[] = [];
+  for (const spec of toolCatalog()) {
+    const bin = spec.bin?.trim().split(/\s+/)[0];
+    const hit = bin ? probed.get(bin) : undefined;
+    if (!hit) continue;
+    out.push({
+      ...spec,
+      found: hit.found,
+      path: hit.path,
+      installCommand: platform === 'win32' ? spec.install.win32 : spec.install.posix
+    });
+  }
+  return out;
 }
 
 /**

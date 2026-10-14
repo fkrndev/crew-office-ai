@@ -36,8 +36,8 @@ export function PixelButton({
   // variants used to keep their enabled text token — and `primary`'s is
   // `--cth-cream-50`, the INVERSE foreground picked to sit on an ink-900 button.
   // On the cream-300 disabled fill that pairing collapses: in dark mode it is
-  // #1A191E text on #37363E (~1.4:1, effectively invisible), and in light mode a
-  // near-white #FFFDF5 on tan, which is barely better. That is why a disabled
+  // near-black text on the lifted disabled fill (~1.4:1, effectively invisible),
+  // and in light mode near-white on pale slate, which is barely better. That is why a disabled
   // Send or Dispatch reads as an empty box.
   //
   // `--cth-ink-500` is the one foreground that works against cream-300 in BOTH
@@ -49,10 +49,12 @@ export function PixelButton({
     switch (variant) {
       case 'primary':
         return {
-          fill:    disabled ? 'var(--cth-cream-300)' : (hover ? 'var(--cth-ink-700)' : 'var(--cth-ink-900)'),
-          text:    disabled ? disabledText : 'var(--cth-cream-50)',
-          border:  'var(--cth-ink-900)',
-          shadow:  'var(--cth-ink-900)'
+          // Brand teal fill with navy on-accent text (4.85:1 light, 7.2:1 dark).
+          // Hover lifts toward white, which only raises the navy text contrast.
+          fill:    disabled ? 'var(--cth-cream-300)' : (hover ? 'var(--cth-brand-hover)' : 'var(--cth-brand)'),
+          text:    disabled ? disabledText : 'var(--cth-on-accent)',
+          border:  disabled ? 'var(--cth-ink-300)' : 'var(--cth-on-accent)',
+          shadow:  disabled ? 'var(--cth-ink-100)' : 'var(--cth-on-accent)'
         };
       case 'secondary':
         return {
@@ -71,7 +73,9 @@ export function PixelButton({
       case 'destructive':
         return {
           fill:    disabled ? 'var(--cth-cream-300)' : (hover ? 'var(--cth-coral-light)' : 'var(--cth-coral)'),
-          text:    disabled ? disabledText : 'var(--cth-ink-900)',
+          // on-accent, not ink-900: the coral fill is light in BOTH themes, so the
+          // theme-flipping ink would paint pale text on it in dark mode.
+          text:    disabled ? disabledText : 'var(--cth-on-accent)',
           border:  'var(--cth-ink-500)',
           shadow:  'var(--cth-ink-300)'
         };

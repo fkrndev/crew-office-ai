@@ -1,13 +1,13 @@
 /**
  * engineAvailability — how the onboarding picker (and worker cards) classify
- * each engine from the toolsStatus probe, and when it may block the user.
+ * each engine from the toolsStatus probe. Informational only: onboarding never
+ * blocks on it.
  */
 import { describe, it, expect } from 'vitest';
 import {
   classifyEngineAvailability,
-  engineBlocksOnboarding,
   engineAvailabilityBadge,
-  engineAvailabilityMessage
+  engineAvailabilityBadgeKey
 } from '@/shared/engineAvailability';
 
 type Row = { id: string; found: boolean; path: string | null; installCommand?: string; docsUrl?: string };
@@ -47,14 +47,7 @@ describe('classifyEngineAvailability', () => {
   });
 });
 
-describe('blocking + messaging', () => {
-  it('only not-installable blocks onboarding — an unknown probe never locks a user out', () => {
-    expect(engineBlocksOnboarding({ state: 'not-installable', path: null, installCommand: '' })).toBe(true);
-    for (const s of ['unknown', 'installed', 'installs-on-first-run'] as const) {
-      expect(engineBlocksOnboarding({ state: s, path: null, installCommand: '' })).toBe(false);
-    }
-  });
-
+describe('badges', () => {
   it('badges map to the three visible states', () => {
     expect(engineAvailabilityBadge({ state: 'installed', path: null, installCommand: '' })).toBe('INSTALLED');
     expect(engineAvailabilityBadge({ state: 'installs-on-first-run', path: null, installCommand: '' })).toBe('INSTALLS ON FIRST RUN');
@@ -62,12 +55,10 @@ describe('blocking + messaging', () => {
     expect(engineAvailabilityBadge({ state: 'unknown', path: null, installCommand: '' })).toBeNull();
   });
 
-  it('the blocked message names the engine and the fix', () => {
-    const msg = engineAvailabilityMessage(
-      { state: 'not-installable', path: null, installCommand: '' }, 'Cursor'
-    );
-    expect(msg).toContain('Cursor');
-    expect(msg).toContain('check again');
-    expect(engineAvailabilityMessage({ state: 'installed', path: null, installCommand: '' }, 'X')).toBeNull();
+  it('every visible state has a localized badge key; unknown has none', () => {
+    for (const s of ['installed', 'installs-on-first-run', 'not-installable'] as const) {
+      expect(engineAvailabilityBadgeKey({ state: s, path: null, installCommand: '' })).toMatch(/^onboarding\.orchestrator\.badge/);
+    }
+    expect(engineAvailabilityBadgeKey({ state: 'unknown', path: null, installCommand: '' })).toBeNull();
   });
 });

@@ -18,7 +18,7 @@ import type { ThemeId } from '@/scene/office/themeRegistry';
 // translated (officeTheme.blurbs.<id>).
 interface ThemeMeta { id: ThemeId; label: string; built: boolean; swatch: string; }
 const THEME_META: ThemeMeta[] = [
-  { id: 'office',        label: 'The Office',         built: true,  swatch: '#6b5a4a' },
+  { id: 'office',        label: 'Classic Office',     built: true,  swatch: '#6b5a4a' },
   { id: 'friends',       label: 'Friends',            built: false, swatch: '#9a5a32' },
   { id: 'brooklyn99',    label: 'Brooklyn Nine-Nine', built: true,  swatch: '#3a5a7a' },
   { id: 'siliconvalley', label: 'Silicon Valley',     built: false, swatch: '#4a6a4a' },
@@ -211,7 +211,7 @@ function ThemeSwitchConfirmModal({
     <div
       onClick={busy ? undefined : onCancel}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(26, 19, 32, 0.7)',
+        position: 'fixed', inset: 0, background: 'rgba(15, 28, 46, 0.7)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400,
       }}
     >

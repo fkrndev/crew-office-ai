@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { stashRosterStorage } from '@/store/rosterSource';
+import { normalizeToolsProbe } from '@shared/toolCatalog';
 
 /** Where "open the release page" lands when the caller has no specific URL —
  *  must stay inside the repo update_open_release allows. */
@@ -321,7 +322,8 @@ export function installCth(): void {
     listWorkers: (...args: unknown[]) => invoke('workers_list', pack(args, [])),
     stopWorker: (...args: unknown[]) => invoke('workers_stop', pack(args, ["id"])),
     memoryStatus: (...args: unknown[]) => invoke('memory_status', pack(args, [])),
-    toolsStatus: (...args: unknown[]) => invoke('tools_status', pack(args, [])),
+    // Native rows are bare {id,found,path}; join them with the catalog (see normalizeToolsProbe).
+    toolsStatus: async (...args: unknown[]) => normalizeToolsProbe(await invoke('tools_status', pack(args, [])), platform),
     heroPayload: (...args: unknown[]) => invoke('hero_payload', pack(args, ["force"])),
     modelCatalog: (...args: unknown[]) => invoke('models_catalog', pack(args, [])),
     // `cwds` is Vec<String>; callers hand a single cwd (or nothing).

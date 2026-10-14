@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import type { HarnessConfig, AgentProvider } from '@/store/config';
 import { PixelButton } from './PixelButton';
 import { ProviderLogo } from './ProviderLogo';
-import { OSS_BLOG_LINKS } from '@shared/ossModels';
 import { useStore } from '@/store/store';
 
 /**
@@ -33,14 +32,17 @@ const BACKENDS: Array<{ id: string; label: string; envVar: string }> = [
 
 /** CLI engines that take a per-provider local base-URL + default model. `hint`
  *  values are technical endpoint descriptions — kept English (technical data). */
-const CLIS: Array<{ id: AgentProvider; label: string; hint: string }> = [
+const CLIS: Array<{ id: AgentProvider; label: string; hint: string; hintKey?: string }> = [
   { id: 'opencode', label: 'OpenCode', hint: 'http://localhost:11434/v1 (Ollama) — injected as a local provider' },
   { id: 'crush', label: 'Crush', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
   { id: 'pi', label: 'Pi', hint: 'local models are file-based (models.json); base-URL reserved' },
   { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
   // Hermes reads OPENAI_BASE_URL natively — pointing it at api.deepseek.com
   // (+ a DeepSeek key above) makes a Hermes worker talk DeepSeek.
-  { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)' },
+  // The hint is an i18n key: the one-liner used to say only "exported as
+  // OPENAI_BASE_URL", which tells a Hermes user nothing about when it applies
+  // (answer: only when ~/.hermes has no provider of its own).
+  { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)', hintKey: 'aiEngines.hermesHint' },
   // OpenClaw honors the same OPENAI_BASE_URL reroute on its openai-compat
   // route; provider keys ride in via the API-key section above.
   { id: 'openclaw', label: 'OpenClaw', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL' }
@@ -68,7 +70,6 @@ const headStyle: CSSProperties = {
   fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
   color: 'var(--cth-ink-500)', textTransform: 'uppercase', marginBottom: 2
 };
-const linkStyle: CSSProperties = { color: 'var(--cth-ink-900)', textDecoration: 'underline', cursor: 'pointer' };
 
 export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
   const { t } = useTranslation();
@@ -162,6 +163,7 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
       {/* Backend API keys (write-only) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={headStyle}>{t('aiEngines.apiKeys')}</div>
+        <div style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>{t('aiEngines.keysScope')}</div>
         {BACKENDS.map((b) => (
           <div key={b.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label style={labelStyle}>
@@ -208,27 +210,12 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
                 style={{ ...inputStyle, maxWidth: 220 }}
               />
             </div>
-            <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>{c.hint}</span>
+            <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>{c.hintKey ? t(c.hintKey) : c.hint}</span>
             {cliNote[c.id] && (
               <span style={{ fontSize: 11, color: cliNote[c.id]!.ok ? 'var(--cth-mint)' : 'var(--cth-coral)' }}>{cliNote[c.id]!.msg}</span>
             )}
           </div>
         ))}
-        {/* Local-setup guides (ondev-c part-3) — link the two how-to blogs. */}
-        <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: '17px' }}>
-          {t('aiEngines.runningOpenModels')}{' '}
-          <a
-            href={OSS_BLOG_LINKS.openModels}
-            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(OSS_BLOG_LINKS.openModels); }}
-            style={linkStyle}
-          >{t('aiEngines.runOnOpenModels')}</a>
-          {' '}·{' '}
-          <a
-            href={OSS_BLOG_LINKS.macMini}
-            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(OSS_BLOG_LINKS.macMini); }}
-            style={linkStyle}
-          >{t('aiEngines.setUpMacMini')}</a>.
-        </div>
       </div>
 
       {/* Unsandboxed-in-auto caveat (Pam guardrail #6) */}

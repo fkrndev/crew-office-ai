@@ -46,7 +46,7 @@ describe('isComposingKey', () => {
 });
 
 describe('hireQueue', () => {
-  const m = (id: string) => ({ spec: 'munder-difflin/hire@1', id, name: id }) as unknown as HireManifest;
+  const m = (id: string) => ({ spec: 'agent-office/hire@1', id, name: id }) as unknown as HireManifest;
 
   it('enqueue appends; review progress tracks reviewed+pending', () => {
     let q = EMPTY_HIRE_QUEUE;

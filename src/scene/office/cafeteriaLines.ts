@@ -1,6 +1,6 @@
 // Cafeteria small-talk — The Office edition.
 //
-// The cast ARE Dunder Mifflin (see cast.ts), so an agent's coffee break is an
+// The cast ARE the classic sitcom office crew (see cast.ts), so an agent's coffee break is an
 // excuse for a one-liner in character. Two kinds of line:
 //   • solo  — one quip shown above a single agent at a break spot
 //   • pair  — a two-beat exchange between two agents at the same table
@@ -64,7 +64,7 @@ const BY_CHARACTER: Partial<Record<OfficeCharacterName, readonly string[]>> = {
   michael:  ['I DECLARE… BANKRUPTCY!', "that's what she said", "I'm not superstitious. just a little stitious.", 'no meetings before coffee. that’s the rule.'],
   dwight:   ['FALSE.', 'identity theft is not a joke', 'that mug is regulation', 'this fridge needs a beet drawer', 'Schrute Farms has better coffee'],
   jim:      ["...that's what she said", 'bears. beets. Battlestar Galactica.', 'I moved Dwight’s stapler again', 'just here for the gossip'],
-  pam:      ['Dunder Mifflin, this is Pam', 'sketching the vending machine', 'the watercolor of the break room'],
+  pam:      ['Agent Office, this is Pam', 'sketching the vending machine', 'the watercolor of the break room'],
   kevin:    ['the chili is NOT ready', 'why waste time say lot word', 'me want snack', 'cookie? cookie.'],
   angela:   ['this break room is filthy', 'party planning committee, 3pm', 'I’m judging the fridge'],
   oscar:    ['actually, it’s “espresso”', 'well, actually…', 'the budget for snacks is concerning'],
@@ -96,7 +96,7 @@ export function pickSoloLine(character: OfficeCharacterName, spot: BreakSpot, se
 
 type Exchange = readonly string[];
 
-// Generic banter — works between any two agents (they're all Dunder Mifflin).
+// Generic banter — works between any two agents (they all work at the same office).
 const EXCHANGES: readonly Exchange[] = [
   ['world’s best boss.', 'you are. I had the mug made.', 'and I cherish it.'],
   ['would an idiot do this?', '...if yes, I don’t.', 'that’s my boy.'],

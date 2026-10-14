@@ -176,15 +176,7 @@
     "whatsNew": "新功能",
     "whatsNewTitle": "显示上次告知你的更新的发布说明",
     "reportProblem": "反馈问题",
-    "fullChangelog": "完整更新日志 →",
-    "announcement": "公告",
-    "proLaunch": "v0.5.0 与 Munder Difflin Pro 一同发布。",
-    "proCommunityFree": "社区版保持免费、开源，并持续获得更新。",
-    "proParagraph": "Pro 版将带来新的功能与集成，全年持续上新；它领先于社区版，面向想要充分发挥编码智能体与智能体工具链潜力的重度用户。Pro 路线图还包括移动端应用。",
-    "foundersWallTitle": "在 Founders' Wall 上吗？",
-    "foundersWallBody": "免费获得一个月的 Munder Difflin Pro，此后年度套餐享 5 折。仅限前 100 位上榜用户。",
-    "seeTheWall": "查看榜单",
-    "joinDiscord": "加入 Discord"
+    "fullChangelog": "完整更新日志 →"
   },
   "officeTheme": {
     "title": "办公室主题",
@@ -207,7 +199,7 @@
     "deleteSwitch": "删除 {{count}} 个并切换",
     "notBuiltWarning": "此主题({{label}})尚未构建 — 你的办公室外观不变,但 agent 仍会被删除。选择一个已构建的主题,或在其发布后再切换。",
     "blurbs": {
-      "office": "Dunder Mifflin — 最初的办公室",
+      "office": "最初的办公室",
       "friends": "Central Perk 咖啡馆",
       "brooklyn99": "第 99 分局大办公室",
       "siliconvalley": "黑客旅社",
@@ -248,7 +240,7 @@
     "general": {
       "homeFolder": "主文件夹",
       "environment": "环境",
-      "keepAwake": "智能体运行时保持 Mac 唤醒",
+      "keepAwake": "智能体运行时保持电脑唤醒",
       "keepAwakeDesc": "阻止显示屏休眠，让计划任务和终端准时触发。更耗电——最好接电源。",
       "simpleMode": "用通俗方式解释",
       "simpleModeDesc": "智能体用日常语言而不是工程术语向你汇报。",
@@ -257,7 +249,7 @@
       "desktopNotificationsDesc": "智能体完成或需要你输入时弹出系统通知。",
       "maintenance": "维护",
       "autoCompact": "定时自动压缩",
-      "autoCompactDesc": "按计划为每个智能体排队执行 /compact（默认每小时；间隔在触发器标签页设置）。默认关闭——长期运行的智能体不开启可能会撑爆上下文。",
+      "autoCompactDesc": "按计划为每个智能体排队执行各引擎自己的压缩命令（/compact、/compress…）（默认每小时；间隔在触发器标签页设置）。没有已知命令的引擎（Crush、Copilot、Cursor、OpenClaw、自定义）会被跳过。默认关闭——长期运行的智能体不开启可能会撑爆上下文。",
       "autoUpdate": "自动更新",
       "autoUpdateDesc": "后台检查 GitHub 发布并下载更新；由你选择何时重启。绝不会自行重启。",
       "telemetry": "匿名使用统计",
@@ -273,7 +265,7 @@
     },
     "agentsModels": {
       "defaultModel": "默认智能体模型",
-      "defaultModelDesc": "每个新生成的 Claude 智能体（含 {{godName}}）默认使用此模型，除非按智能体单独选择。在模型选择器中标记为「· 默认」。",
+      "defaultModelDesc": "Claude Code 智能体（运行在 Claude 上时包含 {{godName}}）默认使用此模型，除非按智能体单独选择。其他引擎的模型取自下方的各引擎字段或它们自己的配置。在模型选择器中标记为「· 默认」。",
       "savedNote": "已保存——适用于新生成的智能体",
       "saveFailed": "保存失败",
       "advanced": "高级",
@@ -308,7 +300,8 @@
       "orchSpawnOnDesc": "{{godName}} 可以自行招募。它启动的每个 agent 都会消耗你未批准的 token。",
       "orchSpawnOffDesc": "只有你。{{godName}} 仍可以请求,其请求会在队列中等待而不是失败。",
       "orchSpawnOnBtn": "我和 {{godName}}",
-      "orchSpawnOffBtn": "只有我"
+      "orchSpawnOffBtn": "只有我",
+      "usageNote": "token、速率和美元上限只能看到会上报用量的引擎。Hermes 智能体不上报任何用量，因此这些上限无法阻止它们——重复工具和错误风暴上限（以及暂停）仍然有效。"
     },
     "memory": {
       "semanticMemory": "语义记忆",
@@ -377,7 +370,7 @@
       "voiceChat": "与 {{godName}} 语音对话",
       "voiceChatDesc": "实时与调度者对话。从 {{godName}} 的标签页开启；在这里选择语音回路使用的麦克风和扬声器。",
       "openaiKey": "OpenAI API 密钥 · 语音",
-      "openaiKeyDesc1": "与 {{godName}} 对话基于 OpenAI 的 Realtime API——语音进、语音出，通过到 {{model}} 的实时连接。这与你的智能体所用的 Claude 订阅是不同服务，所以需要单独的 OpenAI API 密钥。",
+      "openaiKeyDesc1": "与 {{godName}} 对话基于 OpenAI 的 Realtime API——语音进、语音出，通过到 {{model}} 的实时连接。这与你的智能体所用的订阅和登录是不同服务，所以需要单独的 OpenAI API 密钥。",
       "openaiKeyDesc2": "在下面粘贴一次即可。密钥在这台机器上加密存储，之后不再显示——每次语音会话都会从它生成一个短时令牌，密钥本身永远不会离开你的电脑。它与「智能体与模型」下列出的 OpenAI 密钥相同；在任一处设置即可。",
       "keyPlaceholderSaved": "密钥已保存——粘贴新密钥可替换",
       "save": "保存",
@@ -552,7 +545,7 @@
     "saveAsProjectTitle": "把这个文件夹保存到你的项目里，下次一键选择",
     "gitIsolation": "Git 隔离（独立工作树）",
     "resumeSession": "恢复会话 ID（可选）",
-    "resumePlaceholder": "粘贴 Claude 会话 ID 以继续其对话",
+    "resumePlaceholder": "粘贴 {{provider}} 会话 ID 以继续其对话",
     "folderFromSession": "已根据会话设置文件夹：{{path}}",
     "resumeNote": "将在所选文件夹中恢复该会话（Git 隔离已禁用）。",
     "provider": "提供商",
@@ -567,9 +560,7 @@
     "ossByok": "通过 OSS 提供商 · BYOK",
     "ossLocalTitle": "{{slug}} · 约需 {{ram}} 内存——拉取：ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · 在设置 → AI 引擎中设置 {{keyEnv}}",
-    "byokNote": "该引擎的 BYOK 密钥和本地端点位于 设置 → AI 引擎。本地模型新手？请阅读 在开源模型上运行 或 在 Mac Mini 上配置。端到端实测仍在等待真实模型调用（请在设备上验证）。",
-    "runOnOpenModels": "在开源模型上运行",
-    "setUpMacMini": "在 Mac Mini 上配置",
+    "byokNote": "该引擎的 BYOK 密钥和本地端点位于 设置 → AI 引擎。端到端实测仍在等待真实模型调用（请在设备上验证）。",
     "command": "命令",
     "commandAuto": "命令（自动模式已开）",
     "templates": "模板",
@@ -622,7 +613,7 @@
     "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。",
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
     "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。",
-    "needsKey": "⚠ {{provider}} 需要 API 密钥——请在 设置 → AI Engines 中配置",
+    "needsKey": "⚠ {{provider}} 没有从本应用获得 API 密钥。如果它弹出设置提示，请在该智能体的终端里完成(Hermes:`hermes setup`)，或在 设置 → Agents & Models 中保存密钥",
     "needsShardx": "⚠ 需要 ShardX 设置——请在 设置 → MCP → Set up 运行",
     "hireSkipped": "已跳过 {{n}} 个无效文件：{{errors}}",
     "spawnFailed": "启动失败",
@@ -633,7 +624,7 @@
   },
   "onboarding": {
     "titles": {
-      "persona": "欢迎来到 MUNDER DIFFLIN",
+      "persona": "欢迎来到 AGENT OFFICE",
       "welcome": "认识你的办公室",
       "home": "第 1 步，共 4 步 · HARNESS 主目录",
       "homePlain": "第 1 步，共 4 步 · 为应用找一个家",
@@ -646,7 +637,7 @@
     },
     "persona": {
       "headline": "一个 24/7 工作的你",
-      "body": "Munder Difflin 把你在用的 CLI 智能体变成你的克隆——一个经营着一屋子长期运行智能体、在你离开时持续工作的存在。它管理着围绕它们的一切：上下文、记忆、任务、触发器、环境、文件和集成。",
+      "body": "Agent Office 把你在用的 CLI 智能体变成你的克隆——一个经营着一屋子长期运行智能体、在你离开时持续工作的存在。它管理着围绕它们的一切：上下文、记忆、任务、触发器、环境、文件和集成。",
       "bodyLocal": " 一切都在本机运行。",
       "ask": "首先——你是谁？（我们会据此定制设置）",
       "technicalTitle": "我是技术人员",
@@ -661,8 +652,8 @@
       "features": {
         "engines": {
           "label": "十一大引擎，一间办公室",
-          "desc": "Claude Code、Codex、Grok、Kimi、Antigravity、Qwen、OpenCode、Crush、pi、Copilot 与 Cursor —— 在同一楼层并肩工作的实时智能体。",
-          "descPlain": "十一个 AI 助手 —— Claude、Codex、Cursor、Gemini、Grok 等 —— 在同一间共享办公室里并肩工作。"
+          "desc": "Claude Code、Hermes、Codex、Grok、Kimi、Antigravity、Qwen、OpenCode、Crush、pi、Copilot、Cursor 与 OpenClaw —— 在同一楼层并肩工作的实时智能体。",
+          "descPlain": "众多 AI 助手 —— Claude、Hermes、Codex、Cursor、Gemini、Grok 等 —— 在同一间共享办公室里并肩工作。"
         },
         "clone": {
           "label": "{{godName}} 就是你的克隆",
@@ -697,7 +688,8 @@
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — 在你的机器上运行本地 Qwen 模型",
       "gemini": "Gemini CLI —— Google Gemini",
-      "cursor": "Cursor Agent CLI —— 使用你的 Cursor 额度（Luna、Composer 等）"
+      "cursor": "Cursor Agent CLI —— 使用你的 Cursor 额度（Luna、Composer 等）",
+      "hermes": "Hermes —— Nous Research。使用你自己 Hermes 设置中的提供商和模型。"
     },
     "home": {
       "descPlain": "为应用创建一个新的空文件夹作为家。应用记住的一切——它自己的设置和你智能体的记忆——都存放在这里。像 ~/HarnessAgents 这样的地方就很合适。如果它不存在，我们会为你创建。",
@@ -711,9 +703,14 @@
     "orchestrator": {
       "descPlain": "{{godName}} 是你的克隆 — 它读取你的请求,拆解成任务,交给合适的 agent。它是楼层的主管;你仍然是它的主管。选择驱动它的 AI 引擎。",
       "desc": "{{godName}} 是你的克隆 — 你刚遇到的楼层主管。它分拣你的请求,分配任务,管理团队,同时把真正需要你的事情上报。选择驱动它的引擎和模型;给它一个更长上下文、更高能力的模型。",
-      "cliAgentPlain": "一个<strong>CLI 智能体</strong>是运行在你电脑上的 AI 编程助手 —— 常见的有 Claude Code（Anthropic）、Codex（OpenAI）和 Antigravity（Google Gemini）。<strong>你的克隆体</strong>是常驻运行、打理整个办公室的那一个。我们推荐使用 Opus 4.8（1M）的 Claude Code。其他引擎之后可以随时添加或切换。",
-      "cliAgent": "每个选项是一个 <strong>CLI 引擎</strong>(Claude Code、Codex、Antigravity/Gemini,或本地代理如 Qwen)。标记为 INSTALLED 的引擎已在本机;INSTALLS ON FIRST RUN 表示应用在 {{godName}} 首次启动时设置。<strong>你的克隆</strong>({{godName}})是协调整个办公室的引擎。推荐:Claude Code · Opus 4.8 · 1M。其他供应商可稍后按 agent 接入。",
-      "recommended": "推荐",
+      "cliAgentPlain": "一个<strong>CLI 智能体</strong>是运行在你电脑上的 AI 编程助手 —— 常见的有 Claude Code（Anthropic）、Hermes（Nous Research）、Codex（OpenAI）和 Antigravity（Google Gemini）。<strong>你的克隆体</strong>是常驻运行、打理整个办公室的那一个。任选一个——“已安装”标记表示它已在这台电脑上，尚未安装的会在首次启动时自动安装。其他引擎之后可以随时添加或切换。",
+      "cliAgent": "每个选项是一个 <strong>CLI 引擎</strong>——你已经在终端里使用的编程智能体(Claude Code、Hermes、Codex、Antigravity/Gemini,或本地代理如 Qwen)。任选一个:标记为“已安装”的引擎已在本机;标记为“首次运行时安装”的会在 {{godName}} 首次启动时由应用自动设置。<strong>你的克隆</strong>({{godName}})是协调整个办公室的引擎——请选你实际在用的那个。其他供应商可稍后按 agent 接入。",
+      "recommended": "建议",
+      "badgeInstalled": "已安装",
+      "badgeInstallsOnFirstRun": "首次运行时安装",
+      "badgeNotInstalled": "未安装",
+      "autoInstallNote": "这台电脑上还没有 {{label}} —— 应用会在 {{godName}} 首次启动时自动安装。你可以继续。",
+      "noInstallerNote": "{{label}} 尚未安装，应用也无法自动安装它。你仍可选择它并继续，但请在 {{godName}} 启动前自行安装，然后点击“重新检查”。",
       "workersOnly": "仅限雇员",
       "workersOnlyHint": "尚不能清空收件箱,所以不能运行你的克隆 — 招募 worker 时仍可用。",
       "model": "模型",
@@ -734,8 +731,8 @@
       "autoLabel": "自主工作（自动模式）",
       "autoOnPlain": "开。智能体不停下来询问就执行任务——最顺畅的体验。",
       "autoOffPlain": "关。智能体在改文件或运行命令前会暂停并询问你。",
-      "autoOn": "开。智能体从不暂停——Claude 运行 bypassPermissions，Codex 绕过批准 + 沙箱，等等。",
-      "autoOff": "关。每个智能体在编辑/执行 shell 命令前都会询问（Claude 默认，codex -a untrusted，…）。",
+      "autoOn": "开。智能体从不暂停——Claude 运行 bypassPermissions，Codex 不再询问（保留工作区沙箱），Hermes 以 --yolo 运行（跳过批准提示），等等。",
+      "autoOff": "关。每个智能体在编辑/执行 shell 命令前都会询问（Claude 默认，codex -a untrusted，Hermes 的批准机制，…）。",
       "autoNotePlain": "智能体在自己的项目里工作时效果最好。之后可以随时更改，包括针对单个智能体。",
       "autoNote": "「控制室」体验的正确默认值；在生产仓库上是个坑。可在添加智能体对话框中按智能体覆盖。",
       "reliabilityHead": "你离开时保持一切运转",
@@ -748,7 +745,7 @@
       "openAtLogin": "开机启动",
       "openAtLoginDesc": "重启后自动重新启动 harness，让计划任务自行恢复。无提示——立即生效。",
       "shareStats": "共享匿名使用统计",
-      "shareStatsDesc": "少量匿名事件（打开应用、生成智能体、使用功能），用于改进 Munder Difflin——绝不包含提示词、代码、文件路径或智能体输出。完整清单见 TELEMETRY.md；可随时在设置中更改。",
+      "shareStatsDesc": "少量匿名事件（打开应用、生成智能体、使用功能），用于改进 Agent Office——绝不包含提示词、代码、文件路径或智能体输出。完整清单见 TELEMETRY.md；可随时在设置中更改。",
       "stayAwake": "接电源时保持唤醒（手动）",
       "stayAwakeDescMac": "macOS 只允许你自己设置这一项。在「电池」→「选项」中，开启「防止显示器关闭时自动进入睡眠」（接电源适配器时），这样显示器休眠时定时器也能继续触发。没有防休眠设置的话 Mac 仍会真正休眠——工作会保存并在唤醒后补上。",
       "stayAwakeDescWindows": "Windows 只允许你自己设置这一项。在「设置」→「系统」→「电源和电池」→「屏幕和睡眠」中，将「使用电源时，使设备进入睡眠状态」设为「从不」（或延长时间），这样定时器也能继续触发。没有防休眠设置的话 Windows 仍会真正休眠——工作会保存并在唤醒后补上。",
@@ -760,7 +757,6 @@
     },
     "errPickHome": "请先选择 harness 主文件夹。",
     "errCreateHome": "无法创建 harness 主文件夹",
-    "errEngineNotInstalled": "{{label}} 尚未安装。请先安装它并点击“重新检查”，或选择其他引擎。",
     "checking": "正在检查…",
     "checkAgain": "重新检查",
     "installInstructions": "安装说明"
@@ -860,7 +856,7 @@
     "docs": "文档 →",
     "askDesc": "{{godName}} 可以为你安装 {{count}} 个缺失的推荐工具。这会填满它的派发箱 — 在你按下派发之前不会运行。",
     "askDescPlural": "{{godName}} 可以为你安装 {{count}} 个缺失的推荐工具。这会填满它的派发箱 — 在你按下派发之前不会运行。",
-    "allReady": "所有推荐项都已安装。上面的单个引擎都是可选的——只设置你实际使用的即可。",
+    "allReady": "没有缺少的必要项。智能体引擎都是可选的——只需设置你实际使用的。",
     "askMichael": "让 {{godName}} 设置一切",
     "sections": {
       "prerequisites": {
@@ -875,11 +871,12 @@
         "title": "智能体引擎",
         "blurb": "你的智能体所运行的 CLI。你只需要实际使用的那些——不是全部。"
       }
-    }
+    },
+    "missingSuffix": " · 缺少 {{n}} 项"
   },
   "aiEngines": {
     "providers": "AI 引擎供应商(自带密钥)",
-    "providersDesc": "OpenCode、Crush、pi.dev 和 Qwen 引擎的 API 密钥与本地端点。密钥只写存储（加密落盘；之后不再显示），且仅在那些引擎启动时使用。Claude Code 和 Codex 使用各自的登录。",
+    "providersDesc": "OpenCode、Crush、pi.dev、Qwen、OpenClaw 和 Hermes 引擎的 API 密钥与本地端点。密钥只写存储（加密落盘；之后不再显示），且仅在那些引擎启动时使用。Claude Code 和 Codex 使用各自的登录。",
     "apiKeys": "API 密钥",
     "setCheck": "已设置 ✓",
     "keyStoredPlaceholder": "••••••••（已存储——输入以替换）",
@@ -889,16 +886,15 @@
     "cleared": "已清除",
     "localEndpoint": "本地端点 · 默认模型（按引擎）",
     "defaultModelPlaceholder": "默认模型（提供商/模型）",
-    "runningOpenModels": "要跑开源模型？分步指南：",
-    "runOnOpenModels": "在开源模型上运行 Munder Difflin",
-    "setUpMacMini": "在 Mac Mini 上配置",
     "autoModeCaveat": "⚠ 在自动模式下,这些引擎以完整文件系统 + shell 访问权限运行(无沙箱)— 类似 Claude 的 bypass 模式。关闭自动模式(通用)让它们先询问。",
     "removeKey": "移除密钥",
-    "baseUrlPlaceholder": "base-URL"
+    "baseUrlPlaceholder": "base-URL",
+    "keysScope": "对 Hermes 而言这些只是后备:如果 ~/.hermes 已有提供商(你运行过 `hermes setup`),则以它为准,这里可以留空。它们对 Claude Code 和 Codex 没有任何作用。",
+    "hermesHint": "仅作后备——如果你运行过 `hermes setup` 请留空。当没有配置任何提供商时,应用会用此 OpenAI 兼容端点(例如 https://api.deepseek.com)、右侧的模型(Hermes ID 格式,例如 anthropic/claude-sonnet-4)和上方对应的密钥,为智能体私有的 Hermes 主目录生成配置。只会复制 ~/.hermes;存放在别处的 Hermes(Windows:%LOCALAPPDATA%\\hermes)不会被复制。"
   },
   "mcpDefaults": {
     "title": "默认 MCP 服务器",
-    "desc": "这些服务器会并入每个新智能体的会话设置。安全服务器默认开启；写入/密钥类服务器在你同意前保持关闭。更改在下次生成智能体时生效——正在运行的智能体不受影响。",
+    "desc": "这些服务器会并入每个新智能体的会话设置（对 Hermes：写入其 config.yaml）。安全服务器默认开启；写入/密钥类服务器在你同意前保持关闭。更改在下次生成智能体时生效——正在运行的智能体不受影响。",
     "toggleNote": "{{id}}：{{state}}",
     "couldNotSave": "无法保存",
     "tiers": {
@@ -976,7 +972,7 @@
     "downloadingHeadline": "正在下载 v{{version}}",
     "downloadingDetail": "已完成 {{percent}}%。你可以继续工作；重启由你自己决定。",
     "downloadedHeadline": "v{{version}} 已就绪，可安装",
-    "downloadedDetail": "重启 Munder Difflin 以完成从 v{{v}} 的更新。",
+    "downloadedDetail": "重启 Agent Office 以完成从 v{{v}} 的更新。",
     "restartBtn": "重启以更新",
     "manualDetail": "此安装无法自行更新——请从发布页面下载。",
     "manualDetailReason": "此安装无法自行更新（{{reason}}）——请从发布页面下载。",
@@ -1003,7 +999,7 @@
     "webhooks": "Webhook",
     "webhooksBlurb": "让外部系统把工作投进来。",
     "organisation": "组织",
-    "organisationBlurb": "让队友的 Munder Difflin 给你的发消息。"
+    "organisationBlurb": "让队友的 Agent Office 给你的发消息。"
   },
   "orgSection": {
     "acceptMessages": "接受来自你组织的消息",
@@ -1208,7 +1204,7 @@
     "openIdeAria": "打开 IDE",
     "openTerminalTip": "在 {{cwd}} 中打开你的系统终端应用 —— 位于该智能体文件夹中的普通 shell，与该智能体自己的终端相互独立。",
     "openTerminalAria": "在该智能体的文件夹中打开系统终端",
-    "focusTitle": "MUNDER DIFFLIN · 专注模式",
+    "focusTitle": "AGENT OFFICE · 专注模式",
     "restoringTeam": "正在恢复你的团队…",
     "restorableTitle": "{{name}} — 可从上次会话恢复",
     "dismissTitle": "移除 {{name}} — 从恢复列表中永久删除",
@@ -1278,7 +1274,8 @@
     "catalogUnreachable": "无法访问目录",
     "offline": "离线",
     "searchOffline": "搜索内置技能…",
-    "offlineNote": "应用内置 {{count}} 个技能 — 无需联网即可安装。"
+    "offlineNote": "应用内置 {{count}} 个技能 — 无需联网即可安装。",
+    "engineNote": "这里的技能位于 ~/.claude/skills，由 Claude Code 读取。Hermes 有它自己的技能（在 Hermes 中使用 /skills，或运行 `hermes skills`），所以从此标签页安装的技能不会到达 Hermes 智能体。"
   },
   "workersTab": {
     "stopping": "停止中",
@@ -1622,7 +1619,7 @@
     "addAgent": "添加 agent",
     "productName": "Agent Office",
     "emptyFloorTitle": "办公室空空如也",
-    "emptyFloorBody": "办公室里还没有智能体。创建一个，即可在这里看到 claude 的实时输出。",
+    "emptyFloorBody": "办公室里还没有智能体。创建一个，即可在这里看到它的实时终端输出。",
     "loadFailedTitle": "无法启动",
     "loadFailedBody": "应用无法读取设置，因此暂时无法打开。",
     "retry": "重试",
@@ -1707,7 +1704,7 @@
     "switchingTo": "正在切换到 {{provider}}…",
     "archived": "已归档",
     "blockSummary": "等待你的回复",
-    "blockDetail": "Claude 正在等待输入。请查看终端了解具体提示。",
+    "blockDetail": "智能体正在等待输入。请查看终端了解具体提示。",
     "approve": "批准",
     "deny": "拒绝"
   },
@@ -1717,5 +1714,14 @@
     "failed": "{{n}} 个失败 — {{details}}",
     "nothing": "没有可恢复的内容",
     "spawnFailed": "启动失败"
+  },
+  "providerNotes": {
+    "hermes": {
+      "modelHint": "可选——使用你的 Hermes 提供商期望的 ID 格式(例如 anthropic/claude-sonnet-4)。留空则使用你自己 Hermes 配置中的模型(`hermes model`)。",
+      "autoNote": "自动模式会以 --yolo 启动 Hermes:危险命令前不再询问。这会跳过批准提示——并不是沙箱。",
+      "firstRunHint": "首次启动:如果 Hermes 要求设置提供商,请在终端运行一次 `hermes setup`(或 `hermes model`),或在 设置 → Agents & Models 中保存密钥和端点。每个智能体都有自己私有的 Hermes 主目录,首次启动时从 ~/.hermes 复制。"
+    },
+    "noUsage": "{{provider}} 不会上报 token 或费用,因此该智能体的费用表、上下文计量和 token 预算会保持为空。",
+    "ownSkills": "技能页安装的技能是供 Claude Code 使用的。{{provider}} 读取它自己的技能目录,所以这些技能不会出现在此智能体中。"
   }
 }

@@ -52,28 +52,28 @@ const zoomBtnStyle: CSSProperties = {
 // green/yellow are kept deep enough to read as text on cream (the brighter
 // variants are the lighter shades, per terminal convention).
 const lightTheme = {
-  background: '#FCFAF0',
-  foreground: '#1A1320',
-  cursor: '#D96A62',
-  cursorAccent: '#FCFAF0',
-  selectionBackground: '#FFEC99',
-  selectionForeground: '#1A1320',
-  black:        '#1A1320',
+  background: '#FBFCFD',        // = --cth-paper-100
+  foreground: '#0F1C2E',        // = --cth-ink-900
+  cursor: '#1B9890',            // = --cth-brand
+  cursorAccent: '#FBFCFD',
+  selectionBackground: '#BEE3EE',
+  selectionForeground: '#0F1C2E',
+  black:        '#0F1C2E',
   red:          '#D1453B',
-  green:        '#20904B',    // deep green → readable as text on cream
-  yellow:       '#9C6B00',    // deep amber → readable as text on cream
+  green:        '#20904B',    // deep green → readable as text on the light ground
+  yellow:       '#9C6B00',    // deep amber → readable as text on the light ground
   blue:         '#2B6CB0',
-  magenta:      '#8A5CF0',
+  magenta:      '#A24AC4',
   cyan:         '#1F9C94',
-  white:        '#3A2F44',   // default "white" text → dark, so it's visible
-  brightBlack:  '#6B5878',
+  white:        '#2C3E55',   // default "white" text → dark, so it's visible
+  brightBlack:  '#50627A',
   brightRed:    '#E0584E',
   brightGreen:  '#2E9E54',
   brightYellow: '#B8860B',
   brightBlue:   '#3B7DC4',
-  brightMagenta:'#9B72F2',
+  brightMagenta:'#B565D6',
   brightCyan:   '#2BA89F',
-  brightWhite:  '#1A1320'
+  brightWhite:  '#0F1C2E'
 };
 
 // Dark theme — mirrors the app's dark surface ramp (tokens.css
@@ -85,28 +85,28 @@ const lightTheme = {
 // apart from the panel holding it. Muted-professional ANSI: recognizable hues, no
 // fluorescing on the dark ground; brights are one legible step up, not pastels.
 const darkTheme = {
-  background: '#1A1A1F',        // = --cth-paper-100
-  foreground: '#DEDBD6',        // = --cth-ink-900
-  cursor: '#E08C82',
-  cursorAccent: '#1A1A1F',
-  selectionBackground: '#37363F',
-  selectionForeground: '#DEDBD6',
-  black:        '#222229',
-  red:          '#E08C82',
-  green:        '#74C096',
-  yellow:       '#CFAA57',
-  blue:         '#6FB3C4',
-  magenta:      '#A896E3',
-  cyan:         '#6FB3C4',
-  white:        '#DEDBD6',
-  brightBlack:  '#96919F',
-  brightRed:    '#EBA39C',
-  brightGreen:  '#96CDA9',
-  brightYellow: '#E5C87E',
-  brightBlue:   '#8FC5D1',
-  brightMagenta:'#C0B3EB',
-  brightCyan:   '#8FC5D1',
-  brightWhite:  '#EFEDE9'
+  background: '#151A21',        // = --cth-paper-100
+  foreground: '#DAE0E8',        // = --cth-ink-900
+  cursor: '#3DBAB0',            // = --cth-brand
+  cursorAccent: '#151A21',
+  selectionBackground: '#2F3B4B',
+  selectionForeground: '#DAE0E8',
+  black:        '#1C222A',
+  red:          '#E58B90',
+  green:        '#5BC09A',
+  yellow:       '#CEAB52',
+  blue:         '#68AFEA',
+  magenta:      '#A097F0',
+  cyan:         '#56C2B8',
+  white:        '#DAE0E8',
+  brightBlack:  '#8F9BAA',
+  brightRed:    '#EEA3A8',
+  brightGreen:  '#8DD3B5',
+  brightYellow: '#E2C77E',
+  brightBlue:   '#8EC4F0',
+  brightMagenta:'#B9B2F4',
+  brightCyan:   '#84D6CE',
+  brightWhite:  '#EEF2F7'
 };
 
 const THEMES: Record<PtyTheme, typeof lightTheme> = { light: lightTheme, dark: darkTheme };

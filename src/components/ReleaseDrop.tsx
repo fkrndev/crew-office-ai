@@ -8,8 +8,8 @@
  * The chrome follows the landing site (docs/DESIGN.md), not the app's pixel
  * idiom and not a generic rounded sheet: warm paper, square corners, a thick
  * ink border, a hard offset shadow with no blur, and a dark mono title bar with
- * three square dots. It is the `.win` window from munderdiffl.in, so the moment
- * a user opens the drop it reads as the same product they downloaded from.
+ * three square dots. It is the `.win` window of the project's landing-page design, so the moment
+ * a user opens the drop it reads as the same product they downloaded.
  *
  * There is NO chrome button here, on purpose. The app frames the drop and gets
  * out of the way; every action the release wants to offer (read the notes, star
@@ -47,12 +47,12 @@ export interface ReleaseDropProps {
 // Landing site palette (docs/DESIGN.md §2). Restated here because the modal is
 // app chrome and cannot reach the site's stylesheet; kept in one place so the
 // frame's tokens in shared/releaseDrop.ts and this chrome never drift apart.
-const PAPER = '#FFFDF7';
-const INK = '#1B1B1B';
-const INK_FAINT = '#8A867A';
-const YELLOW = '#FFCA54';
-const SKY = '#72C2DF';
-const MAROON = '#B23A4E';
+const PAPER = '#FBFCFD';
+const INK = '#0F1C2E';
+const INK_FAINT = '#6A7B91';
+const YELLOW = '#F2B93B';
+const SKY = '#6DB4EA';
+const MAROON = '#1B9890'; // legacy name; the brand teal now
 const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
 // How long the loader may cover the frame before it is revealed regardless.
@@ -101,7 +101,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
       style={{
         position: 'fixed', inset: 0, zIndex: 600,
         background:
-          'radial-gradient(rgba(255,253,247,0.16) 1px, transparent 1px) 0 0 / 22px 22px, rgba(27,27,27,0.72)',
+          'radial-gradient(rgba(251,252,253,0.16) 1px, transparent 1px) 0 0 / 22px 22px, rgba(15,28,46,0.72)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 28,
         // Center with auto margins on the child and let the overlay scroll, so a
@@ -112,7 +112,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
     >
       <div
         role="dialog"
-        aria-label={`What's new in Munder Difflin ${version}`}
+        aria-label={`What's new in Agent Office ${version}`}
         onClick={(e) => e.stopPropagation()}
         style={{
           margin: 'auto',
@@ -142,8 +142,8 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
         }}>
           <span aria-hidden style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
             <i style={{ width: 10, height: 10, background: YELLOW, display: 'block' }} />
-            <i style={{ width: 10, height: 10, background: '#72C2DF', display: 'block' }} />
-            <i style={{ width: 10, height: 10, background: '#B23A4E', display: 'block' }} />
+            <i style={{ width: 10, height: 10, background: SKY, display: 'block' }} />
+            <i style={{ width: 10, height: 10, background: MAROON, display: 'block' }} />
           </span>
           <span style={{
             flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, letterSpacing: '.08em',

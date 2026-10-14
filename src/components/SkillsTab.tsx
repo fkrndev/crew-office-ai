@@ -202,6 +202,15 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
+      {/* Where these skills land — they are Claude Code skills (~/.claude/skills);
+          Hermes agents read their own skills folder and never see them. */}
+      <div style={{
+        flexShrink: 0, padding: '6px 10px', fontSize: 11, lineHeight: '15px',
+        color: 'var(--cth-ink-700)', background: 'var(--cth-lemon-light)',
+        borderBottom: '1px solid var(--cth-ink-300)'
+      }}>
+        {t('skillsTab.engineNote')}
+      </div>
       {/* Controls */}
       <div style={{
         flexShrink: 0, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',

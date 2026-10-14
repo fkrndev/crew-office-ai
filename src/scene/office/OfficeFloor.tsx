@@ -315,8 +315,8 @@ export function OfficeFloor() {
         st.requestCommandCenterTab('triggers');
       });
       // nail + ring binding above a white page with a red month header
-      calG.rect(7, -2, 2, 2).fill(0x4a3b52);                  // nail
-      calG.rect(0, 0, 16, 20).fill(0x4a3b52);                 // frame/shadow
+      calG.rect(7, -2, 2, 2).fill(0x34445a);                  // nail
+      calG.rect(0, 0, 16, 20).fill(0x34445a);                 // frame/shadow
       calG.rect(1, 1, 14, 18).fill(0xf2ead8);                 // the page
       calG.rect(1, 1, 14, 4).fill(0xc94f4f);                  // month banner
       calG.rect(4, 0, 1, 2).fill(0xd8d3c4);                   // binding rings
@@ -1060,7 +1060,7 @@ export function OfficeFloor() {
           const x = ox + 3 + (i % 4) * 7;
           const y = -2 + Math.floor(i / 4) * 5;
           boardG.rect(x, y, 5, 4).fill(NOTE_COLORS[notes[i]] ?? 0xf2eddc);
-          boardG.rect(x + 2, y, 1, 1).fill(0x4a3b52);      // pin
+          boardG.rect(x + 2, y, 1, 1).fill(0x34445a);      // pin
         }
         if (notes.length > 12) {
           boardG.rect(ox + 22, 8, 5, 4).fill(0xe8e0c8);
@@ -1096,7 +1096,7 @@ export function OfficeFloor() {
           const idx = (g as any).__count ?? 0;
           (g as any).__count = idx + 1;
           g.rect(idx * 7, -(idx % 2), 5, 4).fill(NOTE_COLORS.doing);
-          g.rect(idx * 7 + 2, -(idx % 2), 1, 1).fill(0x4a3b52);
+          g.rect(idx * 7 + 2, -(idx % 2), 1, 1).fill(0x34445a);
         }
         drawCork(0, NOTE_COLORS.blocked, blocked);   // left: what's burning
         drawCork(34, NOTE_COLORS.todo, todoNotes);   // right: what's queued
@@ -1156,8 +1156,8 @@ export function OfficeFloor() {
       const drawAskBoard = (pulse: number): void => {
         askG.clear();
         // lilac-framed board with a big "?" identity
-        askG.rect(0, -8, 30, 22).fill(0x5b4a6b);
-        askG.rect(1, -7, 28, 3).fill(0xcdb4e8);
+        askG.rect(0, -8, 30, 22).fill(0x4a5282);
+        askG.rect(1, -7, 28, 3).fill(0xb4b8ee);
         askG.rect(1, -4, 28, 17).fill(0xc9b083);
         if (askCount === 0) {
           // quiet: a faint "?" watermark
@@ -1169,12 +1169,12 @@ export function OfficeFloor() {
           for (let i = 0; i < n; i++) {
             const x = 3 + (i % 4) * 7;
             const y = -2 + Math.floor(i / 4) * 6;
-            askG.rect(x, y, 5, 4).fill(0xcdb4e8);
-            askG.rect(x + 2, y, 1, 1).fill(0x4a3b52);
+            askG.rect(x, y, 5, 4).fill(0xb4b8ee);
+            askG.rect(x + 2, y, 1, 1).fill(0x34445a);
           }
           // attention pulse around the frame while questions wait
           const a = 0.35 + 0.3 * Math.sin(pulse * 4);
-          askG.rect(-2, -10, 34, 26).stroke({ color: 0xcdb4e8, width: 2, alpha: a });
+          askG.rect(-2, -10, 34, 26).stroke({ color: 0xb4b8ee, width: 2, alpha: a });
         }
       };
       drawAskBoard(0);
@@ -1229,7 +1229,7 @@ export function OfficeFloor() {
         const g = new Graphics();
         g.eventMode = 'none';
         g.rect(0, 0, 5, 4).fill(color);
-        g.rect(2, 0, 1, 1).fill(0x4a3b52);
+        g.rect(2, 0, 1, 1).fill(0x34445a);
         charLayer.addChild(g);
         carriedNotes.set(actorId, g);
       };

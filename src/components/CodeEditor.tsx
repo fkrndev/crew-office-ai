@@ -17,40 +17,40 @@ import { PixelButton } from './PixelButton';
 // ─── Theme matching CTH palette ─────────────────────────────────────────────
 const cthEditorTheme = EditorView.theme({
   '&': {
-    background: '#FCFAF0',
-    color: '#1A1320',
+    background: '#FBFCFD',
+    color: '#0F1C2E',
     height: '100%',
     fontFamily: 'VT323, "JetBrains Mono", monospace',
     fontSize: '16px'
   },
-  '.cm-content': { caretColor: '#FF6B6B', padding: '8px 0' },
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#FF6B6B', borderLeftWidth: '2px' },
+  '.cm-content': { caretColor: '#1B9890', padding: '8px 0' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#1B9890', borderLeftWidth: '2px' },
   '.cm-scroller': { fontFamily: 'inherit', overflow: 'auto' },
   '.cm-gutters': {
-    background: '#F0EAD2',
-    color: '#6B5878',
-    borderRight: '1px solid #D9CFE0'
+    background: '#EDF1F5',
+    color: '#50627A',
+    borderRight: '1px solid #CCD6E1'
   },
-  '.cm-activeLineGutter': { background: '#FFEC99' },
-  '.cm-activeLine': { background: 'rgba(255, 217, 61, 0.10)' },
-  '.cm-selectionBackground, ::selection': { background: '#FFEC99 !important' },
-  '.cm-searchMatch': { background: '#A8E6E0', outline: '1px solid #1A1320' },
-  '.cm-searchMatch.cm-searchMatch-selected': { background: '#FFD93D' }
+  '.cm-activeLineGutter': { background: '#BEE3EE' },
+  '.cm-activeLine': { background: 'rgba(27, 152, 144, 0.08)' },
+  '.cm-selectionBackground, ::selection': { background: '#BEE3EE !important' },
+  '.cm-searchMatch': { background: '#BDE3F5', outline: '1px solid #0F1C2E' },
+  '.cm-searchMatch.cm-searchMatch-selected': { background: '#F2D06B' }
 }, { dark: false });
 
 const cthSyntax = HighlightStyle.define([
-  { tag: tags.keyword,        color: '#B197FC' },
-  { tag: tags.operator,       color: '#6B5878' },
-  { tag: [tags.string, tags.regexp], color: '#6BCF7F' },
-  { tag: [tags.number, tags.bool, tags.null], color: '#FF6B6B' },
-  { tag: tags.comment,        color: '#6B5878', fontStyle: 'italic' },
-  { tag: tags.variableName,   color: '#1A1320' },
-  { tag: tags.function(tags.variableName), color: '#FFA07A' },
-  { tag: [tags.typeName, tags.className], color: '#4ECDC4' },
-  { tag: tags.propertyName,   color: '#3D2E4A' },
-  { tag: tags.heading,        color: '#1A1320', fontWeight: 'bold' as any },
-  { tag: tags.link,           color: '#4ECDC4', textDecoration: 'underline' as any },
-  { tag: tags.meta,           color: '#6B5878' }
+  { tag: tags.keyword,        color: '#5B50C8' },
+  { tag: tags.operator,       color: '#50627A' },
+  { tag: [tags.string, tags.regexp], color: '#1B7F57' },
+  { tag: [tags.number, tags.bool, tags.null], color: '#C23B48' },
+  { tag: tags.comment,        color: '#50627A', fontStyle: 'italic' },
+  { tag: tags.variableName,   color: '#0F1C2E' },
+  { tag: tags.function(tags.variableName), color: '#B5532B' },
+  { tag: [tags.typeName, tags.className], color: '#12797A' },
+  { tag: tags.propertyName,   color: '#2C3E55' },
+  { tag: tags.heading,        color: '#0F1C2E', fontWeight: 'bold' as any },
+  { tag: tags.link,           color: '#176D6E', textDecoration: 'underline' as any },
+  { tag: tags.meta,           color: '#50627A' }
 ]);
 
 function extensionsFor(filename: string) {

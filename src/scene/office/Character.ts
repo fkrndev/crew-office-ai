@@ -468,7 +468,7 @@ export class Character {
     }
     this.cheerT = 0;
     this.confetti = [];
-    const colors = [0xffd93d, 0xff6b6b, 0x6bcb77, 0x4d96ff, 0xf6a6ff];
+    const colors = [0xe1ae2e, 0xda5f66, 0x41aa84, 0x3b93d6, 0x8478e0];
     for (let i = 0; i < 14; i++) {
       this.confetti.push({
         x: (Math.random() - 0.5) * 8,
@@ -826,28 +826,28 @@ export class Character {
     if (this.statusGlyph === 'blocked') {
       // pulsing "!" — blink ~2.5Hz
       if (Math.floor(this.glyphElapsed / 0.4) % 2 === 0) {
-        g.rect(-1, yTop, 2, 5).fill(0xff6b6b);
-        g.rect(-1, yTop + 6, 2, 2).fill(0xff6b6b);
+        g.rect(-1, yTop, 2, 5).fill(0xda5f66);
+        g.rect(-1, yTop + 6, 2, 2).fill(0xda5f66);
       }
     } else if (this.statusGlyph === 'success') {
       // brief 4-point sparkle, auto-clears after 0.9s
       const p = (Math.sin(this.glyphElapsed * 18) + 1) / 2;
       const s = 2 + p * 2;
-      g.rect(-0.5, yTop - s, 1, s * 2).fill(0xffd93d);
-      g.rect(-s, yTop - 0.5, s * 2, 1).fill(0xffd93d);
+      g.rect(-0.5, yTop - s, 1, s * 2).fill(0xe1ae2e);
+      g.rect(-s, yTop - 0.5, s * 2, 1).fill(0xe1ae2e);
       if (this.glyphElapsed > 0.9) this.setStatusGlyph('none');
     } else if (this.statusGlyph === 'compacting') {
       // #5C — violet box that rhythmically "packs down" (boxing up context).
       const p = (Math.sin(this.glyphElapsed * 6) + 1) / 2; // 0..1
       const s = 2 + p * 3;
-      g.rect(-s, yTop - s, s * 2, s * 2).fill(0x9b7ede);
+      g.rect(-s, yTop - s, s * 2, s * 2).fill(0x8478e0);
     } else if (this.statusGlyph === 'looping') {
       // #5C — orange 4-dot warning ring with one lit dot spinning around it.
       const idx = Math.floor(this.glyphElapsed * 8) % 4;
       const pts: [number, number][] = [[-3, yTop - 3], [3, yTop - 3], [3, yTop + 3], [-3, yTop + 3]];
       for (let i = 0; i < 4; i++) {
         const [x, y] = pts[i];
-        g.rect(x - 1, y - 1, 2, 2).fill(i === idx ? 0xff9f43 : 0x6b5878);
+        g.rect(x - 1, y - 1, 2, 2).fill(i === idx ? 0xff9f43 : 0x50627a);
       }
     }
   }

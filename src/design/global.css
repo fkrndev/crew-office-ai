@@ -20,11 +20,11 @@ html, body, #root {
 }
 
 body {
-  /* tiny diagonal cream noise — pure CSS, no images */
+  /* tiny diagonal slate noise — pure CSS, no images */
   background-image:
     repeating-linear-gradient(
       45deg,
-      rgba(232, 217, 160, 0.20) 0 1px,
+      rgba(203, 214, 225, 0.20) 0 1px,
       transparent 1px 6px
     );
 }
@@ -45,7 +45,7 @@ input, textarea { caret-color: var(--cth-ink-900); }
    inked I-beam wearing a cream halo, so it reads on cream AND on the dark
    terminal. Falls back to the UA `text` cursor if SVG cursors are unavailable. */
 input, textarea, [contenteditable='true'] {
-  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='17' height='18'><g fill='none' stroke='%23fdf6e3' stroke-width='4' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g><g fill='none' stroke='%23261d31' stroke-width='1.6' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g></svg>") 8 9, text;
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='17' height='18'><g fill='none' stroke='%23f7f9fb' stroke-width='4' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g><g fill='none' stroke='%230f1c2e' stroke-width='1.6' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g></svg>") 8 9, text;
 }
 
 /* Command Center tab bar scrolls horizontally when it overflows a narrow
@@ -63,9 +63,9 @@ input, textarea, [contenteditable='true'] {
 /* Pixel-snapping for any rasterised content */
 canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
 
-/* Focus ring — 2px outer offset, ink */
+/* Focus ring — 2px outer offset, brand teal (3.1-3.4:1 light, 5.5+:1 dark) */
 :focus-visible {
-  outline: 1px solid var(--cth-ink-300);
+  outline: 1px solid var(--cth-brand);
   outline-offset: 2px;
 }
 
@@ -82,7 +82,7 @@ canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
    case — it is the one the founder is looking at while typing. */
 .cth-input { box-shadow: inset 0 0 0 1px var(--cth-ink-100); }
 .cth-input:focus,
-.cth-input:focus-visible { box-shadow: inset 0 0 0 2px var(--cth-ink-700); }
+.cth-input:focus-visible { box-shadow: inset 0 0 0 2px var(--cth-brand); }
 
 /* Custom scrollbar — chunky, pixel-feel */
 ::-webkit-scrollbar { width: 12px; height: 12px; }
@@ -283,7 +283,9 @@ canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
 .cth-md-preview h3 { font-size: 16px; }
 .cth-md-preview h4 { font-size: 14px; }
 .cth-md-preview p { margin: 0.6em 0; }
-.cth-md-preview a { color: var(--cth-sky); }
+/* Link text uses --cth-brand-ink: brand teal pulled toward the ink so it clears
+   4.5:1 as text (brand itself is 3.1-3.4:1 on light — a border, not a word). */
+.cth-md-preview a { color: var(--cth-brand-ink); }
 .cth-md-preview code {
   font-family: var(--cth-font-mono); font-size: 12.5px;
   background: var(--cth-cream-200); padding: 1px 5px; border-radius: 2px;

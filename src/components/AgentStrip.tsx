@@ -179,7 +179,7 @@ export function AgentStrip({ config }: AgentStripProps) {
                     position: 'fixed', left, bottom, width, zIndex: 350,
                     padding: 10, boxSizing: 'border-box',
                     background: 'var(--cth-paper-100)',
-                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 3px 3px 0 rgba(26,19,32,0.14)',
+                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 3px 3px 0 rgba(15,28,46,0.14)',
                     display: 'flex', flexDirection: 'column', gap: 6
                   }}
                 >
@@ -278,7 +278,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             position: 'fixed', right: restoreMenuPos.right, bottom: restoreMenuPos.bottom,
             zIndex: 350, minWidth: 240, maxHeight: '50vh', overflowY: 'auto',
             background: 'var(--cth-cream-50)',
-            boxShadow: '0 0 0 2px var(--cth-ink-900), 3px 4px 0 0 rgba(26,19,32,0.22)',
+            boxShadow: '0 0 0 2px var(--cth-ink-900), 3px 4px 0 0 rgba(15,28,46,0.22)',
             padding: 8, display: 'flex', flexDirection: 'column', gap: 6,
             fontFamily: 'var(--cth-font-ui)'
           }}>

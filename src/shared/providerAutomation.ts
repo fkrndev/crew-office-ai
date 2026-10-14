@@ -149,9 +149,18 @@ const CONTEXT_COMMANDS: Record<AgentProvider, ProviderContextCommands> = {
   // but there is no `/compact` or `/clear`. Nothing safe to type: null.
   openclaw: NO_CONTEXT_COMMANDS,
 
-  // Hermes CLI (`hermes --cli`) has no documented typed slash commands for
-  // compaction or clear — it is a headless/interactive shell, not a TUI.
-  hermes: NO_CONTEXT_COMMANDS,
+  // Hermes (verified against the installed v0.21.6 hermes_cli/commands.py, the
+  // registry the classic REPL dispatches typed slash commands from):
+  //   CommandDef("compress", "Compress conversation context…", aliases=("compact",),
+  //              args_hint="[here [N] | focus topic | --preview|--dry-run]")
+  //   CommandDef("new", "Start a new session (fresh session ID + history)")
+  //   CommandDef("clear", "Clear screen and start a new session")
+  // So Hermes DOES have typed compact/clear verbs (this table used to say it had
+  // none, which silently disabled Context triggers for every Hermes agent).
+  // `/compress` is the canonical spelling (`/compact` is only its alias) and takes
+  // a free-text focus topic. `/new` is the pure reset; `/clear` also wipes the
+  // screen, which is noise in a PTY the app is watching.
+  hermes: { compact: '/compress', clear: '/new', compactTakesFocus: true },
 
   // An arbitrary user binary. We cannot know its command surface, and guessing
   // means typing slashes into someone's unknown REPL.

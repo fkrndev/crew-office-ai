@@ -123,26 +123,29 @@ const FRAME_FONT_CSS = `
  *  here — an author writing `var(--ink)` gets the app's palette for free, while
  *  a fully bespoke drop can ignore them entirely. */
 const FRAME_BASE_CSS = `
-  /* The landing site palette (docs/DESIGN.md §2): warm paper, near-black ink,
-     one yellow CTA, sky for a highlighted phrase, maroon for the brand. Square
+  /* The landing site palette (docs/DESIGN.md §2): cool slate paper, navy ink,
+     one yellow CTA, sky for a highlighted phrase, teal for the brand. Square
      corners and hard offset shadows are the look; --radius is 0 on purpose.
-     --accent and --line are kept as aliases so older drops still resolve. */
+     --maroon is a legacy NAME kept so older drops still resolve; its value is
+     the brand teal now (darkened to clear 4.5:1 as small text). --accent and
+     --line are kept as aliases for the same reason. */
   :root {
-    --paper: #FFFDF7;
-    --cream: #F5F2E8;
-    --cream-2: #F5ECD7;
+    --paper: #FBFCFD;
+    --cream: #EEF2F6;
+    --cream-2: #E1E8EF;
     --white: #FFFFFF;
-    --ink: #1B1B1B;
-    --ink-dim: #57544C;
-    --ink-faint: #8A867A;
-    --ink-soft: #57544C;
-    --yellow: #FFCA54;
-    --sky: #72C2DF;
-    --maroon: #B23A4E;
-    --lilac: #E4DEFB; --peach: #FBDDBE; --mint: #D6F3E1;
-    --tan: #F1E6CC; --rose: #FBE0DF; --sky-soft: #DCEFF7;
-    --accent: #B23A4E;
-    --line: rgba(27,27,27,0.16);
+    --ink: #0F1C2E;
+    --ink-dim: #44556C;
+    --ink-faint: #5F7188;
+    --ink-soft: #44556C;
+    --yellow: #F2B93B;
+    --sky: #6DB4EA;
+    --maroon: #12797A;
+    --brand: #12797A;
+    --lilac: #DEDAF7; --peach: #F7DCCB; --mint: #CFEBDF;
+    --tan: #E6ECF2; --rose: #F9DFE1; --sky-soft: #D0E5F7;
+    --accent: #12797A;
+    --line: rgba(15,28,46,0.16);
     --border: 2px solid var(--ink);
     --border-bold: 3px solid var(--ink);
     --shadow-card: 10px 10px 0 var(--ink);
@@ -219,7 +222,7 @@ const FRAME_BASE_CSS = `
     display: flex; align-items: center; justify-content: center;
     background:
       repeating-linear-gradient(135deg,
-        rgba(27,27,27,0.04) 0 10px, rgba(27,27,27,0.07) 10px 20px);
+        rgba(15,28,46,0.04) 0 10px, rgba(15,28,46,0.07) 10px 20px);
     color: var(--ink-faint); font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em;
   }
   .placeholder::after { content: attr(data-label); }
@@ -278,16 +281,16 @@ export const DEFAULT_DROP_HTML = `<style>
   .nav { flex-shrink: 0; display: flex; align-items: center; gap: 12px;
          padding-top: 16px; margin-top: 12px; border-top: 1px solid var(--line); }
   .dots { display: flex; gap: 7px; flex: 1; }
-  .dot { width: 7px; height: 7px; border-radius: 999px; background: rgba(20,19,26,.16);
+  .dot { width: 7px; height: 7px; border-radius: 999px; background: rgba(15,28,46,.16);
          cursor: pointer; transition: background .2s, transform .2s; }
-  .dot:hover { background: rgba(20,19,26,.34); }
+  .dot:hover { background: rgba(15,28,46,.34); }
   .dot.on { background: var(--accent); transform: scale(1.25); }
   .btn { cursor: pointer; border-radius: 999px; font-size: 13.5px; font-weight: 600;
          padding: 9px 18px; border: 1px solid var(--line); color: var(--ink-soft);
          user-select: none; transition: background .16s, color .16s; }
-  .btn:hover { background: rgba(20,19,26,.04); }
-  .btn.primary { background: var(--ink); border-color: var(--ink); color: #FBFAF8; }
-  .btn.primary:hover { background: #2a2733; }
+  .btn:hover { background: rgba(15,28,46,.04); }
+  .btn.primary { background: var(--ink); border-color: var(--ink); color: #F7F9FB; }
+  .btn.primary:hover { background: #24354B; }
 
   .kicker { font-size: 11.5px; font-weight: 700; letter-spacing: .14em;
             text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
@@ -295,7 +298,7 @@ export const DEFAULT_DROP_HTML = `<style>
   .lede { margin-bottom: 1.4em; }
   .big { font-size: clamp(3.2rem, 10vw, 5.4rem); line-height: .92; letter-spacing: -.045em;
          font-weight: 700; margin: 0 0 .1em;
-         background: linear-gradient(135deg, #14131A 20%, #1B7F5A 115%);
+         background: linear-gradient(135deg, #0F1C2E 20%, #12797A 115%);
          -webkit-background-clip: text; background-clip: text; color: transparent; }
   .stat { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 24px;
           padding-top: 18px; border-top: 1px solid var(--line); }
@@ -304,7 +307,7 @@ export const DEFAULT_DROP_HTML = `<style>
 
   .tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .1em;
          text-transform: uppercase; color: var(--accent);
-         background: rgba(27,127,90,.09); padding: 4px 9px; border-radius: 999px; }
+         background: rgba(18,121,122,.10); padding: 4px 9px; border-radius: 999px; }
   .quote { border-left: 2px solid var(--accent); padding-left: 15px; margin: 18px 0 0;
            color: var(--ink-soft); font-size: 14.5px; }
   .rows { list-style: none; padding: 0; margin: 0; }
@@ -334,7 +337,7 @@ export const DEFAULT_DROP_HTML = `<style>
 
   <section class="page p1">
     <div class="content center">
-      <p class="kicker">Munder Difflin</p>
+      <p class="kicker">Agent Office</p>
       <h1 class="big">0.4.4</h1>
       <p class="lede" style="font-size:clamp(1.05rem,2.1vw,1.3rem);margin-top:.5em">
         The release where Windows finally joined the floor — and the first run
