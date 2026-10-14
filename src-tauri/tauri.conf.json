@@ -28,7 +28,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["agent-office", "munderdifflin"]
+        "schemes": ["agent-office"]
       }
     }
   },

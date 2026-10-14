@@ -1171,11 +1171,11 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 );
                 // Same SHARDX_PROFILE env pin the claude path adds.
                 if let (Some(spec), Some(pid)) =
-                    (seed.mcp_servers.get_mut("munder-shardx"), shardx_profile.clone())
+                    (seed.mcp_servers.get_mut("agent-office-shardx"), shardx_profile.clone())
                 {
                     spec.env.insert("SHARDX_PROFILE".into(), pid);
                 }
-                // config.yaml gets `${MUNDER_MCP_*}` refs (hermes expands ${VAR}
+                // config.yaml gets `${AGENTOFFICE_MCP_*}` refs (hermes expands ${VAR}
                 // in mcp_servers from its process env); values ride agent_env.
                 agent_env.extend(crate::mcp::externalize_mcp_secrets(&mut seed.mcp_servers));
                 seed
@@ -1473,7 +1473,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 &args.mcp_disable,
                 // Same persist-aware getter as the hermes path — a key a flaky
                 // CredMan dropped is still found in the DPAPI file store.
-                // Values are swapped for `${MUNDER_MCP_*}` refs below and ride
+                // Values are swapped for `${AGENTOFFICE_MCP_*}` refs below and ride
                 // the spawned process env instead of settings.json.
                 &|key| crate::misc::secret_get_persist(key, st.config_store.dir()),
             );
@@ -1481,7 +1481,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             // too — the server ignores it today, but a future default-profile
             // flag picks it up for free.
             if let (Some(spec), Some(pid)) =
-                (mcp_servers.get_mut("munder-shardx"), shardx_profile.clone())
+                (mcp_servers.get_mut("agent-office-shardx"), shardx_profile.clone())
             {
                 spec.env.insert("SHARDX_PROFILE".into(), pid);
             }
@@ -2646,7 +2646,7 @@ pub fn command_history_search(
         .search_history(&query, limit.unwrap_or(50)))
 }
 
-// ─── hire manifests (munderdifflin://hire deep link + file import) ──────────
+// ─── hire manifests (agent-office://hire deep link + file import) ──────────
 
 /// Validate + return a hire manifest (prefill only — never auto-spawns).
 #[tauri::command(async)]
@@ -5304,7 +5304,7 @@ mod tests {
             &|_| None,
         );
         assert_eq!(
-            std::path::Path::new(&m["munder-shardx"].args[0]),
+            std::path::Path::new(&m["agent-office-shardx"].args[0]),
             expected.join("index.js")
         );
         let _ = std::fs::remove_dir_all(&home);

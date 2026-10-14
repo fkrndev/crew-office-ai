@@ -39,7 +39,7 @@ use crate::webhook::secret_eq;
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024; // 10 MB request-body cap
 const UPSTREAM_TIMEOUT_MS: u64 = 30_000;
 const TEST_TIMEOUT_MS: u64 = 15_000;
-const DEFAULT_USER_AGENT: &str = "munder-difflin-broker/1";
+const DEFAULT_USER_AGENT: &str = "agent-office-broker/1";
 const KEYRING_SERVICE: &str = "agent-office";
 
 /// Hop-by-hop headers never forwarded in either direction.

@@ -911,9 +911,11 @@ pub fn mime_for(p: &Path) -> &'static str {
 
 // ─── Settings hero payload (main/hero.ts + shared/heroPayload.ts) ───────────
 
-/// The remote payload URL — upstream HERO_URL verbatim.
+/// The remote payload URL — docs/hero.json on this repo's main branch. The file
+/// is optional: a 404 / offline / malformed body is a normal state and
+/// `load_hero` degrades to the built-in default.
 pub const HERO_URL: &str =
-    "https://raw.githubusercontent.com/chaitanyagiri/munder-difflin/main/docs/hero.json";
+    "https://raw.githubusercontent.com/fkrndev/crew-office-ai/main/docs/hero.json";
 /// Plan copy changes on a human timescale — 6h TTL (upstream TTL_MS).
 pub const HERO_TTL_MS: u64 = 6 * 60 * 60 * 1000;
 
@@ -1007,7 +1009,7 @@ fn fetch_text(url: &str, timeout_ms: u64) -> Result<String, String> {
     let agent = ureq::Agent::new_with_config(config);
     let mut resp = agent
         .get(url)
-        .header("user-agent", "munder-difflin")
+        .header("user-agent", "agent-office")
         .call()
         .map_err(|e| e.to_string())?;
     if !(200..300).contains(&resp.status().as_u16()) {

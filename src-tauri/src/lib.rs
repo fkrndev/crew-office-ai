@@ -202,7 +202,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Deep links only fire for installed apps on Windows/Linux —
-            // register_all makes dev builds handle munderdifflin:// /
+            // register_all makes dev builds handle
             // agent-office:// too (official plugin recipe).
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
@@ -290,8 +290,7 @@ pub fn run() {
                 }
             }
 
-            // agent-office://hire?src=... deep links (upstream's
-            // munderdifflin://hire flow): park the source for the UI to
+            // agent-office://hire?src=... deep links: park the source for the UI to
             // drain through hire:drainPending.
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

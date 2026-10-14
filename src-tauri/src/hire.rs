@@ -14,7 +14,13 @@
 
 use serde_json::{json, Value};
 
-pub const HIRE_SPEC_V1: &str = "munder-difflin/hire@1";
+pub const HIRE_SPEC_V1: &str = "agent-office/hire@1";
+/// Spec tag written by the upstream project this app was forked from. Manifests
+/// authored for it are still accepted on import (they are normalized to
+/// `HIRE_SPEC_V1`); nothing is ever written with it. The one deliberate
+/// remaining occurrence of the old name — keep it so existing shared hires
+/// keep working.
+pub const LEGACY_HIRE_SPEC_V1: &str = "munder-difflin/hire@1";
 pub const HIRE_MAX_BYTES: usize = 64 * 1024;
 
 /// Bundled skill ids — the only values `skills` may reference.
@@ -122,7 +128,7 @@ pub fn validate_hire_manifest(raw: &Value) -> (Option<Value>, Vec<String>, Vec<S
     if !raw.is_object() {
         return (None, vec!["manifest must be a JSON object".into()], vec![]);
     }
-    if raw["spec"].as_str() != Some(HIRE_SPEC_V1) {
+    if !matches!(raw["spec"].as_str(), Some(HIRE_SPEC_V1) | Some(LEGACY_HIRE_SPEC_V1)) {
         return (
             None,
             vec![format!(
@@ -342,13 +348,11 @@ pub fn validate_hire_manifest(raw: &Value) -> (Option<Value>, Vec<String>, Vec<S
     (Some(Value::Object(m)), vec![], consent_required)
 }
 
-/// Parse a `munderdifflin://hire?src=<https-url>` deep link — the app's own
-/// `agent-office:` scheme is accepted identically.
+/// Parse an `agent-office://hire?src=<https-url>` deep link (the app's only
+/// registered scheme).
 pub fn parse_hire_deep_link(link: &str) -> Option<String> {
-    let rest = link
-        .strip_prefix("munderdifflin:")
-        .or_else(|| link.strip_prefix("agent-office:"))?;
-    // Accept both munderdifflin://hire?src= and munderdifflin:hire?src=
+    let rest = link.strip_prefix("agent-office:")?;
+    // Accept both agent-office://hire?src= and agent-office:hire?src=
     let (action, query) = {
         let body = rest.trim_start_matches('/');
         let (act, q) = match body.split_once('?') {
@@ -631,7 +635,7 @@ mod tests {
     #[test]
     fn valid_manifest_rounds_out_fields() {
         let (m, errs, consent) = validate_hire_manifest(&json!({
-            "spec": "munder-difflin/hire@1",
+            "spec": "agent-office/hire@1",
             "name": "Docs Writer",
             "provider": "agy",
             "model": "claude-sonnet-4-6",
@@ -658,28 +662,38 @@ mod tests {
             (json!(["--verbose;rm"]), "metachars"),
         ] {
             let (_, errs, _) = validate_hire_manifest(&json!({
-                "spec": "munder-difflin/hire@1", "name": "n", "commandFlags": flags
+                "spec": "agent-office/hire@1", "name": "n", "commandFlags": flags
             }));
             assert!(!errs.is_empty(), "{desc} should reject: {flags}");
         }
         let (_, errs, _) = validate_hire_manifest(&json!({
-            "spec": "munder-difflin/hire@1", "name": "n", "provider": "custom"
+            "spec": "agent-office/hire@1", "name": "n", "provider": "custom"
         }));
         assert!(!errs.is_empty(), "custom provider must reject");
         let (_, errs, _) = validate_hire_manifest(&json!({
-            "spec": "munder-difflin/hire@1", "name": "n", "model": "x; rm -rf /"
+            "spec": "agent-office/hire@1", "name": "n", "model": "x; rm -rf /"
         }));
         assert!(!errs.is_empty(), "model metachars must reject");
     }
 
     #[test]
+    fn legacy_spec_tag_is_accepted_and_normalized() {
+        let (m, errs, _) = validate_hire_manifest(&json!({
+            "spec": LEGACY_HIRE_SPEC_V1, "name": "Old Hire"
+        }));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(m.unwrap()["spec"], HIRE_SPEC_V1);
+        let (m, errs, _) = validate_hire_manifest(&json!({ "spec": "nope/hire@1", "name": "x" }));
+        assert!(m.is_none() && !errs.is_empty());
+    }
+
+    #[test]
     fn deep_link_and_url_rules() {
         assert_eq!(
-            parse_hire_deep_link("munderdifflin://hire?src=https%3A%2F%2Fex.com%2Fm.json"),
+            parse_hire_deep_link("agent-office://hire?src=https%3A%2F%2Fex.com%2Fm.json"),
             Some("https://ex.com/m.json".to_string())
         );
-        assert!(parse_hire_deep_link("munderdifflin://spawn?src=x").is_none());
-        assert!(is_allowed_manifest_url("https://ex.com/a.json"));
+        assert!(parse_hire_deep_link("agent-office://spawn?src=x").is_none());        assert!(is_allowed_manifest_url("https://ex.com/a.json"));
         assert!(is_allowed_manifest_url("http://localhost:8000/a.json"));
         assert!(!is_allowed_manifest_url("http://ex.com/a.json"));
         assert!(!is_allowed_manifest_url("ftp://ex.com"));

@@ -105,6 +105,15 @@ pub const CATALOG: &[McpEntry] = &[
     ),
 ];
 
+/// Namespace for every MCP server id this app writes into an agent's config
+/// (`agent-office-<catalog id>`), so a user's own servers are never clobbered.
+pub const MCP_SERVER_PREFIX: &str = "agent-office-";
+
+/// Namespace used by earlier builds. Only the stale-entry scrub in hive.rs
+/// (hermes config.yaml) may reference it, so leftovers (which can hold plaintext
+/// secrets) are still removed after the rename. Never written any more.
+pub const LEGACY_MCP_SERVER_PREFIX: &str = "munder-";
+
 pub fn catalog_entry(id: &str) -> Option<&'static McpEntry> {
     CATALOG.iter().find(|e| e.id == id)
 }
@@ -127,7 +136,7 @@ pub struct McpServerSpec {
 /// * `<cwd>`/`<harness>` placeholders resolve at merge;
 /// * env hints "" resolve through `secret_lookup` (keychain); unresolved
 ///   secrets leave the empty string — the server fails loudly, never guesses;
-/// * every id is namespaced `munder-<id>` so the user's own ~/.claude servers
+/// * every id is namespaced `agent-office-<id>` so the user's own ~/.claude servers
 ///   of the same name are never clobbered.
 pub fn build_default_mcp_servers(
     cwd: &str,
@@ -176,7 +185,7 @@ pub fn build_default_mcp_servers(
             env.insert(k.to_string(), v);
         }
         out.insert(
-            format!("munder-{}", e.id),
+            format!("{MCP_SERVER_PREFIX}{}", e.id),
             McpServerSpec { command: e.command.into(), args, env },
         );
     }
@@ -186,11 +195,11 @@ pub fn build_default_mcp_servers(
 /// Env-var prefix for MCP secrets handed to the agent process out-of-band.
 /// Namespaced so a keychain `DATABASE_URL` never lands in the agent's own
 /// shell env under a name the project's tooling would pick up.
-pub const MCP_SECRET_ENV_PREFIX: &str = "MUNDER_MCP_";
+pub const MCP_SECRET_ENV_PREFIX: &str = "AGENTOFFICE_MCP_";
 
 /// Move every keychain-resolved MCP env value out of `servers` so the file
 /// written to disk (claude `settings.json` / hermes `config.yaml`) carries a
-/// `${MUNDER_MCP_<KEY>}` reference instead of the secret. Returns the
+/// `${AGENTOFFICE_MCP_<KEY>}` reference instead of the secret. Returns the
 /// `(var, value)` pairs the caller must add to the SPAWNED PROCESS env —
 /// both claude and hermes expand `${VAR}` in MCP server config from their own
 /// environment. Literal catalog defaults (SHARDX_API, …) and unresolved
@@ -201,7 +210,7 @@ pub fn externalize_mcp_secrets(
 ) -> HashMap<String, String> {
     let mut secrets = HashMap::new();
     for (name, spec) in servers.iter_mut() {
-        let Some(entry) = name.strip_prefix("munder-").and_then(catalog_entry) else {
+        let Some(entry) = name.strip_prefix(MCP_SERVER_PREFIX).and_then(catalog_entry) else {
             continue;
         };
         for (k, hint) in entry.env {
@@ -246,14 +255,14 @@ mod tests {
         for s in ["tok-SECRET-1", "ghp_SECRET2", "trelloKEY3"] {
             assert!(!json.contains(s), "{s} leaked into {json}");
         }
-        assert_eq!(m["munder-shardx"].env["SHARDX_TOKEN"], "${MUNDER_MCP_SHARDX_TOKEN}");
-        assert_eq!(secrets["MUNDER_MCP_SHARDX_TOKEN"], "tok-SECRET-1");
-        assert_eq!(secrets["MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN"], "ghp_SECRET2");
-        assert_eq!(secrets["MUNDER_MCP_TRELLO_API_KEY"], "trelloKEY3");
+        assert_eq!(m["agent-office-shardx"].env["SHARDX_TOKEN"], "${AGENTOFFICE_MCP_SHARDX_TOKEN}");
+        assert_eq!(secrets["AGENTOFFICE_MCP_SHARDX_TOKEN"], "tok-SECRET-1");
+        assert_eq!(secrets["AGENTOFFICE_MCP_GITHUB_PERSONAL_ACCESS_TOKEN"], "ghp_SECRET2");
+        assert_eq!(secrets["AGENTOFFICE_MCP_TRELLO_API_KEY"], "trelloKEY3");
         // Literal defaults stay literal; unresolved secrets stay empty (no ref).
-        assert_eq!(m["munder-shardx"].env["SHARDX_API"], "http://127.0.0.1:40325");
-        assert_eq!(m["munder-trello"].env["TRELLO_TOKEN"], "");
-        assert!(!secrets.contains_key("MUNDER_MCP_TRELLO_TOKEN"));
+        assert_eq!(m["agent-office-shardx"].env["SHARDX_API"], "http://127.0.0.1:40325");
+        assert_eq!(m["agent-office-trello"].env["TRELLO_TOKEN"], "");
+        assert!(!secrets.contains_key("AGENTOFFICE_MCP_TRELLO_TOKEN"));
         assert_eq!(secrets.len(), 3);
     }
 
@@ -264,17 +273,17 @@ mod tests {
     #[test]
     fn defaults_ship_safe_readonly_on_and_keyed_off() {
         let m = build_default_mcp_servers("C:/w", Path::new("C:/h"), &HashMap::new(), &[], &[], &no_secret);
-        assert!(m.contains_key("munder-filesystem"));
-        assert!(m.contains_key("munder-sequential-thinking"));
+        assert!(m.contains_key("agent-office-filesystem"));
+        assert!(m.contains_key("agent-office-sequential-thinking"));
         // keyed tiers can never ride a default
-        assert!(!m.contains_key("munder-shardx"));
-        assert!(!m.contains_key("munder-github-token"));
+        assert!(!m.contains_key("agent-office-shardx"));
+        assert!(!m.contains_key("agent-office-github-token"));
     }
 
     #[test]
     fn cwd_placeholder_scopes_filesystem() {
         let m = build_default_mcp_servers("C:/work/repo", Path::new("C:/h"), &HashMap::new(), &[], &[], &no_secret);
-        let fs = &m["munder-filesystem"];
+        let fs = &m["agent-office-filesystem"];
         assert!(fs.args.iter().any(|a| a == "C:/work/repo"));
         assert!(!fs.args.iter().any(|a| a.contains("<cwd>")));
     }
@@ -289,7 +298,7 @@ mod tests {
             &[],
             &|k| (k == "SHARDX_TOKEN").then(|| "tok-1".to_string()),
         );
-        let s = &m["munder-shardx"];
+        let s = &m["agent-office-shardx"];
         assert_eq!(s.command, "node");
         assert_eq!(s.args[0], "C:/harness/mcp-servers/shardx/index.js");
         assert_eq!(s.env["SHARDX_API"], "http://127.0.0.1:40325");
@@ -301,10 +310,10 @@ mod tests {
         let mut defaults = HashMap::new();
         defaults.insert("fetch".to_string(), true);
         let m = build_default_mcp_servers("C:/w", Path::new("C:/h"), &defaults, &[], &["fetch".to_string()], &no_secret);
-        assert!(!m.contains_key("munder-fetch"));
+        assert!(!m.contains_key("agent-office-fetch"));
         // per-spawn enable wins over global default-off for safe tiers too
         let m2 = build_default_mcp_servers("C:/w", Path::new("C:/h"), &HashMap::new(), &["shardx".to_string()], &["shardx".to_string()], &no_secret);
-        assert!(!m2.contains_key("munder-shardx"));
+        assert!(!m2.contains_key("agent-office-shardx"));
     }
 
     #[test]

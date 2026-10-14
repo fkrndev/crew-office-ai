@@ -679,7 +679,9 @@ pub fn models_catalog(app: AppHandle) -> Result<Value, String> {
 /// a cold cache means a bounded network fetch.
 #[tauri::command(async)]
 pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, String> {
-    let cache = harness_home(&app).join("hero.json");
+    // Not `hero.json`: earlier builds cached the upstream project's payload
+    // there, and a stale copy would otherwise outlive a failing fetch forever.
+    let cache = harness_home(&app).join("hero-agent-office.json");
     let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || load_hero(&cache, force))
         .await

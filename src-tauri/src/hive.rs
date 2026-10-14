@@ -341,9 +341,9 @@ pub struct UnansweredMessage {
 }
 
 /// Banner stamped at the top of every generated hive doc (upstream
-/// GENERATED_DOC_NOTICE, hive.ts:2924) — verbatim, proper noun included.
+/// GENERATED_DOC_NOTICE, hive.ts:2924).
 const GENERATED_DOC_NOTICE: &str =
-    "<!-- Generated and managed by Munder Difflin. Local edits may be replaced during hive bootstrap. -->";
+    "<!-- Generated and managed by Agent Office. Local edits may be replaced during hive bootstrap. -->";
 
 /// Spawn-time context for `injected_prompt` — the optional blocks upstream
 /// weaves into the system-prompt prefix (hive.ts injectedPrompt args).
@@ -489,7 +489,7 @@ fn repair_literal_line_breaks(raw: &str) -> (String, bool) {
 }
 
 /// The full upstream protocol text (hive.ts:2955-3100) — verbatim.
-const PROTOCOL_MD: &str = r##"<!-- Generated and managed by Munder Difflin. Local edits may be replaced during hive bootstrap. -->
+const PROTOCOL_MD: &str = r##"<!-- Generated and managed by Agent Office. Local edits may be replaced during hive bootstrap. -->
 
 # Hive protocol
 
@@ -1003,6 +1003,40 @@ pub struct Hive {
     /// `lifetime_usd`).
     usage_fold: std::sync::Mutex<UsageFold>,
     cost_totals: std::sync::Mutex<crate::cost_lifetime::CostLedgerTotals>,
+}
+
+/// Where the user's own Hermes data (config.yaml, .env) lives — the same
+/// resolution Hermes uses (`HERMES_HOME`, else the platform default:
+/// `%LOCALAPPDATA%\hermes` on Windows, `~/.hermes` elsewhere, each with
+/// `HERMES_DATA_DIR_SUFFIX`). The Windows installer keeps everything under
+/// %LOCALAPPDATA%, so reading only `~/.hermes` found no config and workers
+/// booted with no provider. The legacy `~/.hermes` stays a fallback for
+/// installs that still keep their config there.
+fn user_hermes_home() -> PathBuf {
+    let suffix = std::env::var("HERMES_DATA_DIR_SUFFIX").unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
+    let legacy = home.join(format!(".hermes{suffix}"));
+    let primary = match std::env::var("HERMES_HOME") {
+        Ok(h) if !h.trim().is_empty() => PathBuf::from(crate::misc::expand_tilde(h.trim())),
+        _ if cfg!(windows) => {
+            let base = std::env::var("LOCALAPPDATA")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Local"));
+            base.join(format!("hermes{suffix}"))
+        }
+        _ => legacy.clone(),
+    };
+    // First candidate that actually holds the user's config; else one with a
+    // key file; else the primary (nothing to copy — the seed fills the gap).
+    let candidates = [primary.clone(), legacy];
+    candidates
+        .iter()
+        .find(|d| d.join("config.yaml").is_file())
+        .or_else(|| candidates.iter().find(|d| d.join(".env").is_file()))
+        .cloned()
+        .unwrap_or(primary)
 }
 
 /// App-driven seed for a worker's HERMES_HOME when the user never ran
@@ -1726,7 +1760,7 @@ impl Hive {
         hook_bin: &Path,
         seed: &HermesSeed,
     ) -> Result<PathBuf> {
-        let user_home = dirs::home_dir().unwrap_or_default().join(".hermes");
+        let user_home = user_hermes_home();
         self.install_hermes_hooks_seeded_at(dir, hook_bin, seed, &user_home)
     }
 
@@ -1807,10 +1841,11 @@ impl Hive {
 
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
-        // The `munder-*` MCP namespace is ours: drop entries from earlier
-        // spawns (they may carry plaintext secrets from before the
-        // `${VAR}` refs, or a since-revoked consent) and re-add below.
-        cfg = strip_munder_mcp_blocks(&cfg);
+        // The `agent-office-*` MCP namespace (and the legacy namespace of
+        // earlier builds) is ours: drop entries from earlier spawns (they may
+        // carry plaintext secrets from before the `${VAR}` refs, or a
+        // since-revoked consent) and re-add below.
+        cfg = strip_managed_mcp_blocks(&cfg);
         // Consent-filtered MCP catalog → `mcp_servers:` — hermes reads the
         // same {command,args,env} stdio shape as claude's mcpServers. Merge by
         // NAME: missing servers are appended into an existing mcp_servers
@@ -1855,6 +1890,21 @@ impl Hive {
                 }
                 cfg = merged;
             }
+        }
+        // Skills installed from the Skills tab land in ~/.claude/skills, but
+        // the per-agent HERMES_HOME has its own empty skills dir — mount the
+        // user-scope dir as a read-only external dir so Hermes sees them too.
+        // A pre-existing user `skills:` block wins (same reason as `hooks:`).
+        if !cfg.lines().any(|l| l.starts_with("skills:")) {
+            // NOT `user_home` — that is the user's Hermes data dir, not $HOME.
+            let skills = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".claude")
+                .join("skills");
+            cfg.push_str(&format!(
+                "\nskills:\n  external_dirs:\n    - '{}'\n",
+                skills.display().to_string().replace('\'', "''")
+            ));
         }
         if !cfg.lines().any(|l| l.starts_with("hooks_auto_accept:")) {
             cfg.push_str(
@@ -2182,7 +2232,7 @@ impl Hive {
                     .as_ref()
                     .map(|p| format!(", from {p}"))
                     .unwrap_or_default();
-                format!("RUNNING BUILD: Munder Difflin v{}, {}{}. Say this version if asked which one is running, and do not assume behaviour from an older one. A local dev build inherits the launching shell's environment (umask included) where a packaged app does not, so file modes and inherited env can legitimately differ between the two. `log.jsonl` records an `app-start` event on every launch, which is how you spot a restart or a build switch.",
+                format!("RUNNING BUILD: Agent Office v{}, {}{}. Say this version if asked which one is running, and do not assume behaviour from an older one. A local dev build inherits the launching shell's environment (umask included) where a packaged app does not, so file modes and inherited env can legitimately differ between the two. `log.jsonl` records an `app-start` event on every launch, which is how you spot a restart or a build switch.",
                     rt.version,
                     if rt.packaged { "packaged app" } else { "local dev build" },
                     from)
@@ -3247,10 +3297,13 @@ pub fn redact_secrets(text: &str) -> String {
     s
 }
 
-/// Remove `  munder-*:` entries (and their indented bodies) from the top-level
-/// `mcp_servers:` block of a hermes config.yaml; every other line, including
-/// the user's own servers, is kept verbatim.
-fn strip_munder_mcp_blocks(cfg: &str) -> String {
+/// Remove `  agent-office-*:` entries — and the legacy-prefixed ones earlier
+/// builds wrote (`LEGACY_MCP_SERVER_PREFIX`, which may hold plaintext secrets) —
+/// with their indented bodies from the top-level `mcp_servers:` block of a
+/// hermes config.yaml; every other line, including the user's own servers, is
+/// kept verbatim.
+fn strip_managed_mcp_blocks(cfg: &str) -> String {
+    use crate::mcp::{LEGACY_MCP_SERVER_PREFIX, MCP_SERVER_PREFIX};
     let mut out = String::with_capacity(cfg.len());
     let (mut in_mcp, mut skipping) = (false, false);
     for line in cfg.split_inclusive('\n') {
@@ -3264,7 +3317,10 @@ fn strip_munder_mcp_blocks(cfg: &str) -> String {
             in_mcp = false;
             skipping = false;
         } else if in_mcp {
-            if indent == 2 && body.trim_start().starts_with("munder-") {
+            let name = body.trim_start();
+            if indent == 2
+                && (name.starts_with(MCP_SERVER_PREFIX) || name.starts_with(LEGACY_MCP_SERVER_PREFIX))
+            {
                 skipping = true;
                 continue;
             }
@@ -3320,8 +3376,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let hook_bin = dir.join("hive-hook.exe");
+        // Hermetic: the real user's Hermes config (which may already carry a
+        // `hooks:` block) must not leak into the assertion.
         let home = hive
-            .install_hermes_hooks(&dir.join("agent"), &hook_bin)
+            .install_hermes_hooks_seeded_at(
+                &dir.join("agent"),
+                &hook_bin,
+                &HermesSeed::default(),
+                &no_user_hermes(&dir),
+            )
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(cfg.contains("hooks_auto_accept: true"));
@@ -3353,7 +3416,7 @@ mod tests {
         let user_home = no_user_hermes(&dir);
         let seed = HermesSeed {
             mcp_servers: std::collections::BTreeMap::from([(
-                "munder-shardx".to_string(),
+                "agent-office-shardx".to_string(),
                 crate::mcp::McpServerSpec {
                     command: "node".into(),
                     args: vec!["C:\\harness\\mcp-servers\\shardx\\index.js".into()],
@@ -3374,16 +3437,18 @@ mod tests {
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(cfg.contains("mcp_servers:"));
-        assert!(cfg.contains("  munder-shardx:"));
+        assert!(cfg.contains("  agent-office-shardx:"));
         assert!(cfg.contains("command: 'node'"));
         assert!(cfg.contains("SHARDX_API: 'http://127.0.0.1:40325'"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Stale `munder-*` entries (plaintext secrets from before the `${VAR}`
-    /// refs) are replaced on the next seed; the user's own servers survive.
+    /// Stale entries under the legacy namespace of earlier builds (plaintext
+    /// secrets from before the `${VAR}` refs) are replaced on the next seed; the
+    /// user's own servers survive.
     #[test]
-    fn hermes_seed_scrubs_stale_munder_mcp_entries_and_keeps_secrets_out() {
+    fn hermes_seed_scrubs_stale_legacy_mcp_entries_and_keeps_secrets_out() {
+        let legacy = crate::mcp::LEGACY_MCP_SERVER_PREFIX;
         let dir = std::env::temp_dir().join(format!("oa-hermes-scrub-{}", uuid::Uuid::new_v4()));
         let hive = Hive::ensure(&dir.join("hive")).unwrap();
         let user_home = no_user_hermes(&dir);
@@ -3392,7 +3457,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(
             home.join("config.yaml"),
-            "model: x\nmcp_servers:\n  munder-github-token:\n    command: 'npx'\n    env:\n      GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_OLDPLAINTEXT'\n  mine:\n    command: 'foo'\nother: 1\n",
+            format!("model: x\nmcp_servers:\n  {legacy}github-token:\n    command: 'npx'\n    env:\n      GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_OLDPLAINTEXT'\n  mine:\n    command: 'foo'\nother: 1\n"),
         )
         .unwrap();
         let mut servers = crate::mcp::build_default_mcp_servers(
@@ -3407,25 +3472,27 @@ mod tests {
         // claude's per-agent settings.json goes through the same map.
         let settings = hive.hook_settings("\"shim\"", &servers).to_string();
         assert!(!settings.contains("ghp_NEWSECRET"), "{settings}");
-        assert!(settings.contains("${MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}"));
+        assert!(settings.contains("${AGENTOFFICE_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}"));
         let seed = HermesSeed { mcp_servers: servers, ..Default::default() };
         let home = hive
             .install_hermes_hooks_seeded_at(&agent, &dir.join("hive-hook.exe"), &seed, &user_home)
             .unwrap();
         let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
         assert!(!cfg.contains("ghp_"), "{cfg}");
-        assert!(cfg.contains("GITHUB_PERSONAL_ACCESS_TOKEN: '${MUNDER_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}'"));
+        assert!(cfg.contains("GITHUB_PERSONAL_ACCESS_TOKEN: '${AGENTOFFICE_MCP_GITHUB_PERSONAL_ACCESS_TOKEN}'"));
         assert!(cfg.contains("  mine:\n    command: 'foo'"));
         assert!(cfg.contains("model: x") && cfg.contains("other: 1"));
-        assert_eq!(cfg.matches("munder-github-token:").count(), 1);
+        assert_eq!(cfg.matches("agent-office-github-token:").count(), 1);
+        assert!(!cfg.contains(&format!("{legacy}github-token")), "{cfg}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn strip_munder_blocks_only_touches_the_mcp_section() {
-        let s = "munder-x: keep\nmcp_servers:\n  munder-a:\n    command: 'a'\n\n  user:\n    command: 'u'\n  munder-b:\n    args:\n      - 'z'\nhooks:\n  munder-c: 1\n";
-        let out = strip_munder_mcp_blocks(s);
-        assert_eq!(out, "munder-x: keep\nmcp_servers:\n  user:\n    command: 'u'\nhooks:\n  munder-c: 1\n");
+    fn strip_managed_blocks_only_touches_the_mcp_section() {
+        let legacy = crate::mcp::LEGACY_MCP_SERVER_PREFIX;
+        let s = format!("{legacy}x: keep\nmcp_servers:\n  {legacy}a:\n    command: 'a'\n\n  user:\n    command: 'u'\n  agent-office-b:\n    args:\n      - 'z'\nhooks:\n  agent-office-c: 1\n");
+        let out = strip_managed_mcp_blocks(&s);
+        assert_eq!(out, format!("{legacy}x: keep\nmcp_servers:\n  user:\n    command: 'u'\nhooks:\n  agent-office-c: 1\n"));
     }
 
     /// Empty dir standing in for ~/.hermes — the copy-through source is a
@@ -3464,6 +3531,41 @@ mod tests {
         let env = std::fs::read_to_string(home.join(".env")).unwrap();
         assert!(env.lines().any(|l| l == "DEEPSEEK_API_KEY=sk-test"), "{env}");
         assert!(env.lines().any(|l| l == "OPENAI_API_KEY=sk-test"), "{env}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hermes_config_mounts_user_claude_skills_unless_user_has_a_skills_block() {
+        let dir = std::env::temp_dir().join(format!("oa-hermes-skills-{}", uuid::Uuid::new_v4()));
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user_home = no_user_hermes(&dir);
+        let hook_bin = dir.join("hive-hook.exe");
+        let seed = crate::hive::HermesSeed::default();
+
+        let home = hive
+            .install_hermes_hooks_seeded_at(&dir.join("a"), &hook_bin, &seed, &user_home)
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("external_dirs:"), "{cfg}");
+        assert!(
+            cfg.contains(".claude") && cfg.contains("skills"),
+            "user-scope Claude skills dir mounted: {cfg}"
+        );
+        assert!(
+            !cfg.contains(".hermes\\.claude") && !cfg.contains(".hermes/.claude"),
+            "must not be rooted under the hermes data dir: {cfg}"
+        );
+
+        // A user-authored skills block is never touched.
+        let b = dir.join("b");
+        std::fs::create_dir_all(b.join(".hermes")).unwrap();
+        std::fs::write(b.join(".hermes").join("config.yaml"), "skills:\n  mine: true\n").unwrap();
+        let home = hive
+            .install_hermes_hooks_seeded_at(&b, &hook_bin, &seed, &user_home)
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert_eq!(cfg.matches("skills:").count(), 1, "{cfg}");
+        assert!(!cfg.contains("external_dirs"), "{cfg}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
