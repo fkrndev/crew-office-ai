@@ -52,6 +52,10 @@
     "longDescription": "Agent Office is a desktop crew-office that spawns, routes, and supervises many coding-agent CLIs (Claude, Codex, Gemini, Grok, Hermes, Qwen, Crush, and others) with a shared Hive message bus, task board, and mission scheduler.",
     "copyright": "Copyright (c) 2026 fkrndev",
     "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
       "icons/icon.png",
       "icons/icon.ico"
     ],
