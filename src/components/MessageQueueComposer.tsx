@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import { useStore, type Agent, type QueuedMessage } from '@/store/store';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 import { clearTerminalDraft, dismissTerminalPicker, terminalAutomationBlockFor } from './terminalPool';
 import type { TerminalAutomationBlock } from './terminalAutomation';
 import { freeflowRecorder, useFreeflow } from '@/freeflow/recorder';
@@ -39,6 +40,9 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
   const removeQueuedMessage = useStore((s) => s.removeQueuedMessage);
   const releaseQueuedMessage = useStore((s) => s.releaseQueuedMessage);
   const clearQueue = useStore((s) => s.clearQueue);
+  // Simple mode hides voice dictation (a Free Flow / Groq-key feature).
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
 
   // Draft lives in the store, keyed by agent — switching agents remounts this
   // component, and component-local state would silently eat the typed text.
@@ -215,7 +219,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     : block === 'exited'
     ? t('queueComposer.heldExited', { name: agent.name })
     : !idle
-    ? t('queueComposer.busyQueued', { name: agent.name, count: queue.length })
+    ? t('queueComposer.busyQueued', { name: agent.name, count: queue.length, ...sctx })
     : deliveryPaused && !queue[0]?.manual
     ? t('queueComposer.heldFloor')
     : t('queueComposer.sendingOneByOne', { name: agent.name });
@@ -251,7 +255,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           fontFamily: 'var(--cth-font-display)',
           fontSize: 9, lineHeight: '12px',
           color: 'var(--cth-ink-700)'
-        }}>{t('queueComposer.queue')}</span>
+        }}>{t('queueComposer.queue', sctx)}</span>
         {queue.length > 0 && (
           <span style={{
             fontSize: 11, padding: '1px 6px 0',
@@ -388,7 +392,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           onKeyDown={onKey}
           onPaste={onPaste}
           rows={5}
-          placeholder={idle ? t('queueComposer.messagePlaceholder', { name: agent.name }) : t('queueComposer.busyPlaceholder', { name: agent.name })}
+          placeholder={idle ? t('queueComposer.messagePlaceholder', { name: agent.name }) : t('queueComposer.busyPlaceholder', { name: agent.name, ...sctx })}
           style={{
             width: '100%',
             resize: 'vertical',
@@ -421,7 +425,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
               <Icon name="plus" /> {t('queueComposer.files')}
             </span>
           </PixelButton>
-          {freeflowEnabled && <FreeFlowButton agentId={agent.id} hasGroqKey={hasGroqKey} />}
+          {freeflowEnabled && !simple && <FreeFlowButton agentId={agent.id} hasGroqKey={hasGroqKey} />}
           <PixelButton variant="primary" size="sm" onClick={queueIt} disabled={!canSend}>
             <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               {t('commandBar.send')} <Icon name="arrow-right" />

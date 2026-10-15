@@ -5,6 +5,7 @@ import type { ThemeId } from '@/scene/office/themeRegistry';
 import type { StatusKind } from '@/components/PixelBadge';
 import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
+import type { UiMode } from '@shared/uiMode';
 import {
   EMPTY_HIRE_QUEUE,
   clearHireQueue,
@@ -282,6 +283,18 @@ interface State {
    *  window.cth.realtimeHasOpenAiKey(). */
   hasOpenAiKey: boolean;
   setHasOpenAiKey: (has: boolean) => void;
+  /** Mirror of the RESOLVED UI mode (see src/shared/uiMode.ts) — explicit
+   *  `config.uiMode`, else derived from `audience`. Set by App on every config
+   *  read and by Settings on save, so every component re-renders the moment the
+   *  layout switch flips. Defaults to 'advanced' (the unchanged, full layout)
+   *  until a config has been read. */
+  uiMode: UiMode;
+  setUiMode: (mode: UiMode) => void;
+  /** The last engine spawn answered "needs an API key" (spawn result `needsKey`).
+   *  Renderer memory only — drives the simple-mode "Connect your AI" call to
+   *  action, and is cleared the moment a key is saved. */
+  engineNeedsKey: boolean;
+  setEngineNeedsKey: (needs: boolean) => void;
   /** Mirror of the active office theme (set by App on config load + by Settings
    *  on switch). OfficeFloor depends on this and rebuilds the scene on change. */
   officeTheme: ThemeId;
@@ -897,6 +910,10 @@ export const useStore = create<State>((set, get) => ({
   setHasGroqKey: (has) => set({ hasGroqKey: has }),
   hasOpenAiKey: false,
   setHasOpenAiKey: (has) => set({ hasOpenAiKey: has }),
+  uiMode: 'advanced',
+  setUiMode: (mode) => set({ uiMode: mode }),
+  engineNeedsKey: false,
+  setEngineNeedsKey: (needs) => set({ engineNeedsKey: needs }),
   officeTheme: 'office',
   setOfficeTheme: (theme) => set({ officeTheme: theme }),
   webhookTriggers: [],

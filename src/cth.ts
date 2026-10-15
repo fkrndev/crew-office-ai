@@ -361,6 +361,8 @@ export function installCth(): void {
     memoryWakeUp: (...args: unknown[]) => invoke('memory_wake_up', pack(args, ["wing"])),
     mineNow: (...args: unknown[]) => invoke('mine_now', pack(args, ["agentId"])),
     reflectNow: (...args: unknown[]) => invoke('reflect_now', pack(args, ["agentId"])),
+    // Clean user/assistant turns of an agent's engine transcript (simple-mode chat view).
+    conversationRead: (...args: unknown[]) => invoke('conversation_read', pack(args, ["agentId","sinceCursor"])),
     kgStatus: (...args: unknown[]) => invoke('kg_status', pack(args, [])),
     kgList: (...args: unknown[]) => invoke('kg_list', pack(args, [])),
     kgSearch: (...args: unknown[]) => invoke('kg_search', pack(args, ["query","limit"])),
@@ -544,6 +546,24 @@ export function installCth(): void {
       invoke('provider_key_has', { provider: backend }),
     providerKeyClear: (backend: string) =>
       invoke('provider_key_clear', { provider: backend }),
+    // First-run quick start: one lightweight authenticated GET to the provider
+    // to see whether a pasted key works — checked in memory, NOT stored. Resolves
+    // {ok, code: 'valid'|'rejected'|'unreachable'|'unsupported'}; never rejects
+    // for a bad key, so a failed check can never block onboarding.
+    providerKeyValidate: async (provider: string, key: string) => {
+      try {
+        return await invoke<{ ok: boolean; code: string }>('provider_key_validate', { provider, key });
+      } catch {
+        return { ok: false, code: 'unreachable' };
+      }
+    },
+    // First-run progress (engine_setup.rs). `engineSetupSnapshot` replays what a
+    // window missed; `engineSetupRetry` re-runs the spawn ladder for an agent;
+    // `hermesUserConfigStatus` is the read-only look at the user's own Hermes
+    // setup ({exists, provider, model, hasKeys, path} — never a key value).
+    engineSetupSnapshot: () => invoke('engine_setup_snapshot'),
+    engineSetupRetry: (...args: unknown[]) => invoke('engine_setup_retry', pack(args, ["agentId"])),
+    hermesUserConfigStatus: () => invoke('hermes_user_config_status'),
     realtimeHasOpenAiKey: (...args: unknown[]) => invoke('realtime_has_key', pack(args, [])),
     realtimeMintToken: (...args: unknown[]) => invoke('realtime_mint_token', pack(args, ["model"])),
     realtimeAction: (payload?: unknown) => invoke('realtime_action', { payload }),
@@ -602,6 +622,9 @@ export function installCth(): void {
     onHiveAgentArchived: (cb: (e: { id: string }) => void) => on<{ id: string }>('hive:agentArchived', cb),
     onHiveDegraded: (cb: (e: { agentId?: string; name?: string; reason?: string; message?: string }) => void) =>
       on<{ agentId?: string; name?: string; reason?: string; message?: string }>('hive:degraded', cb),
+    // Window-scoped like the PTY stream: the backend addresses a setup's events
+    // to the window that owns the agent's terminal.
+    onEngineSetup: (cb: (e: unknown) => void) => onHere<unknown>('engine:setup', cb),
     onBreakerState: (cb: (e: unknown) => void) => on<unknown>('control:breakerState', cb),
     onRealtimeCompletion: (cb: (e: unknown) => void) => on<unknown>('realtime:completion', cb),
     onUpdateState: (cb: (e: unknown) => void) => on<unknown>('update:status', cb),

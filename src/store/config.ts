@@ -60,6 +60,9 @@ export interface HarnessConfig {
    *  'non-technical') — drives the copy register across onboarding. Mirrors
    *  src/main/config.ts. */
   audience?: 'technical' | 'non-technical';
+  /** Explicit UI mode ('simple' | 'advanced'); unset = derived from `audience`
+   *  (see src/shared/uiMode.ts). Raw config key, like `agentTemplates`. */
+  uiMode?: import('@shared/uiMode').UiMode;
   harnessHome: string | null;
   /** Recently-opened hive home folders (most-recent first) for the launch picker.
    *  Mirrors src/main/config.ts. */
@@ -139,6 +142,12 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Who decides Hermes' provider when the user has their OWN Hermes config:
+   *  `'own'` (default; their existing setup, no key needed here) or `'app'` (the
+   *  provider/key chosen in the quick start / Settings → AI connection overrides
+   *  it — in each agent's private copy only, never in the user's own files). Raw
+   *  config key, read by src-tauri/src/hive.rs at spawn. */
+  hermesSource?: 'own' | 'app';
   /** Legacy single-webhook fields (mirrors src/main/config.ts, where they are
    *  deprecated in favour of `webhookTriggers` but still read until the server is
    *  rewired). Declared here so the surfaces that show them can stop widening this

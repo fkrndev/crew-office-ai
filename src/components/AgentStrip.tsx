@@ -4,9 +4,11 @@ import { AgentCard } from './AgentCard';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import { useStore, type Agent } from '@/store/store';
+import { useSetupBadges } from '@/store/engineSetup';
 import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
+import { useIsSimpleMode, openAiConnection } from '@/hooks/useUiMode';
 
 export interface AgentStripProps {
   /** Needed to rebuild a spawn command when a restorable agent predates the
@@ -22,6 +24,10 @@ export function AgentStrip({ config }: AgentStripProps) {
   const selectedId = useStore(s => s.selectedId);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
+  const simple = useIsSimpleMode();
+  const engineNeedsKey = useStore(s => s.engineNeedsKey);
+  // First run: a card whose engine is still installing / starting says so.
+  const setupBadges = useSetupBadges();
   const openTaskDetail = useStore(s => s.openTaskDetail);
   const reorderAgents = useStore(s => s.reorderAgents);
   const renameAgent = useStore(s => s.renameAgent);
@@ -154,6 +160,11 @@ export function AgentStrip({ config }: AgentStripProps) {
             }}
             note={a.note}
             onEditNote={a.isGod ? undefined : () => setNoteEditId(a.id)}
+            // The orchestrator is the engine: a key it asked for, or a process that
+            // already exited (nothing usable behind it), is the "Connect your AI" moment.
+            needsConnection={simple && a.isGod === true && !setupBadges[a.id] && (engineNeedsKey || a.status === 'ghost')}
+            onConnect={openAiConnection}
+            setup={setupBadges[a.id]}
           />
           {/* The note itself lives INSIDE the card (its own row above the gauge).
               This is the transient EDITOR: a fixed popover ABOVE the card —
@@ -238,7 +249,7 @@ export function AgentStrip({ config }: AgentStripProps) {
         onClick={() => setAddAgentOpen(true)}
       >
         <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
-          <Icon name="plus" /> {t('agentStrip.addAgent')}
+          <Icon name="plus" /> {t('agentStrip.addAgent', simple ? { context: 'simple' } : undefined)}
         </span>
       </PixelButton>
       {/* ONE restore control, pinned to the strip's right edge. Busy (manual OR

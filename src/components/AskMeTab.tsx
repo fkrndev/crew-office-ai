@@ -8,6 +8,7 @@ import { type HiveTask, type HumanQA, openQuestion, waitsOnHuman } from './Tasks
 import { compareByNewestAsk } from './askMeOrder';
 import { isComposingKey } from '@shared/imeGuard';
 import { useRtl } from '@/i18n/useDirection';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 /**
  * ASK ME — first-class human feedback through the task system.
@@ -45,7 +46,11 @@ function dependentsTree(id: string, all: HiveTask[], seen = new Set<string>()): 
 }
 
 export function AskMeTab() {
-  const { t: translate } = useTranslation();
+  const { t: translate0 } = useTranslation();
+  // Simple mode: plain wording (`askMe.<key>_simple`; a missing variant falls back).
+  const simple = useIsSimpleMode();
+  const translate = (key: string, opts?: Record<string, unknown>): string =>
+    translate0(key, simple ? { ...opts, context: 'simple' } : opts);
   const rtl = useRtl();
   const agents = useStore((s) => s.agents);
   const restorable = useStore((s) => s.restorableAgents);

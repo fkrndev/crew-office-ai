@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore, selectedAgent } from '@/store/store';
+import { resolveUiMode } from '@shared/uiMode';
+import { useUiMode, persistUiMode, openAiConnection } from '@/hooks/useUiMode';
 import { startMockLoop, stopMockLoop } from '@/store/mockEvents';
 import type { HarnessConfig } from '@/store/config';
 import { DEFAULT_ORG_TRIGGER } from '@shared/triggers';
 import { OfficeFloor } from '@/scene/office/OfficeFloor';
 import { useHive } from '@/hooks/useHive';
+import { useEngineSetupFeed } from '@/hooks/useEngineSetupFeed';
+import { FirstRunProgress } from '@/components/FirstRunProgress';
 import { useRestoreTeam, dismissRestorePrompt } from '@/hooks/useRestoreTeam';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { useGodNameSync } from '@/i18n/useGodNameSync';
@@ -48,7 +52,15 @@ export function App() {
   useDirectionSync();
   // Let terminals that are ALREADY open follow a language switch too.
   useArabicTerminalSync();
+  // First-run progress: engine install / first-start events → per-agent store.
+  useEngineSetupFeed();
   const agent = useStore(selectedAgent);
+  // Simple mode = the essentials only (see src/shared/uiMode.ts). Legacy installs
+  // resolve to 'advanced', so everything below renders exactly as it always did.
+  const simple = useUiMode() === 'simple';
+  /** i18next context for the plain-language `key_simple` variants. */
+  const simpleCtx = simple ? { context: 'simple' } : undefined;
+  const engineNeedsKey = useStore(s => s.engineNeedsKey);
   const agents = useStore(s => s.agents);
   const agentCount = agents.length;
   const bootingGodName = useResolvedGodName();
@@ -123,6 +135,9 @@ export function App() {
   // Adopt a FULL config read: the state plus the store mirrors derived from it.
   const applyConfig = useCallback((c: HarnessConfig) => {
     setConfig(c);
+    // Mirror the RESOLVED layout mode (explicit uiMode, else derived from the
+    // onboarding audience) so every component can branch on it without a config.
+    useStore.getState().setUiMode(resolveUiMode(c));
     // Mirror the Free Flow flag into the store so the composer mic button shows
     // only when enabled (Settings keeps this in sync on save).
     // On unless explicitly turned off — the same default Settings shows.
@@ -441,13 +456,31 @@ export function App() {
             {t('app.floorBadge', { n: floorNumber() })}
           </span>
         )}
-        <span style={{
-          fontFamily: 'var(--cth-font-ui)',
-          fontSize: 13,
-          color: 'var(--cth-ink-500)'
-        }}>
-          {config.autoMode ? t('app.autoModeOn') : t('app.autoModeOff')}
-        </span>
+        {simple ? (
+          // Simple mode drops the technical chips ("auto mode on", the version) and
+          // leaves one quiet way back to everything.
+          <button
+            type="button"
+            className="cth-titlebar-nodrag"
+            data-testid="show-advanced-link"
+            onClick={() => { void persistUiMode('advanced'); }}
+            style={{
+              border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
+              fontFamily: 'var(--cth-font-ui)', fontSize: 13, color: 'var(--cth-ink-500)',
+              textDecoration: 'underline'
+            }}
+          >
+            {t('simpleMode.needMore')}
+          </button>
+        ) : (
+          <span style={{
+            fontFamily: 'var(--cth-font-ui)',
+            fontSize: 13,
+            color: 'var(--cth-ink-500)'
+          }}>
+            {config.autoMode ? t('app.autoModeOn') : t('app.autoModeOff')}
+          </span>
+        )}
         {/* v0.3.4: theme + fullscreen live HERE (top right), not buried in the
             terminal header — and the theme darkens the whole app, terminals
             included (design/theme.ts + tokens.css dark block). */}
@@ -504,6 +537,8 @@ export function App() {
             clean stroke icons rather than the 16x16 pixel set the rest of the UI
             is drawn in — at 16-18px a pixel-grid glyph reads as a rendering
             artifact next to the OS window controls, not as a style choice. */}
+        {/* Focus mode is the raw full-screen terminal — an advanced surface. */}
+        {(!simple || fullscreenAgentId) && (
         <button
           className="cth-titlebar-nodrag cth-tip"
           onClick={() => {
@@ -527,10 +562,11 @@ export function App() {
         >
           {fullscreenAgentId ? <CollapseGlyph /> : <ExpandGlyph />}
         </button>
+        )}
 
         {/* Multi-window floors (experimental, Settings → General): only while
             the flag is on. Ctrl+Shift+N does the same. */}
-        {multiWindowOn && (
+        {multiWindowOn && !simple && (
           <button
             className="cth-titlebar-nodrag cth-tip"
             onClick={() => { void openNewFloor(); }}
@@ -559,7 +595,7 @@ export function App() {
       }}>
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
           <OfficeFloor />
-          <MemoryPanel />
+          {!simple && <MemoryPanel />}
           {agentCount === 0 && godStatus === 'booting' && <MichaelBooting />}
           {agentCount === 0 && godStatus !== 'booting' && (
             <div style={{
@@ -568,14 +604,21 @@ export function App() {
               pointerEvents: 'none'
             }}>
               <div style={{ pointerEvents: 'auto', width: 360 }}>
-                <PixelPanel variant="dialog" title={t('app.emptyFloorTitle')} noPadding>
+                <PixelPanel variant="dialog" title={t('app.emptyFloorTitle', simpleCtx)} noPadding>
                   <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <p style={{ margin: 0, fontSize: 13, lineHeight: '20px' }}>
-                      {t('app.emptyFloorBody')}
+                      {t('app.emptyFloorBody', simpleCtx)}
                     </p>
-                    <PixelButton variant="primary" size="md" onClick={() => setAddAgentOpen(true)}>
+                    {/* Simple mode: nothing is running, so the one thing a first-time
+                        user can do is give the team an AI to run on. */}
+                    {simple && (
+                      <PixelButton variant="primary" size="md" onClick={openAiConnection}>
+                        {t('simpleMode.connectAi')}
+                      </PixelButton>
+                    )}
+                    <PixelButton variant={simple ? 'secondary' : 'primary'} size="md" onClick={() => setAddAgentOpen(true)}>
                       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                        <Icon name="plus" /> {t('app.addAgent')}
+                        <Icon name="plus" /> {t('app.addAgent', simpleCtx)}
                       </span>
                     </PixelButton>
                   </div>
@@ -595,6 +638,11 @@ export function App() {
           width: sidebarWidth, flexShrink: 0,
           minHeight: 0, display: 'flex', flexDirection: 'column'
         }}>
+          {/* First run: while the orchestrator's engine installs / starts for the
+              first time, say what is happening (simple mode: the main card;
+              advanced: one compact line). Renders nothing otherwise. */}
+          <FirstRunProgress agentId={agents.find((a) => a.isGod)?.id ?? 'god'} />
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {agent ? (
             <AgentDetailPanel agent={agent} />
           ) : godStatus === 'booting' ? (
@@ -606,9 +654,9 @@ export function App() {
               <div style={{
                 fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
                 color: 'var(--cth-ink-500)'
-              }}>{t('app.wakingFloor')}</div>
+              }}>{t('app.wakingFloor', simpleCtx)}</div>
               <p style={{ margin: 0, fontSize: 13, textAlign: 'center', color: 'var(--cth-ink-700)' }}>
-                {t('app.wakingDesc', { godName: bootingGodName })}
+                {t('app.wakingDesc', { godName: bootingGodName, ...simpleCtx })}
               </p>
             </PixelPanel>
           ) : (
@@ -620,17 +668,23 @@ export function App() {
               <div style={{
                 fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
                 color: 'var(--cth-ink-500)'
-              }}>{t('app.noAgentSelected')}</div>
+              }}>{t('app.noAgentSelected', simpleCtx)}</div>
               <p style={{ margin: 0, fontSize: 13, textAlign: 'center', color: 'var(--cth-ink-700)' }}>
-                {t('app.noAgentDesc')}
+                {t('app.noAgentDesc', simpleCtx)}
               </p>
+              {simple && engineNeedsKey && (
+                <PixelButton variant="primary" size="md" onClick={openAiConnection}>
+                  {t('simpleMode.connectAi')}
+                </PixelButton>
+              )}
               <PixelButton variant="secondary" size="md" onClick={() => setAddAgentOpen(true)}>
                 <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                  <Icon name="plus" /> {t('app.addAgent')}
+                  <Icon name="plus" /> {t('app.addAgent', simpleCtx)}
                 </span>
               </PixelButton>
             </PixelPanel>
           )}
+          </div>
         </div>
       </div>
 

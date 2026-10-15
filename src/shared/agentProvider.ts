@@ -169,7 +169,50 @@ export interface AgentProviderPreset {
   resumeSubcommand?: string; // CLIs that resume via a subcommand instead of a flag (Codex: `codex resume [OPTIONS] [SESSION_ID]`)
 }
 
+// ORDER MATTERS: this array is the one order every surface lists engines in (Add
+// Agent chips, the onboarding engine list, Settings, the setup catalog). Hermes is
+// FIRST — it is the recommended starting engine (bring any low-cost provider key;
+// Claude is billed to a subscription or API credits and is the pricier choice) —
+// then Claude, then the rest by how commonly they are used. Do not reorder to
+// "tidy up"; nothing may index into it by position (use providerPreset(id)).
 export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
+  {
+    // Hermes — Nous Research's agent CLI (NousResearch/hermes-agent).
+    // `hermes chat` opens the classic prompt_toolkit REPL — deterministic for
+    // a PTY. (An earlier preset used `--cli`; that flag does not exist on
+    // v0.15.x — argparse rejects it and the process exits instantly, which
+    // surfaced as a spawn that "never came up".)
+    // Non-hiveAware in the Claude-flag sense, BUT Hermes has a real hook
+    // bridge: install_hermes_hooks copies the user's config + env into a
+    // per-agent home and wires shell_hooks.py through the hive-hook shim's
+    // --hermes translator mode, so live status + Stop→inbox-drain work like
+    // agy/codex.
+    // Flags verified against the installed v0.15.2 parser: `chat` accepts
+    // --yolo (bypasses dangerous-command approvals — auto mode), -m/--model,
+    // --resume, -q would seed a first turn, but a long hive protocol on argv
+    // is fragile — type the protocol into the REPL instead.
+    id: 'hermes',
+    label: 'Hermes',
+    defaultCommand: 'hermes chat',
+    commandGroups: [],
+    autoModeFlag: '--yolo',
+    autoFlag: '--yolo',
+    supportsModel: true,
+    modelFlag: '--model',
+    hiveAware: false,
+    // Via the hermes hook bridge (shell_hooks.py → hive-hook --hermes).
+    canReceiveInbox: true,
+    initialPromptFlag: undefined,
+    seedDelivery: 'type-into-tui',
+    recommendedOrchestratorModel: undefined,
+    resumeFlag: '--resume',
+    // Official one-liner installer (bundles Python 3.14, Node, ripgrep, ffmpeg).
+    nativeInstallCommand: {
+      posix: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash',
+      win32: 'iex (irm https://hermes-agent.nousresearch.com/install.ps1)'
+    },
+    docsUrl: 'https://hermes-agent.nousresearch.com/docs'
+  },
   {
     id: 'claude',
     label: 'Claude Code',
@@ -247,44 +290,6 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     docsUrl: 'https://github.com/openai/codex'
   },
   {
-    id: 'grok',
-    label: 'Grok · xAI',
-    defaultCommand: 'grok',
-    commandGroups: GROK_COMMAND_GROUPS,
-    // Grok documents bypassPermissions as the CLI/config spelling of its
-    // always-approve mode. Deny rules and lifecycle gates still take precedence.
-    autoModeFlag: '--permission-mode bypassPermissions',
-    autoFlag: '--permission-mode bypassPermissions',
-    supportsModel: true,
-    modelFlag: '--model',
-    hiveAware: false,
-    // Grok supports Claude-compatible lifecycle events but sends camelCase
-    // payloads. The bridge normalizes them before forwarding to HookServer.
-    hookBridge: 'grok',
-    canReceiveInbox: true,
-    // `grok [PROMPT]` accepts the initial hive protocol as a positional prompt.
-    positionalInitialPrompt: true,
-    // Grok resumes interactively with `grok --resume <session-id-or-title>`.
-    resumeFlag: '--resume'
-  },
-  {
-    id: 'kimi',
-    label: 'Kimi Code',
-    defaultCommand: 'kimi',
-    commandGroups: [],
-    // Kimi --auto handles every approval and does not stop to ask questions,
-    // matching Agent Office's autonomous Claude/Codex default.
-    autoModeFlag: '--auto',
-    autoFlag: '--auto',
-    supportsModel: true,
-    modelFlag: '--model',
-    hiveAware: false,
-    // Kimi's interactive TUI has no positional initial-prompt form. It supports
-    // lifecycle hooks, but Agent Office does not yet install a Kimi hook bridge,
-    // so mail must bounce rather than being delivered with no drain path.
-    canReceiveInbox: false
-  },
-  {
     // Google's official Gemini CLI. Unlike Antigravity (`agy`), this is the
     // open-source `@google/gemini-cli` binary and uses Gemini's native settings
     // hooks (BeforeTool/AfterTool/BeforeAgent/AfterAgent/SessionStart).
@@ -324,28 +329,111 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     resumeFlag: '--conversation' // agy: resume a previous conversation by ID
   },
   {
-    // qwen-code — the Qwen CLI (a gemini-cli fork) driving any OpenAI-compatible
-    // endpoint (OPENAI_BASE_URL). It has no hook surface, so it rides a PROXY
-    // bridge (bridge.kind==='proxy'), with the OpenAI usage/tool-call shape.
-    id: 'qwen',
-    label: 'Qwen (local available)',
-    defaultCommand: 'qwen',
-    commandGroups: [],
-    // gemini-cli heritage: --yolo auto-approves all actions. // TODO-verify
-    autoModeFlag: '--yolo',
+    id: 'grok',
+    label: 'Grok · xAI',
+    defaultCommand: 'grok',
+    commandGroups: GROK_COMMAND_GROUPS,
+    // Grok documents bypassPermissions as the CLI/config spelling of its
+    // always-approve mode. Deny rules and lifecycle gates still take precedence.
+    autoModeFlag: '--permission-mode bypassPermissions',
+    autoFlag: '--permission-mode bypassPermissions',
     supportsModel: true,
     modelFlag: '--model',
-    autoFlag: '--yolo',
     hiveAware: false,
-    // SPIKE/TODO-verify: confirm qwen-code reads OPENAI_BASE_URL for its upstream
-    // ('serve' inboxDelivery is reserved for a later qwen-serve HTTP push path).
-    bridge: { kind: 'proxy', api: 'openai', baseUrlEnv: 'OPENAI_BASE_URL', inboxDelivery: 'terminal' },
+    // Grok supports Claude-compatible lifecycle events but sends camelCase
+    // payloads. The bridge normalizes them before forwarding to HookServer.
+    hookBridge: 'grok',
     canReceiveInbox: true,
-    // gemini-cli style interactive-orient flag. // TODO-verify
-    initialPromptFlag: '-i',
-    // Qwen's long-context coder model for the orchestrator. // TODO-verify
-    recommendedOrchestratorModel: 'qwen3-coder-plus',
-    resumeFlag: undefined
+    // `grok [PROMPT]` accepts the initial hive protocol as a positional prompt.
+    positionalInitialPrompt: true,
+    // Grok resumes interactively with `grok --resume <session-id-or-title>`.
+    resumeFlag: '--resume'
+  },
+  {
+    id: 'kimi',
+    label: 'Kimi Code',
+    defaultCommand: 'kimi',
+    commandGroups: [],
+    // Kimi --auto handles every approval and does not stop to ask questions,
+    // matching Agent Office's autonomous Claude/Codex default.
+    autoModeFlag: '--auto',
+    autoFlag: '--auto',
+    supportsModel: true,
+    modelFlag: '--model',
+    hiveAware: false,
+    // Kimi's interactive TUI has no positional initial-prompt form. It supports
+    // lifecycle hooks, but Agent Office does not yet install a Kimi hook bridge,
+    // so mail must bounce rather than being delivered with no drain path.
+    canReceiveInbox: false
+  },
+  {
+    // Cursor Agent CLI (`cursor-agent`, https://cursor.com/docs/cli). The official
+    // installer puts `cursor-agent` on PATH; `agent` is a shorter alias. Interactive
+    // TUI by default (no `-p`), so the session stays alive for hive mail via the
+    // renderer idle / work-order path — same class as Crush. Print mode (`-p`) is
+    // available for scripts but exits per turn; this preset intentionally does
+    // NOT use `-p` so Michael and workers remain god-eligible / inbox-capable.
+    // Models (including cheap gpt-5.6-luna-*) bill against Cursor credits via the
+    // logged-in CLI — there is no separate "plain OpenAI API" path for Luna.
+    id: 'cursor',
+    label: 'Cursor',
+    defaultCommand: 'cursor-agent',
+    commandGroups: [],
+    // --force/--yolo: allow tool calls without confirmations. --trust: skip the
+    // workspace trust prompt so unattended Mac Mini spawns do not stall. Gated by
+    // the floor config.autoMode toggle like every other engine.
+    autoModeFlag: '--force --trust',
+    autoFlag: '--force --trust',
+    supportsModel: true,
+    modelFlag: '--model', // e.g. gpt-5.6-luna-high, auto, composer-2.5
+    hiveAware: false,
+    // No Cursor hook bridge yet — mail delivery uses the terminal work-order /
+    // idle-nudge fallback (same honesty as Crush before its proxy is verified).
+    canReceiveInbox: true,
+    // `cursor-agent` parses early argv as Cobra-style commands (login, models, mcp, …).
+    // A long hive protocol string must NOT ride as a positional — type it into
+    // the TUI after boot instead (Crush pattern).
+    initialPromptFlag: undefined,
+    seedDelivery: 'type-into-tui',
+    recommendedOrchestratorModel: 'gpt-5.6-luna-high',
+    resumeFlag: '--resume',
+    // Official install is a curl|bash script (not npm). Prefer the native rung so
+    // a node-free machine can still self-heal. Trusted hardcoded constants only.
+    nativeInstallCommand: {
+      posix: 'curl https://cursor.com/install -fsS | bash',
+      win32: 'irm https://cursor.com/install?win32=true | iex'
+    },
+    docsUrl: 'https://cursor.com/docs/cli/install'
+  },
+  {
+    // GitHub Copilot CLI (`copilot`, npm @github/copilot). Driven in print mode:
+    // `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model]`, the
+    // documented non-interactive shape (single prompt, clean stdout, exits when
+    // done). Non-hiveAware: it has no --append-system-prompt/--settings, so the
+    // hive identity+protocol rides in as the initial prompt via `-p`.
+    id: 'copilot',
+    label: 'Copilot',
+    defaultCommand: 'copilot',
+    commandGroups: [],
+    // Non-interactive autonomy: -s prints only the agent's final response (clean
+    // stdout), --allow-all-tools never blocks on a permission prompt (env:
+    // COPILOT_ALLOW_ALL), --no-ask-user disables the ask_user tool so it never
+    // stops to ask. Gated by the floor `config.autoMode` toggle like the rest.
+    autoModeFlag: '-s --allow-all-tools --no-ask-user',
+    autoFlag: '-s --allow-all-tools --no-ask-user',
+    supportsModel: true,
+    modelFlag: '--model', // e.g. claude-sonnet-4.5 (default), gpt-5.4, or 'auto'
+    hiveAware: false, // no --append-system-prompt/--settings; protocol rides in via -p
+    initialPromptFlag: '-p', // copilot -p "<orchestrator/worker brief>" runs it non-interactively
+    recommendedOrchestratorModel: 'claude-sonnet-4.5', // Copilot's default; user may pick gpt-5.4
+    // Copilot supports session resume by id (`--resume=<id>`); attached only when a
+    // prior session id was recorded (no hook bridge captures it yet → best-effort).
+    resumeFlag: '--resume',
+    // Print mode exits per turn and there is no hook bridge to drain on idle, so a
+    // copilot worker can't receive routed inbox mail (it bounces to the god).
+    canReceiveInbox: false,
+    installCommand: 'npm install -g @github/copilot', // trusted, hardcoded
+    docsUrl: 'https://docs.github.com/copilot/concepts/agents/about-copilot-cli'
   },
   {
     // OpenCode — the TypeScript AI coding agent (opencode.ai / anomalyco/opencode,
@@ -501,110 +589,28 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     docsUrl: 'https://pi.dev/docs/latest'
   },
   {
-    // GitHub Copilot CLI (`copilot`, npm @github/copilot). Driven in print mode:
-    // `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model]`, the
-    // documented non-interactive shape (single prompt, clean stdout, exits when
-    // done). Non-hiveAware: it has no --append-system-prompt/--settings, so the
-    // hive identity+protocol rides in as the initial prompt via `-p`.
-    id: 'copilot',
-    label: 'Copilot',
-    defaultCommand: 'copilot',
+    // qwen-code — the Qwen CLI (a gemini-cli fork) driving any OpenAI-compatible
+    // endpoint (OPENAI_BASE_URL). It has no hook surface, so it rides a PROXY
+    // bridge (bridge.kind==='proxy'), with the OpenAI usage/tool-call shape.
+    id: 'qwen',
+    label: 'Qwen (local available)',
+    defaultCommand: 'qwen',
     commandGroups: [],
-    // Non-interactive autonomy: -s prints only the agent's final response (clean
-    // stdout), --allow-all-tools never blocks on a permission prompt (env:
-    // COPILOT_ALLOW_ALL), --no-ask-user disables the ask_user tool so it never
-    // stops to ask. Gated by the floor `config.autoMode` toggle like the rest.
-    autoModeFlag: '-s --allow-all-tools --no-ask-user',
-    autoFlag: '-s --allow-all-tools --no-ask-user',
-    supportsModel: true,
-    modelFlag: '--model', // e.g. claude-sonnet-4.5 (default), gpt-5.4, or 'auto'
-    hiveAware: false, // no --append-system-prompt/--settings; protocol rides in via -p
-    initialPromptFlag: '-p', // copilot -p "<orchestrator/worker brief>" runs it non-interactively
-    recommendedOrchestratorModel: 'claude-sonnet-4.5', // Copilot's default; user may pick gpt-5.4
-    // Copilot supports session resume by id (`--resume=<id>`); attached only when a
-    // prior session id was recorded (no hook bridge captures it yet → best-effort).
-    resumeFlag: '--resume',
-    // Print mode exits per turn and there is no hook bridge to drain on idle, so a
-    // copilot worker can't receive routed inbox mail (it bounces to the god).
-    canReceiveInbox: false,
-    installCommand: 'npm install -g @github/copilot', // trusted, hardcoded
-    docsUrl: 'https://docs.github.com/copilot/concepts/agents/about-copilot-cli'
-  },
-  {
-    // Cursor Agent CLI (`cursor-agent`, https://cursor.com/docs/cli). The official
-    // installer puts `cursor-agent` on PATH; `agent` is a shorter alias. Interactive
-    // TUI by default (no `-p`), so the session stays alive for hive mail via the
-    // renderer idle / work-order path — same class as Crush. Print mode (`-p`) is
-    // available for scripts but exits per turn; this preset intentionally does
-    // NOT use `-p` so Michael and workers remain god-eligible / inbox-capable.
-    // Models (including cheap gpt-5.6-luna-*) bill against Cursor credits via the
-    // logged-in CLI — there is no separate "plain OpenAI API" path for Luna.
-    id: 'cursor',
-    label: 'Cursor',
-    defaultCommand: 'cursor-agent',
-    commandGroups: [],
-    // --force/--yolo: allow tool calls without confirmations. --trust: skip the
-    // workspace trust prompt so unattended Mac Mini spawns do not stall. Gated by
-    // the floor config.autoMode toggle like every other engine.
-    autoModeFlag: '--force --trust',
-    autoFlag: '--force --trust',
-    supportsModel: true,
-    modelFlag: '--model', // e.g. gpt-5.6-luna-high, auto, composer-2.5
-    hiveAware: false,
-    // No Cursor hook bridge yet — mail delivery uses the terminal work-order /
-    // idle-nudge fallback (same honesty as Crush before its proxy is verified).
-    canReceiveInbox: true,
-    // `cursor-agent` parses early argv as Cobra-style commands (login, models, mcp, …).
-    // A long hive protocol string must NOT ride as a positional — type it into
-    // the TUI after boot instead (Crush pattern).
-    initialPromptFlag: undefined,
-    seedDelivery: 'type-into-tui',
-    recommendedOrchestratorModel: 'gpt-5.6-luna-high',
-    resumeFlag: '--resume',
-    // Official install is a curl|bash script (not npm). Prefer the native rung so
-    // a node-free machine can still self-heal. Trusted hardcoded constants only.
-    nativeInstallCommand: {
-      posix: 'curl https://cursor.com/install -fsS | bash',
-      win32: 'irm https://cursor.com/install?win32=true | iex'
-    },
-    docsUrl: 'https://cursor.com/docs/cli/install'
-  },
-  {
-    // Hermes — Nous Research's agent CLI (NousResearch/hermes-agent).
-    // `hermes chat` opens the classic prompt_toolkit REPL — deterministic for
-    // a PTY. (An earlier preset used `--cli`; that flag does not exist on
-    // v0.15.x — argparse rejects it and the process exits instantly, which
-    // surfaced as a spawn that "never came up".)
-    // Non-hiveAware in the Claude-flag sense, BUT Hermes has a real hook
-    // bridge: install_hermes_hooks copies the user's config + env into a
-    // per-agent home and wires shell_hooks.py through the hive-hook shim's
-    // --hermes translator mode, so live status + Stop→inbox-drain work like
-    // agy/codex.
-    // Flags verified against the installed v0.15.2 parser: `chat` accepts
-    // --yolo (bypasses dangerous-command approvals — auto mode), -m/--model,
-    // --resume, -q would seed a first turn, but a long hive protocol on argv
-    // is fragile — type the protocol into the REPL instead.
-    id: 'hermes',
-    label: 'Hermes',
-    defaultCommand: 'hermes chat',
-    commandGroups: [],
+    // gemini-cli heritage: --yolo auto-approves all actions. // TODO-verify
     autoModeFlag: '--yolo',
-    autoFlag: '--yolo',
     supportsModel: true,
     modelFlag: '--model',
+    autoFlag: '--yolo',
     hiveAware: false,
-    // Via the hermes hook bridge (shell_hooks.py → hive-hook --hermes).
+    // SPIKE/TODO-verify: confirm qwen-code reads OPENAI_BASE_URL for its upstream
+    // ('serve' inboxDelivery is reserved for a later qwen-serve HTTP push path).
+    bridge: { kind: 'proxy', api: 'openai', baseUrlEnv: 'OPENAI_BASE_URL', inboxDelivery: 'terminal' },
     canReceiveInbox: true,
-    initialPromptFlag: undefined,
-    seedDelivery: 'type-into-tui',
-    recommendedOrchestratorModel: undefined,
-    resumeFlag: '--resume',
-    // Official one-liner installer (bundles Python 3.14, Node, ripgrep, ffmpeg).
-    nativeInstallCommand: {
-      posix: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash',
-      win32: 'iex (irm https://hermes-agent.nousresearch.com/install.ps1)'
-    },
-    docsUrl: 'https://hermes-agent.nousresearch.com/docs'
+    // gemini-cli style interactive-orient flag. // TODO-verify
+    initialPromptFlag: '-i',
+    // Qwen's long-context coder model for the orchestrator. // TODO-verify
+    recommendedOrchestratorModel: 'qwen3-coder-plus',
+    resumeFlag: undefined
   },
   {
     // `openclaw tui --local` runs the embedded agent runtime standalone (same
@@ -686,7 +692,29 @@ export function normalizeAgentProvider(value: unknown): AgentProvider | undefine
 }
 
 export function providerPreset(provider: AgentProvider): AgentProviderPreset {
-  return AGENT_PROVIDER_PRESETS.find((p) => p.id === provider) ?? AGENT_PROVIDER_PRESETS[0];
+  // An unknown id falls back to Claude BY ID — not to [0], which is Hermes now.
+  // Legacy configs/agents with no provider have always meant Claude.
+  return (
+    AGENT_PROVIDER_PRESETS.find((p) => p.id === provider) ??
+    AGENT_PROVIDER_PRESETS.find((p) => p.id === 'claude')!
+  );
+}
+
+/** The engine a brand-new install starts on (onboarding preselect, nothing
+ *  installed). Distinct from the RUNTIME fallback for a config that has no
+ *  `godProvider` — that stays 'claude' so an install that predates the Hermes
+ *  default is never silently switched engines. */
+export const NEW_INSTALL_ENGINE: AgentProvider = 'hermes';
+
+/** The engine a config with NO stored `godProvider` runs. Always Claude — the
+ *  value every existing install has been running since before the Hermes-first
+ *  change. Only the onboarding wizard (which now writes `godProvider`
+ *  explicitly) moves new installs off it. */
+export const LEGACY_ENGINE: AgentProvider = 'claude';
+
+/** Resolve the orchestrator engine from a (possibly legacy) config. */
+export function resolveGodProvider(config: { godProvider?: AgentProvider } | null | undefined): AgentProvider {
+  return config?.godProvider ?? LEGACY_ENGINE;
 }
 
 export function isClaudeProvider(provider: AgentProvider | undefined): boolean {

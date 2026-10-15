@@ -49,26 +49,39 @@
   },
   "badge": {
     "idle": "menganggur",
+    "idle_simple": "siap",
     "thinking": "bekerja",
+    "thinking_simple": "bekerja",
     "working": "bekerja",
+    "working_simple": "bekerja",
     "waiting": "menunggu",
+    "waiting_simple": "menunggu",
     "blocked": "butuh kamu",
+    "blocked_simple": "butuh Anda",
     "success": "selesai",
+    "success_simple": "selesai",
     "ghost": "terputus",
+    "ghost_simple": "offline",
     "compacting": "meringkas",
+    "compacting_simple": "merapikan",
     "looping": "looping",
-    "typing": "draf menunggu"
+    "looping_simple": "macet?",
+    "typing": "draf menunggu",
+    "typing_simple": "Anda mengetik"
   },
   "agentControl": {
     "deliveryPaused": "pesan antrean ditahan (seluruh lantai)",
     "halting": "berhenti setelah langkah ini…",
     "steersQueued": "{{count}} catatan menunggu",
     "steerPlaceholder": "kirim catatan ke agent ini — disampaikan sebagai konteks di giliran berikutnya",
+    "steerPlaceholder_simple": "beri tahu rekan tim ini sesuatu yang baru",
     "steer": "catat",
+    "steer_simple": "kirim",
     "flashResumed": "tool diizinkan lagi",
     "flashPaused": "tool diblokir mulai panggilan berikutnya",
     "flashHalt": "akan berhenti setelah langkah saat ini",
     "flashSteer": "catatan diantrekan, tiba di giliran berikutnya",
+    "flashSteer_simple": "terkirim — akan dibacanya di langkah berikutnya",
     "export": "ekspor",
     "exportTip": "Simpan sesi agent ini — identitas, penggunaan token/biaya, pesan inbox, dan output terminal terbaru — sebagai file Markdown di folder yang kamu pilih.",
     "exportAria": "Ekspor sesi agen ini sebagai Markdown",
@@ -82,11 +95,17 @@
     "blockToolsTip": "Agen tetap berpikir dan bicara denganmu, tapi tidak bisa membaca, menulis, atau menjalankan apa pun sampai kamu mengizinkannya lagi. Langsung berlaku, dan bisa dibatalkan.",
     "blockToolsAria": "Blokir agen ini dari pemakaian tool",
     "stopAfterStep": "berhenti setelah langkah ini",
+    "stopAfterStep_simple": "hentikan",
     "stopAfterStepTip": "Biarkan ia menyelesaikan langkah yang sedang berjalan, lalu berhenti. Proses dan sesinya tetap hidup, jadi restart & lanjutkan bisa mengangkatnya kembali. Untuk mengakhiri proses sepenuhnya, pakai tombol X.",
+    "stopAfterStepTip_simple": "Biarkan ia menyelesaikan yang sedang dikerjakan, lalu berhenti. Untuk mengeluarkannya dari tim sepenuhnya, gunakan tombol X.",
     "stopAfterStepAria": "Hentikan agen ini setelah langkah saat ini",
+    "stopAfterStepAria_simple": "Hentikan rekan tim ini",
     "steerTip": "Menyerahkan catatan ke agen di batas giliran berikutnya. Tidak mengganggu apa yang sedang ia kerjakan, dan tidak ada yang diketik ke terminalnya.",
+    "steerTip_simple": "Mengirim catatan yang akan dibacanya sebelum langkah berikutnya. Ini tidak mengganggu yang sedang dikerjakan.",
     "steerAria": "Kirim catatan ke agen ini",
-    "haltConfirm": "Hentikan agen ini? Ia berhenti dari apa yang sedang dikerjakan sekarang."
+    "steerAria_simple": "Kirim catatan ke rekan tim ini",
+    "haltConfirm": "Hentikan agen ini? Ia berhenti dari apa yang sedang dikerjakan sekarang.",
+    "haltConfirm_simple": "Hentikan rekan tim ini? Ia berhenti dari yang sedang dikerjakan sekarang juga."
   },
   "agentCard": {
     "boss": "BOS",
@@ -102,12 +121,16 @@
   "askMe": {
     "emptyTitle": "Tidak ada yang butuh kamu sekarang. 🌿",
     "emptySub": "Saat tim menahan tugas karena butuh masukanmu — pertanyaan untuk dijawab atau hal yang hanya bisa kamu lakukan — tugas itu muncul di sini (dan di papan TANYA SAYA di lantai).",
+    "emptySub_simple": "Saat tim Anda butuh jawaban, atau sesuatu yang hanya bisa Anda lakukan, hal itu muncul di sini.",
     "openDetail": "buka detail tugas lengkap",
     "dismissTitle": "abaikan — hapus dari papan TANYA SAYA tanpa menjawab (riwayat tetap tersimpan)",
+    "dismissTitle_simple": "tutup — hapus ini tanpa menjawab",
     "dismissAria": "abaikan permintaan ini",
     "answerPlaceholder": "Jawabanmu — atau 'done', beserta hasilnya… (Ctrl+Enter untuk mengirim)",
+    "answerPlaceholder_simple": "Ketik jawaban Anda, atau 'selesai'… (Ctrl+Enter untuk mengirim)",
     "sending": "mengirim…",
     "respond": "jawab & buka blokir",
+    "respond_simple": "kirim jawaban",
     "viewAnswers": "LIHAT {{count}} JAWABAN SEBELUMNYA",
     "viewAnswersPlural": "LIHAT {{count}} JAWABAN SEBELUMNYA",
     "viewAnswersHistory": "buka detail tugas dengan riwayat tanya jawab lengkap",
@@ -124,6 +147,7 @@
     "notePlaceholder": "satu baris per poin…",
     "oneLineOneBullet": "satu baris = satu poin · esc untuk menutup",
     "addAgent": "tambah agen",
+    "addAgent_simple": "tambah rekan tim",
     "restoringTitle": "Agen dari sesi sebelumnya sedang di-respawn dengan id aslinya, jadi memori dan inbox tersambung kembali.",
     "restoreTitle": "Sesi sebelumnya: {{names}}",
     "restoringTeam": "memulihkan timmu…",
@@ -226,7 +250,10 @@
       "autonomyBudgets": "Otonomi & Anggaran",
       "connections": "Koneksi",
       "voice": "Suara",
-      "memoryKnowledge": "Memori & Pengetahuan"
+      "memoryKnowledge": "Memori & Pengetahuan",
+      "aiConnection": "Koneksi AI",
+      "updates": "Pembaruan",
+      "about": "Tentang"
     },
     "changeHome": {
       "newHome": "Folder rumah baru",
@@ -245,11 +272,13 @@
       "keepAwakeDesc": "Mencegah layar tidur agar jadwal dan terminal tetap berjalan tepat waktu. Menguras baterai — paling baik saat tersambung daya.",
       "simpleMode": "Jelaskan dengan bahasa sederhana",
       "simpleModeDesc": "Agen memberimu penjelasan dalam bahasa sehari-hari, bukan singkatan teknis.",
+      "simpleModeDesc_simple": "Tim Anda menjelaskan dengan bahasa sehari-hari yang sederhana.",
       "multiWindow": "Banyak jendela (eksperimental)",
       "multiWindowDesc": "Memungkinkan membuka jendela tambahan (\"lantai\"), masing-masing dengan daftar agen dan terminalnya sendiri. Semua lantai berbagi satu hive dengan jendela pertama, dan menutup jendela pertama akan menutup aplikasi. Berlaku setelah Simpan. Nonaktif secara default.",
       "notifications": "Notifikasi",
       "desktopNotifications": "Notifikasi desktop",
       "desktopNotificationsDesc": "Toast bawaan saat agen selesai atau butuh masukanmu.",
+      "desktopNotificationsDesc_simple": "Dapatkan notifikasi saat rekan tim selesai atau membutuhkan Anda.",
       "maintenance": "Pemeliharaan",
       "autoCompact": "Pemadatan otomatis terjadwal",
       "autoCompactDesc": "Mengantrekan perintah compact milik tiap engine (/compact, /compress…) untuk setiap agen sesuai jadwal (setiap jam secara default; interval di tab Pemicu). Engine tanpa perintah yang dikenal (Crush, Copilot, Cursor, OpenClaw, custom) dilewati. Nonaktif secara default — agen yang berjalan lama bisa kehabisan konteks tanpanya.",
@@ -259,6 +288,7 @@
       "telemetryDesc": "Segelintir event anonim (aplikasi dibuka, agen di-spawn, fitur dipakai) — tidak pernah prompt, kode, path, atau output agen. Daftar lengkap di TELEMETRY.md.",
       "language": "Bahasa",
       "languageDesc": "Pilih bahasa untuk antarmuka aplikasi. Bahasa Indonesia adalah default; Inggris adalah fallback untuk string yang hilang.",
+      "languageDesc_simple": "Pilih bahasa yang ingin Anda gunakan untuk membaca aplikasi.",
       "dangerZone": "ZONA BERBAHAYA",
       "dangerDesc": "Reset menghapus memori {{godName}}, semua data aplikasi (setiap agent, pesan, tugas, dan papan), indeks memori, dan semua pengaturan — lalu mengembalikan kamu ke onboarding.",
       "resetStartOver": "reset & mulai dari awal",
@@ -400,7 +430,9 @@
   },
   "commandCenter": {
     "title": "PUSAT KOMANDO",
+    "title_simple": "TIM ANDA",
     "runsTheFloor": "{{name}} mengatur lantai",
+    "runsTheFloor_simple": "{{name}} memimpin tim Anda",
     "deliveryPaused": "dijeda",
     "deliveryAuto": "otomatis",
     "deliveryPausedTitle": "Pesan antrean sedang ditahan untuk SETIAP agen di lantai. Tidak ada yang hilang; pesan terkirim saat kamu mengaktifkan ini kembali.",
@@ -409,9 +441,11 @@
     "ide": "IDE",
     "tabs": {
       "terminal": "terminal",
+      "terminal_simple": "bicara",
       "floor": "monitor",
       "tasks": "tugas",
       "human": "tanya saya",
+      "human_simple": "pertanyaan",
       "triggers": "pemicu",
       "history": "riwayat",
       "memory": "memori",
@@ -476,9 +510,11 @@
     "board": "PAPAN",
     "boardEmpty": "Papan masih kosong.",
     "logSpawn": "men-spawn {{name}}",
+    "logSpawn_simple": "{{name}} bergabung dengan tim",
     "logMessage": "{{from}} → {{to}}: {{subject}}",
     "logDrain": "{{agent}} mengosongkan {{count}} pesan",
     "logEscalate": "dieskalasi ke manusia: {{subject}}",
+    "logEscalate_simple": "bertanya kepada Anda: {{subject}}",
     "logApprovalGranted": "persetujuan diberikan",
     "logApprovalDenied": "persetujuan ditolak",
     "tokenLimitTitle": "Atur batas token agen ini (token kerja: input + output + penulisan cache; pembacaan cache tidak dihitung)",
@@ -506,6 +542,7 @@
   },
   "addAgent": {
     "title": "TAMBAH AGEN",
+    "title_simple": "TAMBAH REKAN TIM",
     "hireImported": "rekrutan impor:",
     "byAuthor": " · oleh {{author}}",
     "reviewFields": "periksa setiap kolom — terutama command-nya — sebelum spawn.",
@@ -546,6 +583,7 @@
     "saveAsProject": "simpan sebagai proyek",
     "saveAsProjectTitle": "Simpan folder ini ke proyekmu agar nanti tinggal sekali klik",
     "gitIsolation": "Isolasi git (worktree sendiri)",
+    "gitIsolation_simple": "Bekerja pada salinan file sendiri (lebih aman)",
     "resumeSession": "Lanjutkan session ID (opsional)",
     "resumePlaceholder": "tempel session id {{provider}} untuk melanjutkan percakapannya",
     "folderFromSession": "folder diambil dari sesi: {{path}}",
@@ -604,7 +642,9 @@
     "importHireBtn": "impor rekrutan…",
     "importHireBtnTitle": "Impor manifest rekrutan (.json)",
     "spawn": "buat",
+    "spawn_simple": "Tambah rekan tim",
     "spawning": "membuat...",
+    "spawning_simple": "Menambahkan…",
     "errName": "Nama wajib diisi",
     "errFolder": "Pilih folder dulu",
     "errCommand": "Command wajib diisi",
@@ -616,6 +656,7 @@
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
     "shardxProfileHint": "Satu profil launcher = satu akun yang login. Kosongkan dan agen ini dapat profil office-<id> sendiri. Isi nama untuk mengikat ke profil akun yang sudah ada — share antar agen HANYA kalau mereka kerja untuk akun yang sama.",
     "needsKey": "⚠ {{provider}} tidak menemukan API key dari aplikasi ini. Jika muncul prompt setup, selesaikan di terminal agen (Hermes: `hermes setup`), atau simpan key di Pengaturan → Agents & Models",
+    "needsKey_simple": "⚠ {{provider}} membutuhkan kunci Anda. Tekan “Hubungkan AI Anda” untuk menambahkannya.",
     "needsShardx": "⚠ butuh setup shardx — jalankan Pengaturan → MCP → Set up",
     "hireSkipped": "Melewati {{n}} berkas tidak valid: {{errors}}",
     "spawnFailed": "gagal menjalankan agen",
@@ -685,13 +726,13 @@
       }
     },
     "providerBlurb": {
-      "claude": "Claude Code — Anthropic",
+      "claude": "Claude Code — Anthropic. Memakai langganan Claude atau kredit API Anda (biaya lebih tinggi).",
       "codex": "Codex — OpenAI",
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — menjalankan model Qwen lokal di mesinmu",
       "gemini": "Gemini CLI - Google Gemini",
       "cursor": "Cursor Agent CLI — memakai kredit Cursor-mu (Luna, Composer, …)",
-      "hermes": "Hermes — Nous Research. Memakai provider dan model dari setup Hermes-mu sendiri."
+      "hermes": "Hermes — Nous Research. Engine awal yang disarankan: bisa memakai penyedia AI berbiaya rendah (siapkan kunci)."
     },
     "home": {
       "descPlain": "Buat folder kosong baru untuk dijadikan rumah aplikasi. Semua yang diingat aplikasi — pengaturannya sendiri dan memori agen-agenmu — disimpan di sini. Sesuatu seperti ~/HarnessAgents cocok. Kami akan membuatkannya jika belum ada.",
@@ -762,6 +803,37 @@
     "checking": "memeriksa…",
     "checkAgain": "periksa lagi",
     "installInstructions": "petunjuk pemasangan"
+  },
+  "quickStart": {
+    "title": "LANGKAH 2 DARI 4 · HUBUNGKAN AI ANDA",
+    "intro": "Tim AI Anda butuh layanan AI untuk berpikir. Menghubungkannya hanya sekitar satu menit.",
+    "whatIsKeyHead": "APA ITU KUNCI API?",
+    "whatIsKey": "Kunci API itu seperti kata sandi yang memungkinkan aplikasi ini memakai layanan AI untuk Anda. Anda membuatnya di situs penyedia, menyalinnya, lalu menempelkannya di bawah. Kunci hanya tersimpan di komputer ini.",
+    "chooseHead": "PILIH LAYANAN",
+    "recommended": "DISARANKAN",
+    "openrouterBlurb": "Satu akun, banyak model AI. Tempat paling mudah untuk memulai.",
+    "deepseekBlurb": "Langsung dari DeepSeek. Pilihan hemat biaya yang bagus jika Anda lebih suka.",
+    "openKeyPage": "buka halaman daftar / kunci",
+    "stepsHint": "1. Buka halamannya, daftar, lalu buat kunci.  2. Salin kuncinya dan tempel di bawah.",
+    "keyLabel": "KUNCI API ANDA",
+    "keyPlaceholder": "Tempel kunci Anda di sini",
+    "skipNote": "Belum punya kunci? Tekan Berikutnya untuk melewati — Anda bisa menambahkannya nanti di Pengaturan, dan aplikasi akan mengingatkan.",
+    "costNote": "Anda membayar sesuai pemakaian di penyedia. Anda bisa menetapkan batas pengeluaran di akun penyedia Anda.",
+    "installNote": "Engine AI (Hermes) dipasang otomatis saat asisten Anda pertama kali berjalan. Ini bisa memakan waktu beberapa menit.",
+    "hermesInstalledNote": "Hermes sudah ada di komputer ini. Jika sudah diatur dengan penyedia AI-nya sendiri, gunakan \"Saya sudah memakai…\" di bawah.",
+    "advanced": "Lanjutan",
+    "modelLabel": "Model",
+    "modelNote": "Kami memilih model berbiaya rendah yang cocok untuk kebanyakan tugas. Ubah hanya jika Anda memang ingin model lain.",
+    "errShort": "Ini terlalu pendek untuk sebuah kunci lengkap. Pastikan Anda menyalin seluruhnya.",
+    "errWhitespace": "Kunci tidak mengandung spasi atau baris baru. Periksa apakah Anda menyalinnya dengan tepat.",
+    "hintPrefix": "Kunci {{provider}} biasanya diawali \"{{prefix}}\". Periksa lagi apakah Anda menyalin kunci yang benar.",
+    "checking": "Memeriksa kunci Anda…",
+    "checkOk": "Kunci Anda berfungsi.",
+    "checkRejected": "{{provider}} tidak menerima kunci itu. Periksa apakah Anda menyalin seluruhnya — atau tekan Berikutnya lagi untuk tetap lanjut.",
+    "checkUnreachable": "Tidak dapat menghubungi {{provider}} untuk memeriksa kunci (apakah Anda offline?). Tekan Berikutnya lagi untuk tetap lanjut.",
+    "useCli": "Saya sudah memakai Claude / Codex / CLI lain",
+    "useQuick": "Baru memulai? Mulai cepat: hubungkan dengan kunci API",
+    "saveFailed": "Tidak dapat menyimpan kunci Anda: {{error}}"
   },
   "office": {
     "gpuError": "Lantai kantor kehilangan konteks GPU-nya.\n\nTerlalu banyak terminal memakai GPU sekaligus.\nTutup beberapa terminal agen, atau restart aplikasinya, untuk mengembalikannya.",
@@ -1392,12 +1464,17 @@
   "kanban": {
     "count": "{{count}} tugas",
     "newWorkHint": "ada pekerjaan baru? tugaskan ke {{godName}} (tab monitor)",
+    "newWorkHint_simple": "ada pekerjaan baru? minta ke {{godName}} di tab Bicara",
     "colTodo": "TODO",
+    "colTodo_simple": "AKAN DIKERJAKAN",
     "colDoing": "PROSES",
+    "colDoing_simple": "SEDANG DIKERJAKAN",
     "colBlocked": "TERBLOKIR",
+    "colBlocked_simple": "MENUNGGU",
     "colDone": "SELESAI",
     "openTaskDetails": "buka detail tugas",
     "needsYouTitle": "menunggu jawabanMU — lihat tab TANYA SAYA",
+    "needsYouTitle_simple": "menunggu jawaban Anda — lihat tab PERTANYAAN",
     "dismissTitle": "abaikan tugas ini (menghapusnya dari papan)",
     "dismissAria": "abaikan tugas",
     "taskTitle": "TUGAS",
@@ -1416,6 +1493,7 @@
     "transcribing": "mentranskripsi…",
     "voice": "suara",
     "busyQueued": "{{name}} sibuk — {{count}} antre",
+    "busyQueued_simple": "{{name}} sedang sibuk — {{count}} menunggu dikirim",
     "heldFloor": "ditahan — pengiriman dijeda di seluruh lantai",
     "heldDraft": "ditahan — terminal {{name}} punya teks yang belum terkirim di prompt-nya",
     "heldPicker": "ditahan — pemilih slash-command terbuka di terminal {{name}}",
@@ -1424,6 +1502,7 @@
     "pausedTitle": "Pengiriman otomatis dijeda untuk seluruh lantai. Lanjutkan di Pusat Komando, atau pakai \"kirim sekarang\" pada pesan di bawah.",
     "dropToAttach": "LEPASKAN UNTUK MELAMPIRKAN",
     "queue": "ANTREAN",
+    "queue_simple": "MENUNGGU DIKIRIM",
     "closePicker": "tutup pemilih",
     "recoverPrompt": "pulihkan prompt",
     "clearAllTitle": "Hapus semua pesan antrean",
@@ -1431,6 +1510,7 @@
     "removeAttachment": "Hapus lampiran",
     "messagePlaceholder": "Pesan untuk {{name}}",
     "busyPlaceholder": "{{name}} sibuk — antrekan pesan",
+    "busyPlaceholder_simple": "{{name}} sedang sibuk — pesan Anda akan dikirim saat ia senggang",
     "files": "file",
     "collapse": "Ciutkan pesan ini",
     "showFull": "Tampilkan pesan lengkap",
@@ -1560,6 +1640,7 @@
   },
   "editAgent": {
     "title": "EDIT AGENT",
+    "title_simple": "UBAH REKAN TIM",
     "provider": "Provider",
     "model": "Model",
     "description": "Deskripsi",
@@ -1568,10 +1649,13 @@
     "modelDefaultTitle": "Model default CLI",
     "engineNote": "Perubahan engine disimpan untuk restart berikutnya. Gunakan Command Center → Floor untuk restart sesi live ke provider/model baru sekarang.",
     "goalLabel": "Tujuan (opsional)",
+    "goalLabel_simple": "Apa yang harus dikerjakan rekan tim ini?",
     "goalPlaceholder": "direktif long-running yang disuntik di setiap prompt",
+    "goalPlaceholder_simple": "jelaskan tugasnya dalam satu atau dua kalimat",
     "descriptionPlaceholder": "untuk apa agent ini",
     "namePlaceholder": "Stanley",
     "saveChanges": "simpan perubahan",
+    "saveChanges_simple": "simpan",
     "unsavedWarning": "Ada perubahan agent yang belum disimpan. Buang?"
   },
   "updateToast": {
@@ -1624,13 +1708,20 @@
     "newFloor": "Lantai baru (Ctrl+Shift+N)",
     "floorBadge": "Lantai {{n}}",
     "wakingFloor": "FLOOR BANGUN",
+    "wakingFloor_simple": "BERSIAP",
     "wakingDesc": "{{godName}} sedang masuk. Terminal akan muncul di sini setelah ia duduk.",
+    "wakingDesc_simple": "{{godName}} sedang bersiap. Percakapan akan muncul di sini sebentar lagi.",
     "noAgentSelected": "BELUM ADA AGENT DIPILIH",
+    "noAgentSelected_simple": "BELUM ADA REKAN TIM DIPILIH",
     "noAgentDesc": "Spawn agent dari strip di bawah. Terminal dan command bar akan muncul di sini.",
+    "noAgentDesc_simple": "Tambahkan rekan tim dari bilah di bawah. Percakapannya akan muncul di sini.",
     "addAgent": "tambah agent",
+    "addAgent_simple": "tambah rekan tim",
     "productName": "Agent Office",
     "emptyFloorTitle": "LANTAI KOSONG",
+    "emptyFloorTitle_simple": "SELAMAT DATANG",
     "emptyFloorBody": "Belum ada agen di lantai. Buat satu untuk melihat output terminal langsungnya mengalir di sini.",
+    "emptyFloorBody_simple": "Tim Anda masih kosong. Hubungkan AI Anda, lalu tambahkan rekan tim pertama.",
     "loadFailedTitle": "GAGAL MEMULAI",
     "loadFailedBody": "Aplikasi tidak dapat membaca pengaturannya, jadi belum bisa dibuka.",
     "retry": "coba lagi",
@@ -1639,6 +1730,7 @@
   },
   "ptyTerminal": {
     "livePty": "langsung · terminal {{id}}",
+    "livePty_simple": "percakapan langsung",
     "zoomOut": "Perkecil (Ctrl -)",
     "zoomReset": "Reset zoom (Ctrl 0)",
     "zoomIn": "Perbesar (Ctrl +)",
@@ -1749,5 +1841,180 @@
     },
     "noUsage": "{{provider}} tidak melaporkan token atau biaya, jadi meter biaya, indikator konteks, dan anggaran token agen ini tetap kosong.",
     "ownSkills": "Skill dari tab Skills dipasang untuk Claude Code. {{provider}} membaca folder skill-nya sendiri, jadi skill itu tidak muncul untuk agen ini."
+  },
+  "conversation": {
+    "regionLabel": "Percakapan dengan {{name}}",
+    "you": "Anda",
+    "saidYou": "Anda berkata:",
+    "saidAssistant": "{{name}} berkata:",
+    "emptyTitle": "Sapa {{name}}…",
+    "emptyBody": "Ketik pesan di bawah lalu tekan Enter. {{name}} akan merencanakan pekerjaan, meminta bantuan tim Anda, dan melapor kembali di sini.",
+    "working": "{{name}} sedang mengerjakannya…",
+    "jumpToLatest": "Ke pesan terbaru",
+    "pendingWaiting": "Menunggu dikirim",
+    "pendingSending": "Mengirim…",
+    "teamUpdate": "{{name}} menerima kabar dari tim",
+    "showTerminal": "Tampilkan terminal langsung",
+    "hideTerminal": "Sembunyikan terminal langsung",
+    "noteStarting": "{{name}} sedang bersiap… obrolan akan muncul di sini sebentar lagi. Sementara itu, ini yang terjadi di balik layar.",
+    "noteUnsupported": "Untuk AI ini, balasan {{name}} muncul di terminal langsung di bawah.",
+    "noteUnreadable": "Percakapan ini belum bisa ditampilkan sebagai obrolan, jadi terminal langsung ditampilkan."
+  },
+  "simpleMode": {
+    "needMore": "Butuh lebih? Tampilkan opsi lanjutan",
+    "connectAi": "Hubungkan AI Anda",
+    "status": {
+      "idle": "Siap bekerja",
+      "thinking": "Sedang berpikir…",
+      "working": "Sedang mengerjakan…",
+      "waiting": "Menunggu rekan tim",
+      "blocked": "Butuh jawaban Anda",
+      "success": "Selesai",
+      "ghost": "Offline",
+      "compacting": "Merapikan catatannya…",
+      "looping": "Sepertinya macet — coba periksa",
+      "typing": "Anda punya pesan yang belum terkirim"
+    },
+    "aiConnection": {
+      "intro": "Tim Anda berjalan di atas layanan AI. Pilih salah satunya, lalu tambahkan kuncinya: kata sandi pribadi yang mengizinkan aplikasi ini memakai akun Anda.",
+      "whichAi": "AI mana yang menjalankan tim Anda?",
+      "otherOptions": "Pilihan lain…",
+      "appliesOnRestart": "{{engine}} akan dipakai saat aplikasi dibuka berikutnya. Tekan Simpan untuk mempertahankan pilihan ini.",
+      "yourKey": "Kunci Anda",
+      "keySaved": "Sebuah kunci sudah tersimpan di komputer ini. Anda bisa menggantinya di bawah.",
+      "noKey": "Belum ada kunci tersimpan. Tempel satu di bawah untuk memulai.",
+      "keyFrom": "Kunci Anda dari mana?",
+      "keyFor": "Kunci {{label}}",
+      "getKey": "Dapatkan kunci {{label}}",
+      "claudeLogin": "Sudah masuk ke Claude di komputer ini? Kalau begitu, Anda mungkin tidak memerlukan kunci sama sekali.",
+      "serverAddress": "Alamat server (opsional)",
+      "serverAddressHint": "Hanya diperlukan jika penyedia Anda memberikannya, misalnya https://api.deepseek.com.",
+      "keyPrivacy": "Kunci disimpan dengan aman di komputer ini dan tidak pernah ditampilkan lagi."
+    },
+    "settings": {
+      "advancedTitle": "Tampilkan opsi lanjutan",
+      "advancedDesc": "Tampilkan semua pengaturan dan alat: terminal, pemicu, memori, anggaran, integrasi, dan lainnya.",
+      "preferences": "Preferensi",
+      "themeTitle": "Tampilan",
+      "themeDesc": "Warna terang atau gelap untuk seluruh aplikasi.",
+      "dark": "Gelap",
+      "light": "Terang",
+      "hiddenNote": "Mode sederhana membuat jendela ini tetap ringkas. Suara, integrasi, memori, anggaran, dan pengaturan teknis lainnya tetap tersembunyi sampai Anda menampilkan opsi lanjutan."
+    },
+    "addAgent": {
+      "goalLabel": "Apa yang harus dikerjakan rekan tim ini?",
+      "goalPlaceholder": "Contoh: rapikan catatan saya dan tulis ringkasan singkat untuk saya setiap pagi.",
+      "ideasHint": "Belum yakin? Mulai dari sebuah ide:",
+      "moreOptions": "Opsi lainnya",
+      "lookHead": "Tampilan",
+      "workspaceHead": "Tempat bekerja",
+      "engineHead": "Mesin AI",
+      "roles": {
+        "researcher": "Peneliti",
+        "writer": "Penulis",
+        "fixer": "Pemecah masalah",
+        "organizer": "Perapi"
+      }
+    }
+  },
+  "engineCost": {
+    "hermes": {
+      "tag": "Disarankan · biaya rendah",
+      "desc": "Hermes adalah mesin yang disarankan. Biayanya rendah dengan kunci OpenRouter atau DeepSeek."
+    },
+    "claude": {
+      "tag": "Biaya lebih tinggi",
+      "desc": "Claude memakai langganan Claude atau kredit API Anda, yang biayanya lebih tinggi daripada pilihan lain."
+    },
+    "codex": {
+      "tag": "Paket OpenAI Anda",
+      "desc": "Codex memakai paket OpenAI (ChatGPT) atau kredit API Anda."
+    }
+  },
+  "firstRun": {
+    "title": "Menyiapkan asisten Anda",
+    "titleFailed": "Penyiapan perlu perhatian Anda",
+    "stepCounter": "Langkah {{current}} dari {{total}}",
+    "step": {
+      "checking": "Memeriksa komputer Anda",
+      "installing": "Memasang asisten Anda",
+      "starting": "Menjalankannya untuk pertama kali",
+      "preparing": "Menyiapkan semua yang dibutuhkannya"
+    },
+    "detail": {
+      "python": "Memasang Python (alat yang dipakainya)",
+      "node": "Memasang Node.js (alat yang dipakainya)",
+      "ripgrep": "Memasang alat pencari berkas yang cepat",
+      "ffmpeg": "Memasang alat audio dan video"
+    },
+    "hint": "Pertama kali bisa memakan waktu beberapa menit. Ini hanya terjadi sekali.",
+    "hintLong": "Masih berjalan. Pada koneksi lambat, pertama kali bisa 10 menit atau lebih. Biarkan jendela ini tetap terbuka.",
+    "barLabel": "Kemajuan penyiapan",
+    "showDetails": "Tampilkan detail",
+    "hideDetails": "Sembunyikan detail",
+    "detailsLabel": "Keluaran penyiapan terbaru",
+    "detailsEmpty": "Belum ada yang ditampilkan.",
+    "compact": {
+      "working": "Menyiapkan {{engine}}: {{step}} ({{current}}/{{total}})",
+      "failed": "Penyiapan {{engine}} berhenti: {{reason}}"
+    },
+    "card": {
+      "working": "Menyiapkan… {{current}}/{{total}}",
+      "failed": "Penyiapan perlu perhatian"
+    },
+    "action": {
+      "retry": "Coba lagi",
+      "retrying": "Mencoba lagi…",
+      "addKey": "Tambahkan kunci Anda",
+      "openSettings": "Buka pengaturan"
+    },
+    "retryFailed": "Penyiapan tidak bisa dimulai ulang ({{error}}). Tutup dan buka kembali aplikasi, lalu coba lagi.",
+    "failure": {
+      "network": {
+        "title": "Tidak bisa terhubung ke internet",
+        "body": "Kami tidak bisa mengunduh asisten. Periksa koneksi internet Anda lalu coba lagi."
+      },
+      "no_key": {
+        "title": "Asisten Anda memerlukan kunci",
+        "body": "Asisten sudah berjalan, tetapi belum punya kunci untuk berpikir. Tambahkan kunci Anda dan asisten siap dipakai."
+      },
+      "installer_error": {
+        "title": "Pemasangan terhenti",
+        "body": "Tidak ada yang rusak di komputer Anda. Mencoba lagi biasanya menyelesaikannya."
+      },
+      "installer_unavailable": {
+        "title": "Tidak bisa dipasang otomatis di sini",
+        "body": "Pilih AI lain di Pengaturan, atau pasang sendiri lalu mulai ulang aplikasi."
+      },
+      "engine_missing": {
+        "title": "Pemasangan belum selesai",
+        "body": "Asisten belum terpasang. Coba lagi untuk menyelesaikan pemasangannya."
+      },
+      "engine_exit": {
+        "title": "Asisten berhenti tepat setelah dimulai",
+        "body": "Mencoba lagi sering menyelesaikan ini. Jika terus terjadi, periksa kunci Anda di Pengaturan."
+      },
+      "timeout": {
+        "title": "Ini memakan waktu jauh lebih lama dari perkiraan",
+        "body": "Mungkin ada yang macet. Coba lagi."
+      },
+      "spawn_error": {
+        "title": "Asisten tidak bisa dimulai",
+        "body": "Coba lagi. Jika terus gagal, buka detail dan kirimkan ke dukungan."
+      }
+    },
+    "choice": {
+      "legend": "Penyiapan Hermes mana yang dipakai asisten Anda?",
+      "intro": "Hermes sudah diatur di komputer ini. Pilih penyiapan mana yang dipakai asisten Anda.",
+      "own": "Pakai penyiapan Hermes saya yang sudah ada (penyedia: {{provider}})",
+      "ownNote": "Tidak perlu kunci di sini. Disarankan jika sudah berfungsi.",
+      "ownNoKeyNote": "Tidak perlu kunci di sini, tetapi kami tidak menemukan kunci di dalamnya, jadi mungkin belum berfungsi.",
+      "recommended": "DISARANKAN",
+      "app": "Pakai kunci yang saya tempel di sini",
+      "appNote": "Asisten memakai penyedia dan kunci yang Anda atur di aplikasi ini. Berkas Hermes Anda sendiri tidak pernah diubah.",
+      "ownChosen": "Asisten Anda akan memakai penyiapan Hermes Anda yang sudah ada. Tidak ada yang perlu ditempel di sini.",
+      "saved": "Tersimpan. Berlaku saat asisten Anda dimulai berikutnya.",
+      "saveFailed": "Pilihan itu tidak bisa disimpan. Coba lagi."
+    }
   }
 }

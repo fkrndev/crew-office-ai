@@ -31,8 +31,14 @@ const DEFAULTS: Record<string, (...args: unknown[]) => unknown> = {
   forceQuit: () => true,
   // hire_drain_pending: Option<String> — null when nothing is parked.
   drainPendingHires: () => null,
+  // conversation_read: no transcript source in tests unless a test overrides it.
+  conversationRead: () => ({ messages: [], cursor: '', source: 'none', reason: 'unsupported_engine' }),
   // clipboard_image_to_file: {ok,path} | {ok:false,error}.
-  clipboardImageToFile: () => ({ ok: false, error: 'no clipboard image in tests' })
+  clipboardImageToFile: () => ({ ok: false, error: 'no clipboard image in tests' }),
+  // engine_setup_snapshot: nothing in flight. hermes_user_config_status: the
+  // user has no Hermes setup of their own (so no "which setup?" choice shows).
+  engineSetupSnapshot: () => [],
+  hermesUserConfigStatus: () => ({ exists: false, provider: null, model: null, hasKeys: false, path: '' })
 };
 
 export function fakeBridge(overrides: Record<string, unknown> = {}): FakeBridge {

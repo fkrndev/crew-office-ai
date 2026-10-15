@@ -6,7 +6,7 @@ import { Icon, type IconName } from './Icon';
 import { SpritePortrait } from './SpritePortrait';
 import { ProviderLogo } from './ProviderLogo';
 import { modelsForProvider, onboardingEngineChoices, type AgentProvider, type HarnessConfig } from '@/store/config';
-import { providerPreset } from '@shared/agentProvider';
+import { providerPreset, NEW_INSTALL_ENGINE } from '@shared/agentProvider';
 import {
   classifyEngineAvailability, engineAvailabilityBadgeKey,
   suggestOrchestratorEngine
@@ -15,13 +15,22 @@ import { capabilitiesForProvider, providerNoteKeys } from '@shared/providerCapab
 import type { ToolStatus } from '@shared/toolCatalog';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { examplePath } from '@shared/platformLabels';
+import { QuickStart, type QuickStartCheckStatus } from './QuickStart';
+import {
+  DEFAULT_QUICK_START_PROVIDER, checkQuickStartKey, quickStartProvider,
+  hermesChoiceFor, saveQuickStart, validateQuickStartKey,
+  type HermesSource, type HermesUserConfigStatus, type QuickStartBridge, type QuickStartProviderId
+} from '@shared/quickStart';
 
 export interface OnboardingWizardProps {
   onComplete: (config: HarnessConfig) => void;
 }
 
 type Audience = 'technical' | 'non-technical';
-type Step = 'persona' | 'welcome' | 'home' | 'orchestrator' | 'repos' | 'permissions' | 'done';
+// 'connect' is the quick-start replacement for 'orchestrator' (see QuickStart.tsx):
+// non-technical users (or anyone who picks quick start) get ONE "Connect your AI"
+// step instead of the engine / model / orchestrator picker.
+type Step = 'persona' | 'welcome' | 'home' | 'connect' | 'orchestrator' | 'repos' | 'permissions' | 'done';
 
 // First-run showcase "— the highest-value features a brand-new user should grasp
 // before any setup. Labels and copy live in i18n (two registers: `desc` for the
@@ -107,10 +116,47 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   // Anonymous usage stats (TELEMETRY.md). Default ON (opt-out); persisted by
   // finish() so unchecking before finishing means nothing is ever sent.
   const [shareStats, setShareStats] = useState<boolean>(true);
-  const [godProvider, setGodProvider] = useState<AgentProvider>('claude');
+  // Hermes is the recommended starting engine for NEW installs. This is written
+  // explicitly by finish(), which is the ONLY thing that moves an install off the
+  // legacy Claude fallback (an existing config with no godProvider keeps Claude).
+  const [godProvider, setGodProvider] = useState<AgentProvider>(NEW_INSTALL_ENGINE);
   const [godModel, setGodModel] = useState<string | undefined>(
-    providerPreset('claude').recommendedOrchestratorModel
+    providerPreset(NEW_INSTALL_ENGINE).recommendedOrchestratorModel
   );
+
+  // Quick start: the one-step "Connect your AI" path. Defaults to ON for the
+  // non-technical audience; the technical path never sees it unless they ask
+  // (link on the engine step), and either can switch from the connect step to
+  // the normal engine step ("I already use Claude / Codex / another CLI").
+  const [quickChoice, setQuickChoice] = useState<boolean | undefined>();
+  const quick = quickChoice ?? plain;
+  const [qsProvider, setQsProvider] = useState<QuickStartProviderId>(DEFAULT_QUICK_START_PROVIDER);
+  const [qsKey, setQsKey] = useState('');
+  // The Advanced model field. undefined = untouched, so it tracks the provider's
+  // default when the provider changes; once edited it is the user's.
+  const [qsModelEdited, setQsModelEdited] = useState<string | undefined>();
+  // Result of the optional key check, tied to the exact key + provider it ran on.
+  const [qsCheck, setQsCheck] = useState<{ status: QuickStartCheckStatus; key: string; provider: QuickStartProviderId }>(
+    { status: 'idle', key: '', provider: DEFAULT_QUICK_START_PROVIDER }
+  );
+  const qsCheckStatus: QuickStartCheckStatus =
+    qsCheck.key === qsKey.trim() && qsCheck.provider === qsProvider ? qsCheck.status : 'idle';
+  // The user's OWN Hermes setup, if any (read-only look: provider + whether a key
+  // is there — never a value). When it has a provider the quick start asks which
+  // setup runs the assistant instead of letting the copy of theirs silently win.
+  const [hermesStatus, setHermesStatus] = useState<HermesUserConfigStatus | undefined>();
+  useEffect(() => {
+    let live = true;
+    void Promise.resolve(window.cth.hermesUserConfigStatus?.())
+      .then((s) => { if (live) setHermesStatus((s ?? undefined) as HermesUserConfigStatus | undefined); })
+      .catch(() => { /* unknown = no choice shown; never blocks the wizard */ });
+    return () => { live = false; };
+  }, []);
+  const hermesChoice = useMemo(() => hermesChoiceFor(hermesStatus), [hermesStatus]);
+  const [qsSource, setQsSource] = useState<HermesSource | undefined>();
+  const qsSourceNow: HermesSource = qsSource ?? hermesChoice.defaultSource;
+  /** "Use my existing Hermes setup": nothing to paste, nothing stored. */
+  const qsOwn = quick && hermesChoice.show && qsSourceNow === 'own';
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
 
@@ -218,6 +264,29 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   const removeRepo = (path: string) => setRepos(repos.filter(r => r !== path));
 
+  // Next on the quick-start step. Format problems stop here; an EMPTY key is a
+  // legitimate skip. A real key gets one lightweight check — a failure (wrong key
+  // or just offline) shows a friendly message and the SECOND press continues, so
+  // the check can never be what blocks someone from finishing setup.
+  const advanceFromConnect = async () => {
+    setError(undefined);
+    if (qsOwn) { setStep('repos'); return; } // their own setup: no key to check
+    const v = validateQuickStartKey(qsKey);
+    if (!v.ok) {
+      if (v.reason === 'empty') { setStep('repos'); return; }
+      setError(v.reason === 'short' ? t('quickStart.errShort') : t('quickStart.errWhitespace'));
+      return;
+    }
+    if (qsCheckStatus === 'ok' || qsCheckStatus === 'rejected' || qsCheckStatus === 'unreachable') {
+      setStep('repos'); // already told them about this exact key — go on
+      return;
+    }
+    setQsCheck({ status: 'checking', key: v.key, provider: qsProvider });
+    const verdict = await checkQuickStartKey(window.cth as unknown as QuickStartBridge, qsProvider, v.key);
+    setQsCheck({ status: verdict === 'valid' ? 'ok' : verdict, key: v.key, provider: qsProvider });
+    if (verdict === 'valid') setStep('repos');
+  };
+
   const finish = async () => {
     setBusy(true);
     setError(undefined);
@@ -229,14 +298,40 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         setError(ensure.error ?? t('onboarding.errCreateHome'));
         return;
       }
+      // The engine half of the patch. ALWAYS explicit: the runtime fallback for a
+      // config with no godProvider is Claude (so existing installs never switch),
+      // which means a new install only runs Hermes because we write it here.
+      let engine: Record<string, unknown> = { godProvider, godModel };
+      if (quick) {
+        // Store the key through the same path Settings → AI Engines uses, then
+        // point Hermes at that provider. No key (step skipped) → engine only.
+        let existing: Record<string, unknown> = {};
+        try { existing = ((await window.cth.getConfig()) ?? {}) as Record<string, unknown>; } catch { /* fresh install */ }
+        const saved = await saveQuickStart(
+          window.cth as unknown as QuickStartBridge,
+          { provider: qsProvider, key: qsKey, model: qsModelEdited, hermesSource: qsOwn ? 'own' : undefined },
+          existing as Parameters<typeof saveQuickStart>[2]
+        );
+        if (!saved.ok) {
+          setError(t('quickStart.saveFailed', {
+            error: saved.error === 'short' ? t('quickStart.errShort')
+              : saved.error === 'whitespace' ? t('quickStart.errWhitespace')
+              : saved.error
+          }));
+          setStep('connect');
+          return;
+        }
+        engine = { ...saved.patch };
+      }
       const next = await window.cth.updateConfig({
         onboardingComplete: true,
         audience: audience ?? 'technical',
+        // The layout follows the answer given here; see shared/uiMode.ts.
+        uiMode: audience === 'non-technical' ? 'simple' : 'advanced',
         harnessHome, // the same trimmed value we just mkdir'd, not the raw field
         registeredRepos: repos,
         autoMode,
-        godProvider,
-        godModel,
+        ...engine,
         telemetryEnabled: shareStats
       });
       onComplete(next);
@@ -275,6 +370,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
             step === 'persona' ? t('onboarding.titles.persona')
             : step === 'welcome' ? t('onboarding.titles.welcome')
             : step === 'home' ? (plain ? t('onboarding.titles.homePlain') : t('onboarding.titles.home'))
+            : step === 'connect' ? t('quickStart.title')
             : step === 'orchestrator' ? (plain ? t('onboarding.titles.orchestratorPlain') : t('onboarding.titles.orchestrator'))
             : step === 'repos' ? (plain ? t('onboarding.titles.reposPlain') : t('onboarding.titles.repos'))
             : step === 'permissions' ? t('onboarding.titles.permissions')
@@ -405,6 +501,23 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                   {plain ? t('onboarding.home.notePlain') : t('onboarding.home.note')}
                 </div>
               </>
+            )}
+
+            {step === 'connect' && (
+              <QuickStart
+                provider={qsProvider}
+                onProvider={setQsProvider}
+                apiKey={qsKey}
+                onApiKey={setQsKey}
+                model={qsModelEdited ?? quickStartProvider(qsProvider).model}
+                onModel={setQsModelEdited}
+                check={qsCheckStatus}
+                hermesInstalled={classifyEngineAvailability(engines, 'hermes').state === 'installed'}
+                onUseCli={() => { setQuickChoice(false); setError(undefined); setStep('orchestrator'); }}
+                hermesChoice={hermesChoice}
+                hermesSource={qsSourceNow}
+                onHermesSource={(s) => { setQsSource(s); setError(undefined); }}
+              />
             )}
 
             {step === 'orchestrator' && (
@@ -621,6 +734,18 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     {t('onboarding.orchestrator.modelNote')}
                   </div>
                 </div>
+                {/* The way back to the one-step path (quick start) for anyone who
+                    would rather paste an API key than pick an engine. */}
+                <button
+                  type="button"
+                  onClick={() => { setQuickChoice(true); setError(undefined); setStep('connect'); }}
+                  style={{
+                    alignSelf: 'flex-start', background: 'none', border: 'none', padding: 0,
+                    cursor: 'pointer', fontSize: 12, color: 'var(--cth-ink-700)', textDecoration: 'underline'
+                  }}
+                >
+                  {t('quickStart.useQuick')}
+                </button>
               </>
             )}
 
@@ -806,10 +931,10 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
             {/* Footer / nav */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-              <Dots step={step} />
+              <Dots step={step} quick={quick} />
               <div style={{ display: 'flex', gap: 8 }}>
                 {step !== 'persona' && step !== 'welcome' && (
-                  <PixelButton variant="ghost" size="md" onClick={() => setStep(prevStep(step))} disabled={busy}>
+                  <PixelButton variant="ghost" size="md" onClick={() => { setError(undefined); setStep(prevStep(step, quick)); }} disabled={busy}>
                     {t('common.back')}
                   </PixelButton>
                 )}
@@ -830,10 +955,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         setError(t('onboarding.errPickHome'));
                         return;
                       }
+                      if (step === 'connect') { void advanceFromConnect(); return; }
                       setError(undefined);
-                      setStep(nextStep(step));
+                      setStep(nextStep(step, quick));
                     }}
-                    disabled={step === 'persona' && !audience}
+                    disabled={(step === 'persona' && !audience) || (step === 'connect' && qsCheckStatus === 'checking')}
                   >
                     {step === 'welcome' ? t('onboarding.permissions.setItUp') : t('common.next')}
                   </PixelButton>
@@ -926,8 +1052,8 @@ function ToggleRow({ icon, label, desc, on, tint, edge, onChange }: {
   );
 }
 
-function Dots({ step }: { step: Step }) {
-  const order: Step[] = ['persona', 'welcome', 'home', 'orchestrator', 'repos', 'permissions'];
+function Dots({ step, quick }: { step: Step; quick: boolean }) {
+  const order: Step[] = ['persona', 'welcome', 'home', quick ? 'connect' : 'orchestrator', 'repos', 'permissions'];
   return (
     <div style={{ display: 'flex', gap: 4 }}>
       {order.map((s) => (
@@ -941,18 +1067,19 @@ function Dots({ step }: { step: Step }) {
   );
 }
 
-function nextStep(s: Step): Step {
+// `quick` swaps the engine step for the one-step "Connect your AI" (see QuickStart).
+function nextStep(s: Step, quick: boolean): Step {
   return s === 'persona' ? 'welcome'
     : s === 'welcome' ? 'home'
-    : s === 'home' ? 'orchestrator'
-    : s === 'orchestrator' ? 'repos'
+    : s === 'home' ? (quick ? 'connect' : 'orchestrator')
+    : s === 'connect' || s === 'orchestrator' ? 'repos'
     : s === 'repos' ? 'permissions'
     : 'done';
 }
-function prevStep(s: Step): Step {
+function prevStep(s: Step, quick: boolean): Step {
   return s === 'permissions' ? 'repos'
-    : s === 'repos' ? 'orchestrator'
-    : s === 'orchestrator' ? 'home'
+    : s === 'repos' ? (quick ? 'connect' : 'orchestrator')
+    : s === 'connect' || s === 'orchestrator' ? 'home'
     : s === 'home' ? 'welcome'
     : s === 'welcome' ? 'persona'
     : 'persona';

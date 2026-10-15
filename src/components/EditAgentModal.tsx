@@ -9,6 +9,8 @@ import { capabilitiesForProvider } from '@shared/providerCapabilities';
 import { useStore, type Agent } from '@/store/store';
 import { OFFICE_CAST, type OfficeCharacterName } from '@/scene/office/cast';
 import { useEscape } from '@/hooks/useEscape';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
+import { engineCostHint } from '@shared/engineCost';
 import { type AccentColorName } from '@/design/tokens';
 import {
   type AgentProvider,
@@ -36,6 +38,11 @@ export interface EditAgentModalProps {
 export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
   const updateAgent = useStore((s) => s.updateAgent);
   const { t } = useTranslation();
+  // Simple mode: name + "what should this teammate do?" on one short form, the
+  // rest (look, engine, one-line role) behind "More options".
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
+  const [moreOpen, setMoreOpen] = useState(false);
   const [config, setConfig] = useState<HarnessConfig | null>(null);
 
   const [name, setName] = useState(agent.name);
@@ -115,36 +122,8 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
     onClose();
   };
 
-  return (
-    <div
-      onClick={requestClose}
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(15, 28, 46, 0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 500
-      }}
-    >
-      {/* Same box as Add Agent (940 / 95vw / 86vh). They are the two halves of
-          one job — describe an agent — and a tall narrow dialog next to a wide
-          one reads as two unrelated screens. */}
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 940, maxWidth: '95vw' }}>
-        <PixelPanel variant="dialog" title={t('editAgent.title')} style={{ padding: 16 }} noPadding>
-          <div style={{
-            display: 'flex', flexDirection: 'column', gap: 14,
-            padding: 16, maxHeight: '86vh', overflowY: 'auto'
-          }}>
-            {/* Two columns so the extra width is used rather than padded.
-                Identity and Engine are short field lists; Briefing is free
-                text and takes the taller side. minHeight keeps the dialog from
-                collapsing into a wide thin strip on a small form. */}
-            <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              gap: 16, alignItems: 'start', minHeight: 260
-            }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
-            <Section label={t('addAgent.sections.identity.label')} hint={t('addAgent.sections.identity.hint')}>
-              <Row label={t('addAgent.name')}>
+  const nameRow = (
+    <Row label={t('addAgent.name')}>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -153,8 +132,9 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                   autoFocus
                 />
               </Row>
-
-              <Row label={t('addAgent.character')}>
+  );
+  const characterRow = (
+    <Row label={t('addAgent.character')}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {OFFICE_CAST.map((c) => {
                     const active = character === c.name;
@@ -191,8 +171,9 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                   })}
                 </div>
               </Row>
-
-              <Row label={t('addAgent.color')}>
+  );
+  const colorRow = (
+    <Row label={t('addAgent.color')}>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {ACCENTS.map((a) => (
                     <button
@@ -213,9 +194,30 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                   ))}
                 </div>
               </Row>
-            </Section>
-
-            <Section label={t('addAgent.sections.engine.label')} hint={t('editAgent.engineHint')}>
+  );
+  const descriptionRow = (
+    <Row label={t('editAgent.description')}>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder={t('editAgent.descriptionPlaceholder')}
+                  style={inputStyle}
+                />
+              </Row>
+  );
+  const goalRow = (
+    <Row label={t('editAgent.goalLabel', sctx)}>
+                <textarea
+                  value={goal}
+                  onChange={(e) => setGoal(e.target.value)}
+                  placeholder={t('editAgent.goalPlaceholder', sctx)}
+                  rows={4}
+                  style={{ ...inputStyle, fontFamily: 'var(--cth-font-ui)', resize: 'vertical', minHeight: 200 }}
+                />
+              </Row>
+  );
+  const engineSection = (
+    <Section label={t('addAgent.sections.engine.label')} hint={t('editAgent.engineHint')}>
               <Row label={t('editAgent.provider')}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {AGENT_PROVIDER_PRESETS.map((p) => {
@@ -239,10 +241,23 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
                       >
                         <ProviderLogo provider={p.id} size={14} />
                         {p.label}
+                        {engineCostHint(p.id) && (
+                          <span style={{
+                            fontSize: 10, color: 'var(--cth-ink-500)',
+                            fontWeight: engineCostHint(p.id)!.recommended ? 700 : 400
+                          }}>
+                            {t(engineCostHint(p.id)!.tagKey)}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
                 </div>
+                {engineCostHint(provider) && (
+                  <span data-testid="engine-cost-hint" style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                    {t(engineCostHint(provider)!.descKey)}
+                  </span>
+                )}
               </Row>
 
               {preset.supportsModel && (
@@ -302,36 +317,91 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               </span>
               <ProviderNotes provider={provider} autoMode={!!config?.autoMode && !!preset.autoFlag} />
             </Section>
+  );
+
+  return (
+    <div
+      onClick={requestClose}
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(15, 28, 46, 0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 500
+      }}
+    >
+      {/* Same box as Add Agent (940 / 95vw / 86vh). They are the two halves of
+          one job — describe an agent — and a tall narrow dialog next to a wide
+          one reads as two unrelated screens. */}
+      <div onClick={(e) => e.stopPropagation()} style={{ width: simple ? 620 : 940, maxWidth: '95vw' }}>
+        <PixelPanel variant="dialog" title={t('editAgent.title', sctx)} style={{ padding: 16 }} noPadding>
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 14,
+            padding: 16, maxHeight: '86vh', overflowY: 'auto'
+          }}>
+            {/* Two columns so the extra width is used rather than padded.
+                Identity and Engine are short field lists; Briefing is free
+                text and takes the taller side. minHeight keeps the dialog from
+                collapsing into a wide thin strip on a small form. */}
+            {simple && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {nameRow}
+                {goalRow}
+                <button
+                  type="button"
+                  onClick={() => setMoreOpen((v) => !v)}
+                  aria-expanded={moreOpen}
+                  data-testid="edit-agent-more"
+                  style={{
+                    alignSelf: 'flex-start', padding: '4px 0', border: 'none', background: 'transparent',
+                    cursor: 'pointer', fontFamily: 'var(--cth-font-ui)', fontSize: 13,
+                    color: 'var(--cth-ink-700)', textDecoration: 'underline'
+                  }}
+                >
+                  {moreOpen ? '\u25be' : '\u25b8'} {t('simpleMode.addAgent.moreOptions')}
+                </button>
+                {moreOpen && (
+                  <>
+                    {characterRow}
+                    {colorRow}
+                    {engineSection}
+                    {descriptionRow}
+                  </>
+                )}
+              </div>
+            )}
+
+            {!simple && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 16, alignItems: 'start', minHeight: 260
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+            <Section label={t('addAgent.sections.identity.label')} hint={t('addAgent.sections.identity.hint')}>
+              {nameRow}
+
+              {characterRow}
+
+              {colorRow}
+            </Section>
+
+            {engineSection}
 
               </div>
               <div style={{ minWidth: 0 }}>
             <Section label={t('addAgent.sections.briefing.label')} hint={t('addAgent.sections.briefing.hint')}>
-              <Row label={t('editAgent.description')}>
-                <input
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder={t('editAgent.descriptionPlaceholder')}
-                  style={inputStyle}
-                />
-              </Row>
+              {descriptionRow}
 
-              <Row label={t('editAgent.goalLabel')}>
-                <textarea
-                  value={goal}
-                  onChange={(e) => setGoal(e.target.value)}
-                  placeholder={t('editAgent.goalPlaceholder')}
-                  rows={4}
-                  style={{ ...inputStyle, fontFamily: 'var(--cth-font-ui)', resize: 'vertical', minHeight: 200 }}
-                />
-              </Row>
+              {goalRow}
             </Section>
               </div>
             </div>
 
+            )}
+
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
               <PixelButton variant="ghost" size="md" onClick={requestClose}>{t('common.cancel')}</PixelButton>
               <div style={{ flex: 1 }} />
-              <PixelButton variant="primary" size="md" onClick={save}>{t('editAgent.saveChanges')}</PixelButton>
+              <PixelButton variant="primary" size="md" onClick={save}>{t('editAgent.saveChanges', sctx)}</PixelButton>
             </div>
           </div>
         </PixelPanel>

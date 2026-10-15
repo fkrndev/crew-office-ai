@@ -1,5 +1,6 @@
 import { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 export type StatusKind =
   | 'idle' | 'thinking' | 'working' | 'waiting' | 'blocked' | 'success' | 'ghost'
@@ -51,8 +52,10 @@ const labelKeyByStatus: Record<StatusKind, string> = {
 
 export function PixelBadge({ status, label, style }: PixelBadgeProps) {
   const { t } = useTranslation();
+  // Simple mode swaps in plainer words (`badge.<status>_simple`; missing → the normal one).
+  const simple = useIsSimpleMode();
   const key = labelKeyByStatus[status];
-  const text = label ?? (key ? t(key) : status);
+  const text = label ?? (key ? t(key, simple ? { context: 'simple' } : undefined) : status);
   return (
     <span
       style={{

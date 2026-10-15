@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { type SidebarTab } from '@/store/store';
 import { type AccentColorName } from '@/design/tokens';
 import { Icon, type IconName } from './Icon';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 // v0.3.4: the files tab is gone — the per-agent IDE button (header) opens the
 // full Monaco editor + file tree, which superseded the read-only browser.
@@ -20,6 +21,11 @@ export interface SidebarTabsProps {
 
 export function SidebarTabs({ current, accent, onChange }: SidebarTabsProps) {
   const { t } = useTranslation();
+  // Defence in depth: the host already omits the bar in simple mode (a single
+  // 'terminal' tab is not a choice), but if one ever mounts it, git / messages /
+  // traces stay out.
+  const simple = useIsSimpleMode();
+  const tabs = simple ? TABS.filter((tab) => tab.key === 'terminal') : TABS;
   return (
     <div style={{
       display: 'flex',
@@ -28,7 +34,7 @@ export function SidebarTabs({ current, accent, onChange }: SidebarTabsProps) {
       boxShadow: 'inset 0 -2px 0 var(--cth-ink-900)',
       flexShrink: 0
     }}>
-      {TABS.map(tab => {
+      {tabs.map(tab => {
         const active = current === tab.key;
         return (
           <button

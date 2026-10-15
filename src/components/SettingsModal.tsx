@@ -1,7 +1,10 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { agentModels, type HarnessConfig } from '@/store/config';
+import { agentModels, providerPreset, type AgentProvider, type HarnessConfig } from '@/store/config';
 import { useStore } from '@/store/store';
+import { resolveUiMode, type UiMode } from '@shared/uiMode';
+import { persistUiMode } from '@/hooks/useUiMode';
+import { toggleAppTheme, useAppTheme } from '@/design/theme';
 import {
   CLONE_NODE_BLURB,
   DEFAULT_TRIGGER_MODE,
@@ -21,6 +24,7 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { AiEnginesSettings } from './AiEnginesSettings';
+import { SimpleAiConnection } from './SimpleAiConnection';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
 import { CostHud } from '@/realtime/CostHud';
@@ -29,7 +33,7 @@ import {
   isArabicTerminalFollowingLanguage,
   setArabicTerminalEnabled
 } from '@/terminal/arabicSetting';
-import { notifyArabicTerminalChangeAll } from '@/components/terminalPool';
+import { notifyArabicTerminalChangeAll, notifyThemeChangeAll } from '@/components/terminalPool';
 import { isComposingKey } from '@shared/imeGuard';
 import { useEscape } from '@/hooks/useEscape';
 import { altKeyLabel, isMacHost } from '@shared/platformLabels';
@@ -181,8 +185,26 @@ const sectionHeadFlush = { ...sectionHead, marginBottom: 0 } as const;
 /** The 2px rule between Settings sections. */
 const sectionRule = { height: 2, background: 'var(--cth-ink-300)' } as const;
 
-export type Section = 'General' | 'Prerequisites' | 'Agents & Models' | 'Autonomy & Budgets' | 'Connections' | 'Voice' | 'Memory & Knowledge';
+export type Section = 'General' | 'Prerequisites' | 'Agents & Models' | 'Autonomy & Budgets' | 'Connections' | 'Voice' | 'Memory & Knowledge'
+  // Simple mode's own short list (see SIMPLE_NAV_SECTIONS) — never in the advanced nav.
+  | 'AI connection' | 'Updates' | 'About';
 const NAV_SECTIONS: Section[] = ['General', 'Prerequisites', 'Agents & Models', 'Autonomy & Budgets', 'Connections', 'Voice', 'Memory & Knowledge'];
+/** Simple mode keeps four tabs: the everyday preferences, the one place to connect
+ *  an AI, and the app's updates / about. Everything else waits for advanced. */
+const SIMPLE_NAV_SECTIONS: Section[] = ['General', 'AI connection', 'Updates', 'About'];
+/** Map a requested tab onto one that exists in the given mode, so a deep link made
+ *  for one layout (the simple "Connect your AI" button, a Voice link) lands
+ *  somewhere sensible in the other. */
+export function sectionForMode(section: Section | undefined, simple: boolean): Section {
+  if (!section) return 'General';
+  if (simple) {
+    if (SIMPLE_NAV_SECTIONS.includes(section)) return section;
+    return section === 'Agents & Models' ? 'AI connection' : 'General';
+  }
+  if (section === 'AI connection') return 'Agents & Models';
+  if (section === 'Updates' || section === 'About') return 'General';
+  return section;
+}
 /** i18n key for each nav section's label — the Section values themselves stay
  *  as stable identifiers (tab state, deep links). */
 const NAV_SECTION_KEYS: Record<Section, string> = {
@@ -192,7 +214,10 @@ const NAV_SECTION_KEYS: Record<Section, string> = {
   'Autonomy & Budgets': 'settings.nav.autonomyBudgets',
   'Connections': 'settings.nav.connections',
   'Voice': 'settings.nav.voice',
-  'Memory & Knowledge': 'settings.nav.memoryKnowledge'
+  'Memory & Knowledge': 'settings.nav.memoryKnowledge',
+  'AI connection': 'settings.nav.aiConnection',
+  'Updates': 'settings.nav.updates',
+  'About': 'settings.nav.about'
 };
 
 export function SettingsModal({ config, onClose, initialSection }: SettingsModalProps) {
@@ -201,7 +226,21 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetErr, setResetErr] = useState('');
-  const [activeSection, setActiveSection] = useState<Section>(initialSection ?? 'General');
+  // The layout mode this form is showing. Seeded from the saved config and STAGED
+  // like every other preference — flipping the switch re-lays the form out at
+  // once, the app itself follows when Save lands. (The one-click link at the
+  // bottom of the simple form writes immediately instead.)
+  const [uiModeSel, setUiModeSel] = useState<UiMode>(() => resolveUiMode(config));
+  const simple = uiModeSel === 'simple';
+  const sctx = simple ? { context: 'simple' } : undefined;
+  const [activeSection, setActiveSection] = useState<Section>(
+    () => sectionForMode(initialSection, resolveUiMode(config) === 'simple')
+  );
+  // Leaving a tab that the new mode does not have must not strand the pane blank.
+  useEffect(() => {
+    setActiveSection((s) => sectionForMode(s, simple));
+  }, [simple]);
+  const navSections = simple ? SIMPLE_NAV_SECTIONS : NAV_SECTIONS;
 
   // Change-home flow: null until the user picks a new folder, then the sub-modal
   // confirms move-vs-fresh. Pre-selects 'move' (recommended - keeps the data).
@@ -271,6 +310,44 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     stage({ multiWindow: next });
   };
   const [simpleMode, setSimpleMode] = useState<boolean>(cfgX.audience === 'non-technical');
+  // The orchestrator's engine, as staged in the simple "AI connection" tab. The
+  // runtime falls back to Claude for a config with no godProvider (legacy installs),
+  // so that is what an unset value shows here too.
+  const savedEngine: AgentProvider = config.godProvider ?? 'claude';
+  const [engineSel, setEngineSel] = useState<AgentProvider>(savedEngine);
+  const pickEngine = (id: AgentProvider) => {
+    setEngineSel(id);
+    stage({ godProvider: id, godModel: providerPreset(id).recommendedOrchestratorModel });
+  };
+  /** Settings → General → "Show advanced options". ON = advanced. Turning it OFF
+   *  (= simple) also asks the orchestrator to talk plainly; turning it ON never
+   *  touches that — someone may still want plain language with every control. */
+  const toggleAdvanced = () => {
+    const next: UiMode = simple ? 'advanced' : 'simple';
+    setUiModeSel(next);
+    stage({ uiMode: next });
+    if (next === 'simple') {
+      setSimpleMode(true);
+      stage({ audience: 'non-technical' });
+    }
+  };
+  /** The one-click version (simple Settings footer): writes now, no Save needed. */
+  const showAdvancedNow = async () => {
+    setUiModeSel('advanced');
+    setPending((prev) => {
+      const { uiMode: _drop, ...rest } = prev;
+      return rest;
+    });
+    if (!(await persistUiMode('advanced'))) setUiModeSel('simple');
+  };
+  const themeNow = useAppTheme();
+  /** Same flip as the title-bar button: the whole app, every open terminal, and
+   *  the harness's own terminal theme for agents spawned from now on. */
+  const toggleTheme = () => {
+    const next = toggleAppTheme();
+    notifyThemeChangeAll(next === 'dark' ? 'dark' : 'light');
+    void window.cth.updateConfig({ terminalTheme: next });
+  };
   // Renderer-local, not part of HarnessConfig — it only changes how this window
   // paints pty output. Read once; the setter keeps localStorage in step.
   const [arabicTerminal, setArabicTerminal] = useState(isArabicTerminalEnabled);
@@ -389,6 +466,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
         );
       }
       await window.cth.updateConfig(patch);
+      // The layout switch is part of the patch: the app follows it the moment Save
+      // lands (App also hears config:changed, this just beats the round trip).
+      if (patch.uiMode) useStore.getState().setUiMode(patch.uiMode);
       setPending({});
       setAutoCompactPending(null);
       setSaveNote(t('settings.saved'));
@@ -957,7 +1037,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                   paddingTop: 8, paddingBottom: 8,
                   background: 'var(--cth-cream-200)'
                 }}>
-                  {NAV_SECTIONS.map((section) => {
+                  {navSections.map((section) => {
                     const active = activeSection === section;
                     return (
                       <button
@@ -1000,6 +1080,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           sponsor, and the app-level actions that belong to none
                           of the settings below. Slots for a future subscription
                           and a sponsor live here; both render nothing until set. */}
+                      {!simple && (<>
                       <SettingsHeroCard />
 
                       <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
@@ -1067,6 +1148,13 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               {simpleMode ? t('common.on') : t('common.off')}
                             </PixelButton>
                           </div>
+                          <ToggleRow
+                            title={t('simpleMode.settings.advancedTitle')}
+                            desc={t('simpleMode.settings.advancedDesc')}
+                            on={!simple}
+                            onToggle={toggleAdvanced}
+                            testId="advanced-switch"
+                          />
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
@@ -1101,6 +1189,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                       </div>
 
                       <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                      </>)}
 
                       {/* Language — app UI language (i18n) */}
                       <div>
@@ -1111,7 +1200,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                             <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.general.language')}</span>
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-                              {t('settings.general.languageDesc')}
+                              {t('settings.general.languageDesc', sctx)}
                             </span>
                           </div>
                           <select
@@ -1140,7 +1229,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               {t('settings.general.desktopNotifications')}
                             </span>
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-                              {t('settings.general.desktopNotificationsDesc')}
+                              {t('settings.general.desktopNotificationsDesc', sctx)}
                             </span>
                           </div>
                           <PixelButton
@@ -1153,6 +1242,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                         </div>
                       </div>
 
+                      {!simple && (<>
                       <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
 
                       {/* Scheduled auto-compact (compact-maintenance mission) */}
@@ -1203,6 +1293,68 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
 
                       {/* Office Theme — TV-show office maps (experimental; flag tvShowOffices, default off) */}
                       <OfficeThemePicker config={config} />
+                      </>)}
+
+                      {/* Simple mode: light/dark, plain-language replies, and the way
+                          back to everything — the whole of "preferences" for a
+                          first-time user. */}
+                      {simple && (<>
+                        <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                        <div>
+                          <div style={sectionHead}>{t('simpleMode.settings.preferences')}</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            <ToggleRow
+                              title={t('simpleMode.settings.themeTitle')}
+                              desc={t('simpleMode.settings.themeDesc')}
+                              on={themeNow === 'dark'}
+                              onLabel={t('simpleMode.settings.dark')}
+                              offLabel={t('simpleMode.settings.light')}
+                              onToggle={toggleTheme}
+                              testId="theme-switch"
+                            />
+                            <ToggleRow
+                              title={t('settings.general.simpleMode')}
+                              desc={t('settings.general.simpleModeDesc', sctx)}
+                              on={simpleMode}
+                              onToggle={toggleSimpleMode}
+                              testId="explain-switch"
+                            />
+                            <ToggleRow
+                              title={t('simpleMode.settings.advancedTitle')}
+                              desc={t('simpleMode.settings.advancedDesc')}
+                              on={!simple}
+                              onToggle={toggleAdvanced}
+                              testId="advanced-switch"
+                            />
+                          </div>
+                        </div>
+                      </>)}
+                    </>
+                  )}
+
+                  {/* SIMPLE MODE — the AI connection, updates and about tabs */}
+                  {simple && activeSection === 'AI connection' && (
+                    <SimpleAiConnection
+                      config={config}
+                      engine={engineSel}
+                      engineChanged={engineSel !== savedEngine}
+                      onPickEngine={pickEngine}
+                    />
+                  )}
+                  {simple && activeSection === 'Updates' && <UpdatesSection />}
+                  {simple && activeSection === 'About' && (
+                    <>
+                      <SettingsHeroCard />
+                      <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                      <div>
+                        <div style={sectionHead}>{t('settings.general.telemetry')}</div>
+                        <ToggleRow
+                          title={t('settings.general.telemetry')}
+                          desc={t('settings.general.telemetryDesc')}
+                          on={telemetryOn}
+                          onToggle={toggleTelemetry}
+                        />
+                      </div>
                     </>
                   )}
 
@@ -2019,7 +2171,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                   )}
 
                   {/* Danger — a red row at the bottom of General (was its own tab) */}
-                  {activeSection === 'General' && (
+                  {activeSection === 'General' && !simple && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                       <div style={{
                         fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
@@ -2036,6 +2188,25 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                     </div>
                   )}
 
+                  {/* Simple mode: say what is hidden, and give the one-click way out. */}
+                  {simple && (
+                    <div
+                      data-testid="simple-settings-note"
+                      style={{
+                        marginTop: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8,
+                        background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+                      }}
+                    >
+                      <span style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-700)' }}>
+                        {t('simpleMode.settings.hiddenNote')}
+                      </span>
+                      <div>
+                        <PixelButton variant="secondary" size="sm" onClick={() => { void showAdvancedNow(); }}>
+                          {t('simpleMode.needMore')}
+                        </PixelButton>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2061,6 +2232,35 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
           )}
         </PixelPanel>
       </div>
+    </div>
+  );
+}
+
+/** A labelled on/off row in the standard Settings shape (title, one-line
+ *  description, a primary/secondary toggle button). Used by the rows simple mode
+ *  adds; the long-standing advanced rows keep their inline markup. */
+function ToggleRow({ title, desc, on, onToggle, onLabel, offLabel, testId }: {
+  title: string;
+  desc: string;
+  on: boolean;
+  onToggle: () => void;
+  onLabel?: string;
+  offLabel?: string;
+  testId?: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      data-testid={testId}
+      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{title}</span>
+        <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>{desc}</span>
+      </div>
+      <PixelButton variant={on ? 'primary' : 'secondary'} size="sm" onClick={onToggle}>
+        {on ? (onLabel ?? t('common.on')) : (offLabel ?? t('common.off'))}
+      </PixelButton>
     </div>
   );
 }

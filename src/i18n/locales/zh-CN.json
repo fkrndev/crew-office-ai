@@ -49,26 +49,39 @@
   },
   "badge": {
     "idle": "空闲",
+    "idle_simple": "待命",
     "thinking": "工作中",
+    "thinking_simple": "处理中",
     "working": "工作中",
+    "working_simple": "处理中",
     "waiting": "等待中",
+    "waiting_simple": "等待中",
     "blocked": "需要你",
+    "blocked_simple": "需要你",
     "success": "完成",
+    "success_simple": "完成",
     "ghost": "已断开",
+    "ghost_simple": "离线",
     "compacting": "正在摘要",
+    "compacting_simple": "整理中",
     "looping": "循环中",
-    "typing": "草稿待发"
+    "looping_simple": "卡住了？",
+    "typing": "草稿待发",
+    "typing_simple": "你正在输入"
   },
   "agentControl": {
     "deliveryPaused": "队列消息已暂停投递（整个楼层）",
     "halting": "正在此步骤结束后停止…",
     "steersQueued": "有 {{count}} 条笔记等待处理",
     "steerPlaceholder": "给这个 agent 发一条备注 — 在它下一轮作为上下文送达",
+    "steerPlaceholder_simple": "告诉这位队友一些新情况",
     "steer": "备注",
+    "steer_simple": "发送",
     "flashResumed": "已重新允许使用工具",
     "flashPaused": "已阻止后续调用的工具",
     "flashHalt": "将在当前步骤结束后停止",
     "flashSteer": "笔记已排队，将在其下一轮到达",
+    "flashSteer_simple": "已发送——它会在下一步读到",
     "export": "导出",
     "exportTip": "保存该 agent 的会话 — 身份、token/费用用量、收件箱消息和最近终端输出 — 为 Markdown 文件到你选择的文件夹。",
     "exportAria": "导出该智能体的会话为 Markdown",
@@ -82,11 +95,17 @@
     "blockToolsTip": "智能体会继续思考并与你对话，但在你再次允许之前无法读取、写入或运行任何内容。立即生效，且可撤销。",
     "blockToolsAria": "阻止该智能体使用工具",
     "stopAfterStep": "在本步骤后停止",
+    "stopAfterStep_simple": "停止",
     "stopAfterStepTip": "让它完成当前步骤后再停止。进程与会话都会保留，因此“重启”和“继续”可以恢复它。若要直接结束进程，请使用 ✕。",
+    "stopAfterStepTip_simple": "让它完成手头的事情，然后停下。若要把它从团队中彻底移除，请点击 X。",
     "stopAfterStepAria": "在当前步骤后停止该智能体",
+    "stopAfterStepAria_simple": "停止这位队友",
     "steerTip": "在该智能体的下一轮边界交给它一条笔记。不会打断它当前正在做的事，也不会输入到它的终端。",
+    "steerTip_simple": "发送一条便条，它会在下一步之前阅读。不会打断它当前正在做的事。",
     "steerAria": "给该智能体发送一条笔记",
-    "haltConfirm": "中止该智能体？它会立刻停下当前工作。"
+    "steerAria_simple": "给这位队友发送便条",
+    "haltConfirm": "中止该智能体？它会立刻停下当前工作。",
+    "haltConfirm_simple": "要停止这位队友吗？它会立刻停下手头的工作。"
   },
   "agentCard": {
     "boss": "老板",
@@ -102,12 +121,16 @@
   "askMe": {
     "emptyTitle": "现在没有需要你的事。🌿",
     "emptySub": "当团队把任务卡在你的输入上——要回答的问题，或只有你能完成的待办——就会出现在这里（也会出现在楼层的「问我」看板上）。",
+    "emptySub_simple": "当团队需要你的答复，或需要只有你能完成的事情时，会显示在这里。",
     "openDetail": "打开完整任务详情",
     "dismissTitle": "忽略——不回答，把它从「问我」看板清掉（历史记录保留）",
+    "dismissTitle_simple": "忽略——不回答并移除此项",
     "dismissAria": "忽略此提问",
     "answerPlaceholder": "你的回答——或「完成」，附上结果…（Ctrl+Enter 发送）",
+    "answerPlaceholder_simple": "输入你的答复，或“完成”…（Ctrl+Enter 发送）",
     "sending": "发送中…",
     "respond": "回答并解除阻塞",
+    "respond_simple": "发送答复",
     "viewAnswers": "查看 {{count}} 条历史回答",
     "viewAnswersPlural": "查看 {{count}} 条历史回答",
     "viewAnswersHistory": "打开包含完整问答历史的任务详情",
@@ -124,6 +147,7 @@
     "notePlaceholder": "每行一条…",
     "oneLineOneBullet": "一行 = 一条 · Esc 关闭",
     "addAgent": "添加智能体",
+    "addAgent_simple": "添加队友",
     "restoringTitle": "上次会话的智能体正在以原始 ID 重新生成，以便记忆和收件箱重新挂载。",
     "restoreTitle": "上次会话：{{names}}",
     "restoringTeam": "正在恢复你的团队…",
@@ -225,7 +249,10 @@
       "autonomyBudgets": "自主权与预算",
       "connections": "连接",
       "voice": "语音",
-      "memoryKnowledge": "记忆与知识"
+      "memoryKnowledge": "记忆与知识",
+      "aiConnection": "AI 连接",
+      "updates": "更新",
+      "about": "关于"
     },
     "changeHome": {
       "newHome": "新的主文件夹",
@@ -244,11 +271,13 @@
       "keepAwakeDesc": "阻止显示屏休眠，让计划任务和终端准时触发。更耗电——最好接电源。",
       "simpleMode": "用通俗方式解释",
       "simpleModeDesc": "智能体用日常语言而不是工程术语向你汇报。",
+      "simpleModeDesc_simple": "你的团队会用通俗易懂的日常语言来解释。",
       "multiWindow": "多窗口（实验性）",
       "multiWindowDesc": "可打开额外窗口（“楼层”），每个楼层有自己的智能体名册和终端。所有楼层与第一个窗口共用同一个 hive，关闭第一个窗口会退出应用。保存后生效。默认关闭。",
       "notifications": "通知",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "智能体完成或需要你输入时弹出系统通知。",
+      "desktopNotificationsDesc_simple": "队友完成任务或需要你时，弹出提醒。",
       "maintenance": "维护",
       "autoCompact": "定时自动压缩",
       "autoCompactDesc": "按计划为每个智能体排队执行各引擎自己的压缩命令（/compact、/compress…）（默认每小时；间隔在触发器标签页设置）。没有已知命令的引擎（Crush、Copilot、Cursor、OpenClaw、自定义）会被跳过。默认关闭——长期运行的智能体不开启可能会撑爆上下文。",
@@ -258,6 +287,7 @@
       "telemetryDesc": "少量匿名事件（打开应用、生成智能体、使用功能）——绝不包含提示词、代码、路径或智能体输出。完整清单见 TELEMETRY.md。",
       "language": "语言",
       "languageDesc": "选择应用界面语言。印尼语为默认;英语作为缺失字符串的回退。",
+      "languageDesc_simple": "选择你希望使用的应用语言。",
       "dangerZone": "危险区",
       "dangerDesc": "重置将清除 {{godName}} 的记忆、所有应用数据(每个 agent、消息、任务和看板)、记忆索引以及所有设置 — 然后带你回到引导流程。",
       "resetStartOver": "重置并重新开始",
@@ -400,7 +430,9 @@
   },
   "commandCenter": {
     "title": "命令中心",
+    "title_simple": "你的团队",
     "runsTheFloor": "{{name}} 掌管楼层",
+    "runsTheFloor_simple": "{{name}} 带领你的团队",
     "deliveryPaused": "已暂停",
     "deliveryAuto": "自动",
     "deliveryPausedTitle": "队列消息正为楼上的每个智能体保留。不会丢失任何内容；重新开启后即会送达。",
@@ -409,9 +441,11 @@
     "ide": "IDE",
     "tabs": {
       "terminal": "终端",
+      "terminal_simple": "对话",
       "floor": "监控",
       "tasks": "任务",
       "human": "问我",
+      "human_simple": "问题",
       "triggers": "触发器",
       "history": "历史",
       "memory": "记忆",
@@ -476,9 +510,11 @@
     "board": "看板",
     "boardEmpty": "看板为空。",
     "logSpawn": "生成了 {{name}}",
+    "logSpawn_simple": "{{name}} 加入了团队",
     "logMessage": "{{from}} → {{to}}：{{subject}}",
     "logDrain": "{{agent}} 处理了 {{count}} 条消息",
     "logEscalate": "升级给人类：{{subject}}",
+    "logEscalate_simple": "向你提问：{{subject}}",
     "logApprovalGranted": "批准通过",
     "logApprovalDenied": "批准被拒",
     "tokenLimitTitle": "设置该智能体的令牌上限（工作令牌：输入 + 输出 + 缓存写入；不计缓存读取）",
@@ -506,6 +542,7 @@
   },
   "addAgent": {
     "title": "添加智能体",
+    "title_simple": "添加队友",
     "hireImported": "已导入 hire：",
     "byAuthor": " · 作者 {{author}}",
     "reviewFields": "生成前请逐项检查——尤其是命令。",
@@ -546,6 +583,7 @@
     "saveAsProject": "另存为项目",
     "saveAsProjectTitle": "把这个文件夹保存到你的项目里，下次一键选择",
     "gitIsolation": "Git 隔离（独立工作树）",
+    "gitIsolation_simple": "在文件的独立副本上工作（更安全）",
     "resumeSession": "恢复会话 ID（可选）",
     "resumePlaceholder": "粘贴 {{provider}} 会话 ID 以继续其对话",
     "folderFromSession": "已根据会话设置文件夹：{{path}}",
@@ -604,7 +642,9 @@
     "importHireBtn": "导入 hire…",
     "importHireBtnTitle": "导入 hire 清单（.json）",
     "spawn": "创建",
+    "spawn_simple": "添加队友",
     "spawning": "创建中…",
+    "spawning_simple": "正在添加…",
     "errName": "必须填写名字",
     "errFolder": "请先选择文件夹",
     "errCommand": "必须填写命令",
@@ -616,6 +656,7 @@
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
     "shardxProfileHint": "一个启动器配置 = 一个已登录账号。留空则此智能体获得自己的 office-<id> 配置。输入名称可绑定到已有账号的配置——仅当多个智能体服务同一账号时才应共享。",
     "needsKey": "⚠ {{provider}} 没有从本应用获得 API 密钥。如果它弹出设置提示，请在该智能体的终端里完成(Hermes:`hermes setup`)，或在 设置 → Agents & Models 中保存密钥",
+    "needsKey_simple": "⚠ {{provider}} 需要你的密钥。点击“连接你的 AI”来添加。",
     "needsShardx": "⚠ 需要 ShardX 设置——请在 设置 → MCP → Set up 运行",
     "hireSkipped": "已跳过 {{n}} 个无效文件：{{errors}}",
     "spawnFailed": "启动失败",
@@ -685,13 +726,13 @@
       }
     },
     "providerBlurb": {
-      "claude": "Claude Code — Anthropic",
+      "claude": "Claude Code — Anthropic。使用你的 Claude 订阅或 API 额度（费用较高）。",
       "codex": "Codex — OpenAI",
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — 在你的机器上运行本地 Qwen 模型",
       "gemini": "Gemini CLI —— Google Gemini",
       "cursor": "Cursor Agent CLI —— 使用你的 Cursor 额度（Luna、Composer 等）",
-      "hermes": "Hermes —— Nous Research。使用你自己 Hermes 设置中的提供商和模型。"
+      "hermes": "Hermes — Nous Research。推荐的入门引擎：可搭配低成本的 AI 服务商使用（需自备密钥）。"
     },
     "home": {
       "descPlain": "为应用创建一个新的空文件夹作为家。应用记住的一切——它自己的设置和你智能体的记忆——都存放在这里。像 ~/HarnessAgents 这样的地方就很合适。如果它不存在，我们会为你创建。",
@@ -762,6 +803,37 @@
     "checking": "正在检查…",
     "checkAgain": "重新检查",
     "installInstructions": "安装说明"
+  },
+  "quickStart": {
+    "title": "第 2 步，共 4 步 · 连接你的 AI",
+    "intro": "你的 AI 团队需要一个 AI 服务来思考。连接大约只需一分钟。",
+    "whatIsKeyHead": "什么是 API 密钥？",
+    "whatIsKey": "API 密钥就像一个密码，让本应用可以代你使用某个 AI 服务。你在服务商网站上创建它，复制后粘贴到下方。它只保存在这台电脑上。",
+    "chooseHead": "选择服务",
+    "recommended": "推荐",
+    "openrouterBlurb": "一个账号，多种 AI 模型。最简单的起点。",
+    "deepseekBlurb": "直接使用 DeepSeek。如果你更喜欢，这是不错的低成本选择。",
+    "openKeyPage": "打开注册 / 密钥页面",
+    "stepsHint": "1. 打开页面，注册并创建密钥。  2. 复制密钥并粘贴到下方。",
+    "keyLabel": "你的 API 密钥",
+    "keyPlaceholder": "在此粘贴你的密钥",
+    "skipNote": "还没有密钥？点击“下一步”即可跳过——之后可在设置中添加，应用会提醒你。",
+    "costNote": "按用量向服务商付费。你可以在服务商账户中设置消费上限。",
+    "installNote": "AI 引擎（Hermes）会在助手首次启动时自动安装，可能需要几分钟。",
+    "hermesInstalledNote": "这台电脑上已有 Hermes。如果它已配置了自己的 AI 服务商，请改用下方的“我已在使用……”。",
+    "advanced": "高级",
+    "modelLabel": "模型",
+    "modelNote": "我们选了一个适合大多数任务的低成本模型。只有在你确定想用别的模型时才需要更改。",
+    "errShort": "这看起来太短，不像完整的密钥。请确认已复制全部内容。",
+    "errWhitespace": "密钥中没有空格或换行。请检查是否原样复制。",
+    "hintPrefix": "{{provider}} 的密钥通常以“{{prefix}}”开头。请再确认复制的是正确的密钥。",
+    "checking": "正在检查你的密钥……",
+    "checkOk": "密钥可用。",
+    "checkRejected": "{{provider}} 未接受该密钥。请检查是否复制完整——或再次点击“下一步”继续。",
+    "checkUnreachable": "无法连接到 {{provider}} 来检查密钥（是否离线？）。再次点击“下一步”继续。",
+    "useCli": "我已在使用 Claude / Codex / 其他 CLI",
+    "useQuick": "新手？快速开始：改用 API 密钥连接",
+    "saveFailed": "无法保存你的密钥：{{error}}"
   },
   "office": {
     "gpuError": "办公楼层丢失了 GPU 上下文。\n\n同时使用 GPU 的终端太多了。\n关闭几个智能体终端，或重启应用，即可恢复。",
@@ -1392,12 +1464,17 @@
   "kanban": {
     "count": "{{count}} 项任务",
     "newWorkHint": "有新工作？派发给 {{godName}}（监控标签页）",
+    "newWorkHint_simple": "有新工作？请在“对话”标签页告诉 {{godName}}",
     "colTodo": "待办",
+    "colTodo_simple": "待办",
     "colDoing": "进行中",
+    "colDoing_simple": "进行中",
     "colBlocked": "已阻塞",
+    "colBlocked_simple": "等待中",
     "colDone": "已完成",
     "openTaskDetails": "打开任务详情",
     "needsYouTitle": "等待你的回答——见「问我」标签页",
+    "needsYouTitle_simple": "正在等待你的答复——请查看“问题”标签页",
     "dismissTitle": "忽略此任务（从看板上移除）",
     "dismissAria": "忽略任务",
     "taskTitle": "任务",
@@ -1416,6 +1493,7 @@
     "transcribing": "转写中…",
     "voice": "语音",
     "busyQueued": "{{name}} 正在忙——{{count}} 条排队中",
+    "busyQueued_simple": "{{name}} 正忙——有 {{count}} 条等待发送",
     "heldFloor": "暂挂——投递已全楼层暂停",
     "heldDraft": "暂挂——{{name}} 的终端提示行有未发送文本",
     "heldPicker": "暂挂——{{name}} 的终端里有一个斜杠命令选择器开着",
@@ -1424,6 +1502,7 @@
     "pausedTitle": "整个楼层的自动投递已暂停。在命令中心恢复，或对下面的消息使用「立即发送」。",
     "dropToAttach": "拖放以附加",
     "queue": "队列",
+    "queue_simple": "等待发送",
     "closePicker": "关闭选择器",
     "recoverPrompt": "恢复提示",
     "clearAllTitle": "清空所有排队消息",
@@ -1431,6 +1510,7 @@
     "removeAttachment": "移除附件",
     "messagePlaceholder": "给 {{name}} 发消息",
     "busyPlaceholder": "{{name}} 正在忙——排队发消息",
+    "busyPlaceholder_simple": "{{name}} 正忙——你的消息会在它空闲时发送",
     "files": "文件",
     "collapse": "收起此消息",
     "showFull": "显示完整消息",
@@ -1560,6 +1640,7 @@
   },
   "editAgent": {
     "title": "编辑 AGENT",
+    "title_simple": "编辑队友",
     "provider": "提供商",
     "model": "模型",
     "description": "描述",
@@ -1568,10 +1649,13 @@
     "modelDefaultTitle": "CLI 默认模型",
     "engineNote": "引擎更改保存到下次重启。使用命令中心 → 楼层立即将实时会话重启到新的提供商/模型。",
     "goalLabel": "目标(可选)",
+    "goalLabel_simple": "这位队友要做什么？",
     "goalPlaceholder": "每次提示注入的长期指令",
+    "goalPlaceholder_simple": "用一两句话描述这项工作",
     "descriptionPlaceholder": "这个 agent 的用途",
     "namePlaceholder": "Stanley",
     "saveChanges": "保存更改",
+    "saveChanges_simple": "保存",
     "unsavedWarning": "你有未保存的 agent 更改。要丢弃吗?"
   },
   "updateToast": {
@@ -1624,13 +1708,20 @@
     "newFloor": "新建楼层 (Ctrl+Shift+N)",
     "floorBadge": "楼层 {{n}}",
     "wakingFloor": "正在唤醒工作区",
+    "wakingFloor_simple": "准备中",
     "wakingDesc": "{{godName}} 正在就位。终端会在这里出现。",
+    "wakingDesc_simple": "{{godName}} 正在准备。对话稍后会显示在这里。",
     "noAgentSelected": "未选择 agent",
+    "noAgentSelected_simple": "未选择队友",
     "noAgentDesc": "从下方栏 spawn 一个 agent。终端和命令栏会出现在这里。",
+    "noAgentDesc_simple": "请从下方栏中添加一位队友。他们的对话会显示在这里。",
     "addAgent": "添加 agent",
+    "addAgent_simple": "添加队友",
     "productName": "Agent Office",
     "emptyFloorTitle": "办公室空空如也",
+    "emptyFloorTitle_simple": "欢迎",
     "emptyFloorBody": "办公室里还没有智能体。创建一个，即可在这里看到它的实时终端输出。",
+    "emptyFloorBody_simple": "你的团队还是空的。先连接你的 AI，然后添加第一位队友。",
     "loadFailedTitle": "无法启动",
     "loadFailedBody": "应用无法读取设置，因此暂时无法打开。",
     "retry": "重试",
@@ -1639,6 +1730,7 @@
   },
   "ptyTerminal": {
     "livePty": "实时 · 终端 {{id}}",
+    "livePty_simple": "实时对话",
     "zoomOut": "缩小 (Ctrl -)",
     "zoomReset": "重置缩放 (Ctrl 0)",
     "zoomIn": "放大 (Ctrl +)",
@@ -1749,5 +1841,180 @@
     },
     "noUsage": "{{provider}} 不会上报 token 或费用,因此该智能体的费用表、上下文计量和 token 预算会保持为空。",
     "ownSkills": "技能页安装的技能是供 Claude Code 使用的。{{provider}} 读取它自己的技能目录,所以这些技能不会出现在此智能体中。"
+  },
+  "conversation": {
+    "regionLabel": "与 {{name}} 的对话",
+    "you": "你",
+    "saidYou": "你说：",
+    "saidAssistant": "{{name}} 说：",
+    "emptyTitle": "向 {{name}} 打个招呼吧…",
+    "emptyBody": "在下方输入消息并按 Enter。{{name}} 会规划工作、请团队帮忙，并在这里向你汇报。",
+    "working": "{{name}} 正在处理…",
+    "jumpToLatest": "跳到最新消息",
+    "pendingWaiting": "等待发送",
+    "pendingSending": "正在发送…",
+    "teamUpdate": "{{name}} 收到了团队的更新",
+    "showTerminal": "显示实时终端",
+    "hideTerminal": "隐藏实时终端",
+    "noteStarting": "{{name}} 正在准备中…对话稍后会显示在这里。同时，下面是幕后正在发生的事情。",
+    "noteUnsupported": "对于这个 AI，{{name}} 的回复会显示在下方的实时终端中。",
+    "noteUnreadable": "目前无法以聊天形式显示这段对话，因此改为显示实时终端。"
+  },
+  "simpleMode": {
+    "needMore": "需要更多功能？显示高级选项",
+    "connectAi": "连接你的 AI",
+    "status": {
+      "idle": "随时待命",
+      "thinking": "正在思考…",
+      "working": "正在处理…",
+      "waiting": "正在等待队友",
+      "blocked": "需要你的答复",
+      "success": "全部完成",
+      "ghost": "已离线",
+      "compacting": "正在整理笔记…",
+      "looping": "好像卡住了——请看一下",
+      "typing": "你有一条未发送的消息"
+    },
+    "aiConnection": {
+      "intro": "你的团队依靠 AI 服务运行。请选择一个服务，然后添加它的密钥：这是一个私密口令，让本应用能够使用你的账户。",
+      "whichAi": "用哪个 AI 来驱动你的团队？",
+      "otherOptions": "其他选项…",
+      "appliesOnRestart": "下次启动应用时将使用 {{engine}}。点击“保存”以保留此选择。",
+      "yourKey": "你的密钥",
+      "keySaved": "此电脑上已保存一个密钥。你可以在下方替换它。",
+      "noKey": "尚未保存密钥。请在下方粘贴一个以开始使用。",
+      "keyFrom": "你的密钥来自哪里？",
+      "keyFor": "{{label}} 密钥",
+      "getKey": "获取 {{label}} 密钥",
+      "claudeLogin": "已在此电脑上登录 Claude？那么你可能根本不需要密钥。",
+      "serverAddress": "服务器地址（可选）",
+      "serverAddressHint": "仅当你的服务商提供了地址时才需要，例如 https://api.deepseek.com。",
+      "keyPrivacy": "密钥会安全地保存在此电脑上，之后不会再显示。"
+    },
+    "settings": {
+      "advancedTitle": "显示高级选项",
+      "advancedDesc": "显示所有设置和工具：终端、触发器、记忆、预算、集成等。",
+      "preferences": "偏好设置",
+      "themeTitle": "外观",
+      "themeDesc": "整个应用使用浅色或深色。",
+      "dark": "深色",
+      "light": "浅色",
+      "hiddenNote": "简单模式让此窗口保持简洁。语音、集成、记忆、预算等技术设置在你显示高级选项之前都会隐藏。"
+    },
+    "addAgent": {
+      "goalLabel": "这位队友要做什么？",
+      "goalPlaceholder": "例如：帮我整理笔记，并在每天早上给我写一份简短的总结。",
+      "ideasHint": "不确定？从一个想法开始：",
+      "moreOptions": "更多选项",
+      "lookHead": "外观",
+      "workspaceHead": "工作位置",
+      "engineHead": "AI 引擎",
+      "roles": {
+        "researcher": "研究员",
+        "writer": "写作者",
+        "fixer": "问题解决者",
+        "organizer": "整理者"
+      }
+    }
+  },
+  "engineCost": {
+    "hermes": {
+      "tag": "推荐 · 低成本",
+      "desc": "Hermes 是推荐的引擎。配合 OpenRouter 或 DeepSeek 密钥使用，成本较低。"
+    },
+    "claude": {
+      "tag": "成本较高",
+      "desc": "Claude 会使用你的 Claude 订阅或 API 额度，成本比其他选项更高。"
+    },
+    "codex": {
+      "tag": "使用你的 OpenAI 套餐",
+      "desc": "Codex 会使用你的 OpenAI（ChatGPT）套餐或 API 额度。"
+    }
+  },
+  "firstRun": {
+    "title": "正在设置你的助手",
+    "titleFailed": "设置需要你处理",
+    "stepCounter": "第 {{current}} 步，共 {{total}} 步",
+    "step": {
+      "checking": "正在检查你的电脑",
+      "installing": "正在安装你的助手",
+      "starting": "正在首次启动",
+      "preparing": "正在准备所需的一切"
+    },
+    "detail": {
+      "python": "正在安装 Python(它运行所依赖的工具)",
+      "node": "正在安装 Node.js(它运行所依赖的工具)",
+      "ripgrep": "正在安装快速文件搜索工具",
+      "ffmpeg": "正在安装音视频工具"
+    },
+    "hint": "第一次可能需要几分钟，只会发生这一次。",
+    "hintLong": "仍在进行。网络较慢时，第一次可能需要 10 分钟甚至更久。你可以保持此窗口打开。",
+    "barLabel": "设置进度",
+    "showDetails": "显示详情",
+    "hideDetails": "隐藏详情",
+    "detailsLabel": "最近的设置输出",
+    "detailsEmpty": "暂无内容。",
+    "compact": {
+      "working": "正在设置 {{engine}}：{{step}}（{{current}}/{{total}}）",
+      "failed": "{{engine}} 的设置已中断：{{reason}}"
+    },
+    "card": {
+      "working": "正在设置… {{current}}/{{total}}",
+      "failed": "设置需要处理"
+    },
+    "action": {
+      "retry": "重试",
+      "retrying": "正在重试…",
+      "addKey": "添加你的密钥",
+      "openSettings": "打开设置"
+    },
+    "retryFailed": "无法重新开始设置（{{error}}）。请关闭并重新打开应用，然后再试一次。",
+    "failure": {
+      "network": {
+        "title": "无法连接互联网",
+        "body": "无法下载助手。请检查你的网络连接，然后重试。"
+      },
+      "no_key": {
+        "title": "你的助手需要一个密钥",
+        "body": "助手已启动，但还没有可用的密钥。添加你的密钥后即可使用。"
+      },
+      "installer_error": {
+        "title": "安装已中断",
+        "body": "你的电脑没有受到任何影响。重试通常可以解决。"
+      },
+      "installer_unavailable": {
+        "title": "这里无法自动安装",
+        "body": "请在设置中选择其他 AI，或自行安装后重启应用。"
+      },
+      "engine_missing": {
+        "title": "安装没有完成",
+        "body": "助手还没有就位。请重试以完成安装。"
+      },
+      "engine_exit": {
+        "title": "助手启动后立即停止了",
+        "body": "重试通常可以解决。如果反复出现，请在设置中检查你的密钥。"
+      },
+      "timeout": {
+        "title": "耗时远超预期",
+        "body": "可能有环节卡住了。请重试。"
+      },
+      "spawn_error": {
+        "title": "无法启动助手",
+        "body": "请重试。如果一直失败，请打开详情并发给支持人员。"
+      }
+    },
+    "choice": {
+      "legend": "你的助手应使用哪一个 Hermes 设置？",
+      "intro": "这台电脑上已经配置过 Hermes。请选择助手使用哪一个设置。",
+      "own": "使用我现有的 Hermes 设置（提供商：{{provider}}）",
+      "ownNote": "这里不需要密钥。如果它已经能用，推荐选这个。",
+      "ownNoKeyNote": "这里不需要密钥，但我们没在其中找到密钥，所以可能还不能用。",
+      "recommended": "推荐",
+      "app": "改用我在这里粘贴的密钥",
+      "appNote": "助手将使用你在本应用中设置的提供商和密钥。你自己的 Hermes 文件不会被改动。",
+      "ownChosen": "你的助手将使用你现有的 Hermes 设置。无需在此粘贴任何内容。",
+      "saved": "已保存。下次启动助手时生效。",
+      "saveFailed": "无法保存这个选择，请重试。"
+    }
   }
 }

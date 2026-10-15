@@ -26,6 +26,9 @@ declare global {
     hiveMessages(...args: any[]): Promise<any>;
     hiveInbox(id: string): Promise<any>;
     hiveAgentDirectory(): Promise<any>;
+    /** `conversation_read`: clean user/assistant turns from the engine's own
+     *  transcript, incremental via the opaque cursor (simple-mode chat view). */
+    conversationRead(agentId: string, sinceCursor?: string | null): Promise<import('@shared/conversation').ConversationRead>;
     /** Kills every PTY then exits the app (`app_force_quit`). */
     forceQuit(): Promise<boolean>;
     /** Graceful shutdown — resolves the live worker count; rejects on failure. */
@@ -49,6 +52,14 @@ declare global {
       cb: (info: { exitCode: number | null; signal: number | null }) => void
     ): () => void;
     onHookEvent(cb: (e: any) => void): () => void;
+    /** `engine:setup` — first-run install/start progress (shared/engineSetup.ts). */
+    onEngineSetup(cb: (e: any) => void): () => void;
+    engineSetupSnapshot(): Promise<any[]>;
+    engineSetupRetry(agentId: string): Promise<boolean>;
+    /** Read-only look at the user's own Hermes setup — never a key value. */
+    hermesUserConfigStatus(): Promise<{
+      exists: boolean; provider: string | null; model: string | null; hasKeys: boolean; path: string;
+    }>;
     onAgentStatus(cb: (e: any) => void): () => void;
     // Upstream's preload exposes ~200 members; the shim (cth.ts) implements
     // them all. `any` keeps copied code compiling verbatim — method-level

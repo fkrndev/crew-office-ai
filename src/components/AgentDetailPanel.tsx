@@ -19,6 +19,7 @@ import { Icon } from './Icon';
 import { AgentNameEditor } from './AgentNameEditor';
 import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 export interface AgentDetailPanelProps {
   agent: Agent;
@@ -80,7 +81,12 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
   const renameAgent = useStore(s => s.renameAgent);
   const setFullscreen = useStore(s => s.setFullscreen);
   const fullscreenAgentId = useStore(s => s.fullscreenAgentId);
-  const sidebarTab = useStore(s => s.sidebarTab);
+  const simple = useIsSimpleMode();
+  // Simple mode has ONE view of a teammate — its live conversation. The git /
+  // messages / traces tabs (and a stale persisted choice of one of them) are
+  // advanced-only, so they never render here.
+  const sidebarTabStored = useStore(s => s.sidebarTab);
+  const sidebarTab = simple ? 'terminal' : sidebarTabStored;
   const setSidebarTab = useStore(s => s.setSidebarTab);
   const isReal = !!agent.ptyId;
   // While this agent is shown in the fullscreen overlay, the fullscreen view
@@ -166,10 +172,11 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
             minWidth: 0, overflow: 'hidden'
           }}>
             <PixelBadge status={agent.status} />
-            <span style={{
+            {/* The folder name is a developer detail; the status badge says it all. */}
+            {!simple && <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-            }}>{agent.project}</span>
+            }}>{agent.project}</span>}
           </div>
         </div>
         <PixelButton variant="secondary" size="sm" onClick={() => setEditOpen(true)}>
@@ -183,7 +190,9 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
           </span>
         </PixelButton>
         {/* v0.3.4: the IDE lives at agent level (replaces the old files tab) —
-            opens the full-window Monaco editor rooted at this agent's workspace. */}
+            opens the full-window Monaco editor rooted at this agent's workspace.
+            Simple mode hides it, together with the system-terminal button below. */}
+        {!simple && (<>
         <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true, agent.id)}>
           <span
             className="cth-tip cth-tip-wrap"
@@ -214,6 +223,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
               : compactHeader ? '' : t('agentDetail.open')}
           </span>
         </PixelButton>
+        </>)}
         {isReal && (
           <PixelButton
             variant="destructive"
@@ -239,8 +249,8 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
       {/* #7C — operator control (pause / halt / steer) for live agents */}
       {isReal && <AgentControlStrip agentId={agent.id} />}
 
-      {/* Tabs */}
-      <SidebarTabs current={sidebarTab} accent={agent.accent} onChange={setSidebarTab} />
+      {/* Tabs — a single tab is not a choice, so simple mode shows none. */}
+      {!simple && <SidebarTabs current={sidebarTab} accent={agent.accent} onChange={setSidebarTab} />}
 
       {/* Active tab body — fills remaining space */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>

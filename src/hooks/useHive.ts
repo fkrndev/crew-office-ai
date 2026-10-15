@@ -422,6 +422,10 @@ export function useHive(config: HarnessConfig | null): void {
       const reg = await window.cth.hiveRegistry().catch(() => null);
       const godName = resolveGodName(reg?.agents?.[GOD_ID]?.name);
 
+      // 'claude' here is the LEGACY fallback (see LEGACY_ENGINE): an install that
+      // predates the Hermes-first default has no stored godProvider and must keep
+      // running Claude. New installs are never silently on it — onboarding writes
+      // godProvider (hermes by default) explicitly when it finishes.
       const godProvider = config.godProvider ?? 'claude';
       const godModel = config.godModel;
       const command = buildSpawnCommand(config, godModel, godProvider);
@@ -446,6 +450,9 @@ export function useHive(config: HarnessConfig | null): void {
       });
       if (cancelled) { godSpawning.current = false; return; }
       if (!res.ok) { godSpawning.current = false; useStore.getState().setGodStatus('failed'); return; }
+      // The engine answered "no API key": simple mode turns this into a friendly
+      // "Connect your AI" button on the orchestrator's card (cleared once a key is saved).
+      if (res.needsKey) useStore.getState().setEngineNeedsKey(true);
       const god: Agent = {
         id: GOD_ID,
         name: godName,

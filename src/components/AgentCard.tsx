@@ -9,6 +9,8 @@ import { CostHud } from '@/realtime/CostHud';
 import { AccentColorName } from '@/design/tokens';
 import { OfficeCharacterName } from '@/scene/office/cast';
 import { AgentNameEditor } from './AgentNameEditor';
+import { PixelButton } from './PixelButton';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 export interface AgentCardProps {
   name: string;
@@ -45,6 +47,14 @@ export interface AgentCardProps {
   /** Opens the note editor (the strip owns the editing overlay). When set, the
    *  card shows a small ✎ affordance on its note row. */
   onEditNote?: () => void;
+  /** Simple mode only: the engine answered "needs an API key", so the card shows
+   *  one friendly "Connect your AI" button instead of the voice / usage row. */
+  needsConnection?: boolean;
+  onConnect?: () => void;
+  /** First run: this agent's engine is being installed / started for the first
+   *  time (see store/engineSetup.ts `setupBadge`) — the context line then says so
+   *  instead of showing a folder or a bare "idle". */
+  setup?: { failed: boolean; current: number; total: number };
 }
 
 const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
@@ -57,9 +67,13 @@ const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
 export function AgentCard({
   name, character, accent, status, ptyId, project, action, progress = 0,
   contextTokens, contextLimit, selected, isGod, onClick, onRename,
-  doingCount = 0, onTaskNoteClick, draggable, note, onEditNote
+  doingCount = 0, onTaskNoteClick, draggable, note, onEditNote,
+  needsConnection, onConnect, setup
 }: AgentCardProps) {
   const { t } = useTranslation();
+  // Simple mode: one friendly status sentence instead of folder / tool names, no
+  // context gauge, no voice / usage row — nothing a non-technical person has to decode.
+  const simple = useIsSimpleMode();
   const [hover, setHover] = useState(false);
   const typing = useHasTerminalDraft(ptyId);
   // IDENTITY and SELECTION are two different things, and conflating them is why
@@ -126,6 +140,7 @@ export function AgentCard({
 
   // One context line: what it's DOING while working, WHERE it lives while idle.
   const infoLine = (status !== 'idle' && action) ? action : project;
+  const friendlyStatus = t(`simpleMode.status.${typing ? 'typing' : status}`);
   const noteFirstLine = (note ?? '').split('\n').find((l) => l.trim()) ?? '';
 
   return (
@@ -227,22 +242,59 @@ export function AgentCard({
                   it was allowed to shrink, the browser resolved the overflow by
                   eating the NAME instead. Truncation should land on the longest,
                   most redundant thing, not on the identity. */}
-              <PixelBadge status={typing ? 'typing' : status} style={{ flexShrink: 0 }} />
+              {/* Simple mode: a colour dot only — the friendly sentence below already
+                  says it in words, and the word badge was squeezing the name. */}
+              <PixelBadge status={typing ? 'typing' : status} label={simple ? '' : undefined} style={{ flexShrink: 0 }} />
             </div>
 
             {/* Context line: action while working, repo while idle. */}
+            {setup ? (
+              // First-run setup in progress (or stuck): the one thing worth saying.
+              <div
+                role="status"
+                data-testid="agent-card-setup"
+                title={setup.failed ? t('firstRun.card.failed') : t('firstRun.hint')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, minWidth: 0,
+                  fontSize: 11, lineHeight: '14px',
+                  color: setup.failed ? 'var(--cth-ink-900)' : 'var(--cth-ink-700)',
+                  fontWeight: setup.failed ? 700 : 400
+                }}
+              >
+                {!setup.failed && (
+                  <span aria-hidden="true" style={{
+                    width: 6, height: 6, flexShrink: 0, background: 'var(--cth-brand)',
+                    animation: 'cth-blink 1s steps(1, end) infinite'
+                  }} />
+                )}
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {setup.failed
+                    ? t('firstRun.card.failed')
+                    : t('firstRun.card.working', { current: setup.current, total: setup.total })}
+                </span>
+              </div>
+            ) : (
             <div
-              title={`${project}${action && status !== 'idle' ? ` — ${action}` : ''}`}
+              title={simple ? friendlyStatus : `${project}${action && status !== 'idle' ? ` — ${action}` : ''}`}
               style={{
                 fontSize: 11, lineHeight: '14px',
                 color: 'var(--cth-ink-500)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
               }}
-            >{infoLine}</div>
+            >{simple ? friendlyStatus : infoLine}</div>
+            )}
 
             {/* God: voice on its own compact row. Workers: the private note row.
                 Both sit ABOVE the gauge, so it is never covered. */}
-            {isGod ? (
+            {isGod && simple ? (
+              <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, minHeight: 18 }} onClick={(e) => e.stopPropagation()}>
+                {needsConnection && (
+                  <PixelButton variant="primary" size="sm" onClick={() => onConnect?.()}>
+                    {t('simpleMode.connectAi')}
+                  </PixelButton>
+                )}
+              </div>
+            ) : isGod ? (
               // Talk grows an info mark when the OpenAI key is missing, so this
               // row can hold three things instead of two. `overflow: hidden` is
               // the guard: the toggle's label shrinks first (it has minWidth:0),
@@ -295,8 +347,9 @@ export function AgentCard({
               </div>
             )}
 
-            {/* Context gauge — slim fill bar pinned to the card's bottom edge. */}
-            <div style={{ marginTop: 'auto' }} title={gaugeTitle}>
+            {/* Context gauge — slim fill bar pinned to the card's bottom edge.
+                Simple mode drops it: "context window" means nothing to most people. */}
+            {!simple && <div style={{ marginTop: 'auto' }} title={gaugeTitle}>
               <div style={{
                 height: 4, width: '100%',
                 background: 'var(--cth-cream-200)',
@@ -305,7 +358,7 @@ export function AgentCard({
               }}>
                 <div style={{ width: `${pct}%`, height: '100%', background: gaugeColor }} />
               </div>
-            </div>
+            </div>}
           </div>
         </div>
       </PixelPanel>

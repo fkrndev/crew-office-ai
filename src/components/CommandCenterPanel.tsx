@@ -6,6 +6,7 @@ import { PixelButton } from './PixelButton';
 import { SpritePortrait } from './SpritePortrait';
 import { PtyTerminalView } from './PtyTerminalView';
 import { MessageQueueComposer } from './MessageQueueComposer';
+import { ConversationView } from './ConversationView';
 import { TasksKanban } from './TasksKanban';
 import { AskMeTab } from './AskMeTab';
 import { TriggersTab } from './triggers/TriggersTab';
@@ -38,6 +39,7 @@ import {
 import { canReceiveInbox } from '@shared/agentProvider';
 import { isComposingKey } from '@shared/imeGuard';
 import { useRtl } from '@/i18n/useDirection';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 /** Michael's control surface. Shown instead of the plain terminal/files panel
  *  when the god agent is selected: terminal + queue, the floor roster (with
@@ -80,12 +82,22 @@ const TABS: { key: CCTab; labelKey: string; icon: Parameters<typeof Icon>[0]['na
   { key: 'workers', labelKey: 'commandCenter.tabs.workers', icon: 'gear' }
 ];
 
+/** The tabs simple mode keeps: the conversation with the orchestrator (the
+ *  terminal tab, relabelled "talk" — it holds the composer, so it cannot go),
+ *  the task board, the questions waiting for the human, and the activity feed.
+ *  Everything else (monitor, triggers, memory, graph, skills, workers, …) is
+ *  still one switch away in advanced mode. */
+export const SIMPLE_TABS: readonly CCTab[] = ['terminal', 'tasks', 'human', 'activity'];
+
 /** @param fullscreen this instance IS the fullscreen overlay, so it owns the pty
  *  and renders the real terminal. The docked instance renders the "open in
  *  fullscreen" placeholder instead — two live xterms on one pty fight over its
  *  cols/rows and corrupt the display. */
 export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent; fullscreen?: boolean }) {
   const { t } = useTranslation();
+  const simple = useIsSimpleMode();
+  // i18next context → the plain-language `key_simple` variant (missing → the normal one).
+  const sctx = simple ? { context: 'simple' } : undefined;
   const [tab, setTab] = useState<CCTab>('terminal');
   // The trigger-history ledger has nothing to say until an outside party can
   // reach us, so its tab appears only once an org key or a webhook exists. This
@@ -98,7 +110,13 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
   useEffect(() => {
     if (!showHistory && tab === 'trigger-history') setTab('terminal');
   }, [showHistory, tab]);
-  const visibleTabs = TABS.filter((t) => t.key !== 'trigger-history' || showHistory);
+  const visibleTabs = TABS.filter((t) => simple
+    ? SIMPLE_TABS.includes(t.key)
+    : (t.key !== 'trigger-history' || showHistory));
+  // Switching to simple while parked on a tab it hides must not leave a blank body.
+  useEffect(() => {
+    if (simple && !SIMPLE_TABS.includes(tab)) setTab('terminal');
+  }, [simple, tab]);
 
   // External tab requests (the office task board → 'tasks', the boss-room
   // calendar → 'triggers'). seq-keyed so clicking again re-opens the tab even
@@ -108,6 +126,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
     if (!ccTabRequest) return;
     const key = ccTabRequest.tab as CCTab;
     if (!TABS.some((t) => t.key === key)) return;
+    if (useStore.getState().uiMode === 'simple' && !SIMPLE_TABS.includes(key)) return;
     // Read the gate live rather than depending on it — as a dependency it would
     // re-fire a stale request the moment the tab appeared.
     if (key === 'trigger-history' && !triggerHistoryVisible(useStore.getState())) return;
@@ -149,6 +168,28 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
     await Promise.all(all.map((a) => window.cth.controlAutoDelivery(a.id, next).catch(() => null)));
   };
 
+  // The raw terminal of the talk tab — built once so advanced mode (shown as-is)
+  // and simple mode (tucked behind the conversation's "Show live terminal"
+  // disclosure, still mounted so status parsing + queue delivery keep running)
+  // render the very same element.
+  const talkTerminal = agent.ptyId ? (
+    <PtyTerminalView
+      key={terminalInstanceKey(agent.ptyId, agent.terminalGeneration)}
+      ptyId={agent.ptyId}
+      onStreamData={onPtyStream}
+      onUserPrompt={(t) => {
+        updateAgent(agent.id, { lastPrompt: t });
+        if (t.trim().toLowerCase() === '/clear') {
+          updateAgent(agent.id, { contextTokens: 0, contextLimit: undefined, progress: 0 });
+        }
+        void window.cth.historyAdd({ agentId: agent.id, cwd: agent.cwd, text: t });
+      }}
+      onToggleFullscreen={() => setFullscreen(fullscreen ? null : agent.id)}
+      fullscreen={fullscreen}
+      embedded={!fullscreen}
+    />
+  ) : null;
+
   return (
     <PixelPanel
       variant="default"
@@ -176,18 +217,19 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
           <div style={{
             fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px', color: 'var(--cth-ink-900)',
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-          }}>{t('commandCenter.title')}</div>
+          }}>{t('commandCenter.title', sctx)}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 1, minWidth: 0 }}>
             <PixelBadge status={agent.status} />
             <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-            }}>{t('commandCenter.runsTheFloor', { name: agent.name })}</span>
+            }}>{t('commandCenter.runsTheFloor', { name: agent.name, ...sctx })}</span>
           </div>
         </div>
         {/* v0.3.4: floor-wide auto-delivery lives HERE (one switch for every
             agent's queue), and the IDE opens from agent level, not the toolbar.
             Short labels — the tooltips carry the full explanation. */}
+        {!simple && (
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
           <PixelButton
             variant={floorDeliveryPaused ? 'primary' : 'secondary'}
@@ -225,6 +267,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
             </span>
           </PixelButton>
         </div>
+        )}
       </div>
 
       {/* Tab bar — ONE row, tabs at their natural width, scrolling only if the
@@ -285,7 +328,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
               fontFamily: 'var(--cth-font-ui)', fontSize: 13
             }}
           >
-            <Icon name={tabDef.icon} /> {t(tabDef.labelKey)}
+            <Icon name={tabDef.icon} /> {t(tabDef.labelKey, sctx)}
           </button>
         ))}
       </div>
@@ -295,24 +338,19 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
         {tab === 'terminal' && (
           isFullscreenedHere ? (
             <Centered>{t('commandCenter.terminalFullscreen')}</Centered>
+          ) : agent.ptyId && simple ? (
+            // Simple mode: a clean conversation; the raw terminal is behind a
+            // collapsed "Show live terminal" disclosure (or the view itself
+            // when the engine has no readable transcript).
+            <ConversationView
+              agent={agent}
+              terminal={<div style={{ flex: 1, minHeight: 0, display: 'flex' }}>{talkTerminal}</div>}
+              composer={<MessageQueueComposer agent={agent} />}
+            />
           ) : agent.ptyId ? (
             <>
               <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-                <PtyTerminalView
-                  key={terminalInstanceKey(agent.ptyId, agent.terminalGeneration)}
-                  ptyId={agent.ptyId}
-                  onStreamData={onPtyStream}
-                  onUserPrompt={(t) => {
-                    updateAgent(agent.id, { lastPrompt: t });
-                    if (t.trim().toLowerCase() === '/clear') {
-                      updateAgent(agent.id, { contextTokens: 0, contextLimit: undefined, progress: 0 });
-                    }
-                    void window.cth.historyAdd({ agentId: agent.id, cwd: agent.cwd, text: t });
-                  }}
-                  onToggleFullscreen={() => setFullscreen(fullscreen ? null : agent.id)}
-                  fullscreen={fullscreen}
-                  embedded={!fullscreen}
-                />
+                {talkTerminal}
               </div>
               <MessageQueueComposer agent={agent} />
             </>
@@ -1359,6 +1397,8 @@ interface LogEntry { ts?: number; kind?: string; [k: string]: unknown }
 
 function ActivityTab() {
   const { t } = useTranslation();
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
   const [log, setLog] = useState<LogEntry[]>([]);
   const [board, setBoard] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1375,30 +1415,35 @@ function ActivityTab() {
 
   const fmt = (e: LogEntry): string => {
     switch (e.kind) {
-      case 'spawn': return t('commandCenter.logSpawn', { name: e.name ?? e.agentId });
+      case 'spawn': return t('commandCenter.logSpawn', { name: e.name ?? e.agentId, ...sctx });
       case 'message': return t('commandCenter.logMessage', { from: e.from, to: e.to, subject: e.subject || e.act });
       case 'drain': return t('commandCenter.logDrain', { agent: e.agentId, count: e.count });
-      case 'escalate': return t('commandCenter.logEscalate', { subject: e.subject ?? '' });
+      case 'escalate': return t('commandCenter.logEscalate', { subject: e.subject ?? '', ...sctx });
       case 'approval': return e.approve ? t('commandCenter.logApprovalGranted') : t('commandCenter.logApprovalDenied');
       default: return JSON.stringify(e);
     }
   };
 
+  // Simple mode: plain sentences only — no event-kind column, no mailbox "drain"
+  // plumbing, and no raw board dump.
+  const shown = simple ? log.filter((e) => e.kind !== 'drain') : log;
   return (
     <Scroll>
       <Section title={t('commandCenter.activity')}>
-        {log.length === 0 && <Muted>{t('commandCenter.nothingYet')}</Muted>}
-        {[...log].reverse().map((e, i) => (
+        {shown.length === 0 && <Muted>{t('commandCenter.nothingYet')}</Muted>}
+        {[...shown].reverse().map((e, i) => (
           <div key={i} style={{ fontSize: 12, color: 'var(--cth-ink-700)', padding: '2px 0', display: 'flex', gap: 6 }}>
-            <span style={{ color: 'var(--cth-ink-300)', flexShrink: 0 }}>{e.kind ?? '·'}</span>
+            {!simple && <span style={{ color: 'var(--cth-ink-300)', flexShrink: 0 }}>{e.kind ?? '·'}</span>}
             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(e)}</span>
           </div>
         ))}
       </Section>
 
+      {!simple && (
       <Section title={t('commandCenter.board')}>
         <Pre>{board || t('commandCenter.boardEmpty')}</Pre>
       </Section>
+      )}
     </Scroll>
   );
 }

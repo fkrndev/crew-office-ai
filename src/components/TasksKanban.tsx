@@ -8,6 +8,7 @@ import { Icon } from './Icon';
 import { useStore } from '@/store/store';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { useRtl } from '@/i18n/useDirection';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 /** A card on the task kanban. Mirrors HiveTask in the main/preload process —
  *  re-declared locally so the renderer doesn't reach into the preload package
@@ -120,6 +121,8 @@ export function parseTasks(raw: unknown): HiveTask[] {
  */
 export function TasksKanban() {
   const { t } = useTranslation();
+  // Plain-language column / hint wording in simple mode (`key_simple` variants).
+  const sctx = useIsSimpleMode() ? { context: 'simple' } : undefined;
   const agents = useStore((s) => s.agents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
   const [dismissError, setDismissError] = useState<string | undefined>();
@@ -183,7 +186,7 @@ export function TasksKanban() {
           {t('kanban.count', { count: tasks.length })}
         </span>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--cth-ink-300)' }}>
-          {t('kanban.newWorkHint')}
+          {t('kanban.newWorkHint', sctx)}
         </span>
       </div>
 
@@ -212,7 +215,7 @@ export function TasksKanban() {
                 background: col.accent, boxShadow: 'inset 0 -1px 0 var(--cth-ink-900)',
                 fontFamily: 'var(--cth-font-display)', fontSize: 9, color: 'var(--cth-ink-900)'
               }}>
-                {t(col.labelKey)}
+                {t(col.labelKey, sctx)}
                 <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: 'var(--cth-font-ui)' }}>{cards.length}</span>
               </div>
               <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -252,6 +255,7 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
   onDismiss: () => void;
 }) {
   const { t } = useTranslation();
+  const sctx = useIsSimpleMode() ? { context: 'simple' } : undefined;
   return (
     <div style={{ position: 'relative', display: 'flex' }}>
       <button
@@ -289,7 +293,7 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
           )}
         </span>
         {waitsOnHuman(task) && (
-          <span title={t('kanban.needsYouTitle')} style={{
+          <span title={t('kanban.needsYouTitle', sctx)} style={{
             alignSelf: 'center', marginRight: 18, flexShrink: 0,
             fontFamily: 'var(--cth-font-display)', fontSize: 10, padding: '2px 5px 1px',
             background: 'var(--cth-lilac)', color: 'var(--cth-ink-900)',

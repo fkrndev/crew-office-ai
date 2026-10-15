@@ -36,6 +36,8 @@ import { capabilitiesForProvider } from '@shared/providerCapabilities';
 import { ProviderNotes } from './ProviderNotes';
 import { useRtl } from '@/i18n/useDirection';
 import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
+import { engineCostHint } from '@shared/engineCost';
 
 const ACCENTS: AccentColorName[] = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'];
 
@@ -131,6 +133,48 @@ const SECTIONS: { key: SectionKey; labelKey: string; hintKey: string }[] = [
   { key: 'briefing',  labelKey: 'addAgent.sections.briefing.label',  hintKey: 'addAgent.sections.briefing.hint' }
 ];
 
+// Simple mode's "start from an idea" chips. Four plain roles instead of the five
+// developer templates; the BRIEFINGS stay English (they become the agent's
+// standing prompt, like DESCRIPTION_TEMPLATES) and only the labels are translated.
+const SIMPLE_ROLES: { key: string; labelKey: string; goal: string }[] = [
+  {
+    key: 'researcher',
+    labelKey: 'simpleMode.addAgent.roles.researcher',
+    goal: 'Research the questions you are given across several sources, check the key facts, and answer in a short, clear summary.'
+  },
+  {
+    key: 'writer',
+    labelKey: 'simpleMode.addAgent.roles.writer',
+    goal: 'Draft and polish written material such as documents, messages and notes. Keep a clear, friendly tone and ask when something is unclear.'
+  },
+  {
+    key: 'fixer',
+    labelKey: 'simpleMode.addAgent.roles.fixer',
+    goal: 'Look into problems that are reported, find the real cause, and fix them step by step. Explain what you found in plain words.'
+  },
+  {
+    key: 'organizer',
+    labelKey: 'simpleMode.addAgent.roles.organizer',
+    goal: 'Keep files, notes and tasks tidy and up to date. Do the small chores so nothing piles up, and flag anything you are unsure about.'
+  }
+];
+
+/** The one-line role a teammate carries (hive `role`, card tooltip) when the user
+ *  only wrote a goal: its first sentence, trimmed. */
+function roleFromGoal(goal: string): string {
+  const first = goal.trim().split(/(?<=[.!?])\s|\n/)[0]?.trim() ?? '';
+  if (!first) return 'a fresh harness';
+  return first.length > 90 ? `${first.slice(0, 87).trimEnd()}…` : first;
+}
+
+/** The first cast name no teammate on the floor already uses (the boss excluded),
+ *  so "Name" opens pre-filled with a face that is not a duplicate. */
+function suggestTeammate(taken: string[]): { name: OfficeCharacterName; displayName: string } {
+  const used = new Set(taken.map((n) => n.trim().toLowerCase()));
+  const pick = OFFICE_CAST.find((c) => c.name !== 'michael' && !used.has(c.displayName.toLowerCase()));
+  return pick ? { name: pick.name, displayName: pick.displayName } : { name: DEFAULT_CHARACTER, displayName: 'Jim' };
+}
+
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
@@ -151,6 +195,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const { t: tr } = useTranslation();
   const rtl = useRtl();
   const addAgent = useStore(s => s.addAgent);
+  // Simple mode: a one-screen form (name + what it should do) with everything else
+  // behind "More options". Legacy installs resolve to advanced and see the form below
+  // exactly as it always was. An imported hire under review keeps the full form —
+  // the manifest's fields (command, flags, MCP) are what the user is vetting.
+  const simpleUi = useIsSimpleMode();
+  const existingAgents = useStore(s => s.agents);
+  const setEngineNeedsKey = useStore(s => s.setEngineNeedsKey);
+  const [moreOpen, setMoreOpen] = useState(false);
   // Deep links and file batches share one FIFO. The head alone seeds the form;
   // every item still requires an explicit spawn or skip.
   const hireQueue = useStore(s => s.hireQueue);
@@ -196,10 +248,20 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     ? config.defaultModel
     : config.providerDefaultModels?.[initialProvider];
 
-  const [name, setName] = useState(pendingHire?.name ?? 'Jim');
-  const [character, setCharacter] = useState<OfficeCharacterName>(knownCharacter(pendingHire?.character));
+  // Simple mode opens with a free cast name (and its face) already filled in.
+  const [suggested] = useState(() =>
+    simpleUi && !pendingHire ? suggestTeammate(existingAgents.map((a) => a.name)) : null
+  );
+  const [name, setName] = useState(pendingHire?.name ?? suggested?.displayName ?? 'Jim');
+  const [character, setCharacter] = useState<OfficeCharacterName>(
+    knownCharacter(pendingHire?.character ?? suggested?.name)
+  );
   const [accent, setAccent] = useState<AccentColorName>(knownAccent(pendingHire?.accent));
-  const [cwd, setCwd] = useState<string>(config.registeredRepos?.[0] ?? '');
+  // Simple mode has no folder question up front: a teammate works in the last
+  // project used, else in the harness home (where the boss itself lives).
+  const [cwd, setCwd] = useState<string>(
+    config.registeredRepos?.[0] ?? (simpleUi ? (config.harnessHome ?? '') : '')
+  );
   // Local mirror of the registered projects so one added from here shows as a
   // quick-pick immediately (the `config` prop is a snapshot taken at open time).
   const [repos, setRepos] = useState<string[]>(config.registeredRepos ?? []);
@@ -591,6 +653,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     // Main expands `~` at ingestion and echoes back the absolute path it actually
     // spawned into — record THAT, so this agent's cwd matches the hive registry
     // (and survives a restart, where nothing re-expands it).
+    if (spawnRes.needsKey) setEngineNeedsKey(true);
     const spawnedCwd = spawnRes.cwd || cwd;
     // With git isolation the agent RUNS in its own worktree, but its PROJECT is
     // still the folder the user picked. Labelling the agent with the worktree's
@@ -611,7 +674,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       goal: goal.trim() || undefined,
       status: 'idle',
       action: spawnRes.needsKey
-        ? tr('addAgent.needsKey', { provider: spawnRes.needsKey })
+        ? tr('addAgent.needsKey', { provider: spawnRes.needsKey, ...(simpleUi ? { context: 'simple' } : {}) })
         : spawnRes.needsShardx
           ? tr('addAgent.needsShardx')
           : resuming && spawnRes.resumeNotFound ? tr('addAgent.statusResumeMissing') : tr('addAgent.statusStarting'),
@@ -656,6 +719,20 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     }
   };
 
+  // The simple layout applies while no hire is under review. `stacked` = its
+  // "More options" pane: the same field groups as the advanced sections, shown
+  // one under another (without the name, which already sits above, and the
+  // briefing, which is the goal box above) instead of behind the sidebar index.
+  const simpleView = simpleUi && !hireMeta;
+  const sctx = simpleView ? { context: 'simple' } : undefined;
+  const showSection = (k: SectionKey): boolean =>
+    simpleView ? k !== 'briefing' : section === k;
+  const showMoreFields = !simpleView || moreOpen;
+  const moreHead: CSSProperties = {
+    fontFamily: 'var(--cth-font-display)', fontSize: 9, lineHeight: '13px',
+    color: 'var(--cth-ink-900)', textTransform: 'uppercase', marginTop: 4
+  };
+
   return (
     <div
       onClick={busy ? undefined : onClose}
@@ -668,10 +745,10 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
         zIndex: 500
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 940, maxWidth: '95vw' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: simpleView ? 620 : 940, maxWidth: '95vw' }}>
         <PixelPanel
           variant="dialog"
-          title={tr('addAgent.title')}
+          title={tr('addAgent.title', sctx)}
           style={{ padding: 16 }}
           noPadding
         >
@@ -781,9 +858,97 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
               </div>
             )}
 
+            {/* SIMPLE MODE — the whole job in one screen: who, and what for. */}
+            {simpleView && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+                  <div style={{
+                    width: 48, height: 60, flexShrink: 0, overflow: 'hidden',
+                    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+                    background: `var(--cth-${accent}-light)`, boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+                  }}>
+                    <SpritePortrait character={character} scale={2} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Row label={tr('addAgent.name')}>
+                      <input
+                        autoFocus
+                        value={name}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setName(next);
+                          if (error) setError(undefined);
+                          const match = characterForName(next);
+                          if (match) setCharacter(match);
+                        }}
+                        placeholder={tr('addAgent.namePlaceholder')}
+                        style={inputStyle}
+                      />
+                    </Row>
+                  </div>
+                </div>
+
+                <Row label={tr('simpleMode.addAgent.goalLabel')}>
+                  <textarea
+                    dir={rtl ? 'auto' : undefined}
+                    value={goal}
+                    onChange={(e) => {
+                      setGoal(e.target.value);
+                      setDescription(roleFromGoal(e.target.value));
+                    }}
+                    placeholder={tr('simpleMode.addAgent.goalPlaceholder')}
+                    rows={4}
+                    style={{ ...inputStyle, fontFamily: 'var(--cth-font-ui)', resize: 'none' }}
+                  />
+                </Row>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                    {tr('simpleMode.addAgent.ideasHint')}
+                  </span>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {SIMPLE_ROLES.map((r) => {
+                      const active = goal === r.goal;
+                      return (
+                        <button
+                          key={r.key}
+                          type="button"
+                          onClick={() => { setGoal(r.goal); setDescription(roleFromGoal(r.goal)); }}
+                          aria-pressed={active}
+                          title={r.goal}
+                          style={{
+                            padding: '5px 12px 3px', border: 'none', cursor: 'pointer',
+                            background: active ? `var(--cth-${accent}-light)` : 'var(--cth-cream-100)',
+                            boxShadow: active ? 'inset 0 0 0 1.5px var(--cth-ink-500)' : 'inset 0 0 0 1px var(--cth-ink-100)',
+                            fontFamily: 'var(--cth-font-ui)', fontSize: 13, color: 'var(--cth-ink-900)'
+                          }}
+                        >
+                          {tr(r.labelKey)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setMoreOpen((v) => !v)}
+                  aria-expanded={moreOpen}
+                  data-testid="add-agent-more"
+                  style={{
+                    alignSelf: 'flex-start', padding: '4px 0', border: 'none', background: 'transparent',
+                    cursor: 'pointer', fontFamily: 'var(--cth-font-ui)', fontSize: 13,
+                    color: 'var(--cth-ink-700)', textDecoration: 'underline'
+                  }}
+                >
+                  {moreOpen ? '▾' : '▸'} {tr('simpleMode.addAgent.moreOptions')}
+                </button>
+              </div>
+            )}
+
             {/* Template bar — one-click spawn presets saved in config. Hidden
                 while reviewing an imported hire (the manifest owns the form). */}
-            {!hireMeta && (
+            {!hireMeta && showMoreFields && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <span style={{
                   fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
@@ -858,10 +1023,11 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
             )}
 
             {/* sidebar index + the active section's fields */}
+            {showMoreFields && (
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
               {/* LEFT — section index. Capabilities isn't a nav item: it isn't a
                   user field, it rides the imported hire manifest (banner above). */}
-              <nav style={{ width: 168, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {!simpleView && <nav style={{ width: 168, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {SECTIONS.map((s, i) => {
                   const active = section === s.key;
                   return (
@@ -891,13 +1057,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     </button>
                   );
                 })}
-              </nav>
+              </nav>}
 
               {/* RIGHT — the active section's fields */}
-              <div style={{ flex: 1, minWidth: 0, minHeight: 260, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {section === 'identity' && (
+              <div style={{ flex: 1, minWidth: 0, minHeight: simpleView ? 0 : 260, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {showSection('identity') && (
                   <>
-                    <Row label={tr('addAgent.name')}>
+                    {simpleView && <div style={moreHead}>{tr('simpleMode.addAgent.lookHead')}</div>}
+                    {!simpleView && <Row label={tr('addAgent.name')}>
                       <input
                         value={name}
                         onChange={(e) => {
@@ -910,7 +1077,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         placeholder={tr('addAgent.namePlaceholder')}
                         style={inputStyle}
                       />
-                    </Row>
+                    </Row>}
 
                     <Row label={tr('addAgent.character')}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -969,8 +1136,9 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                   </>
                 )}
 
-                {section === 'workspace' && (
+                {showSection('workspace') && (
                   <>
+                    {simpleView && <div style={moreHead}>{tr('simpleMode.addAgent.workspaceHead')}</div>}
                     <Row label={tr('addAgent.project')}>
                       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
                         <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
@@ -1081,7 +1249,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         style={{ width: 16, height: 16, cursor: resuming ? 'not-allowed' : 'pointer' }}
                       />
                       <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 13, color: 'var(--cth-ink-900)' }}>
-                        {tr('addAgent.gitIsolation')}
+                        {tr('addAgent.gitIsolation', sctx)}
                       </span>
                     </label>
 
@@ -1132,7 +1300,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       </>
                     )}
 
-                    <Row label={tr('addAgent.resumeSession')}>
+                    {!simpleView && <Row label={tr('addAgent.resumeSession')}>
                       <input
                         value={resumeSessionId}
                         onChange={(e) => { setResumeSessionId(e.target.value); setFolderNote(undefined); }}
@@ -1150,12 +1318,13 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           {tr('addAgent.resumeNote')}
                         </span>
                       )}
-                    </Row>
+                    </Row>}
                   </>
                 )}
 
-                {section === 'engine' && (
+                {showSection('engine') && (
                   <>
+                    {simpleView && <div style={moreHead}>{tr('simpleMode.addAgent.engineHead')}</div>}
                     <Row label={tr('addAgent.provider')}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {AGENT_PROVIDER_PRESETS.map((p) => {
@@ -1186,10 +1355,23 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                             >
                               <ProviderLogo provider={p.id} size={14} />
                               {p.label}
+                              {engineCostHint(p.id) && (
+                                <span style={{
+                                  fontSize: 10, color: 'var(--cth-ink-500)',
+                                  fontWeight: engineCostHint(p.id)!.recommended ? 700 : 400
+                                }}>
+                                  {tr(engineCostHint(p.id)!.tagKey)}
+                                </span>
+                              )}
                             </button>
                           );
                         })}
                       </div>
+                      {engineCostHint(provider) && (
+                        <span data-testid="engine-cost-hint" style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                          {tr(engineCostHint(provider)!.descKey)}
+                        </span>
+                      )}
                     </Row>
 
                     {preset.supportsModel && <Row label={tr('addAgent.model')}>
@@ -1313,7 +1495,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                   </>
                 )}
 
-                {section === 'briefing' && (
+                {showSection('briefing') && (
                   <>
                     <Row label={tr('addAgent.templates')}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1359,6 +1541,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                 )}
               </div>
             </div>
+            )}
 
             {error && (
               <div style={{
@@ -1373,7 +1556,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
             )}
 
             {/* Import-hire explainer + AI prompt generator (item 7) */}
-            <div style={{
+            {showMoreFields && <div style={{
               padding: '8px 10px',
               background: 'var(--cth-cream-100)',
               boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
@@ -1420,10 +1603,10 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                   </div>
                 </div>
               )}
-            </div>
+            </div>}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-              <PixelButton
+              {showMoreFields && <PixelButton
                 variant="secondary"
                 size="md"
                 onClick={importHire}
@@ -1431,14 +1614,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                 title={tr('addAgent.importHireBtnTitle')}
               >
                 {tr('addAgent.importHireBtn')}
-              </PixelButton>
+              </PixelButton>}
               <div style={{ flex: 1 }} />
               {pendingHire && (
                 <PixelButton variant="secondary" size="md" onClick={skipHire} disabled={busy}>{tr('addAgent.skipHire')}</PixelButton>
               )}
               <PixelButton variant="ghost" size="md" onClick={onClose} disabled={busy}>{tr('common.cancel')}</PixelButton>
               <PixelButton variant="primary" size="md" onClick={submit} disabled={busy}>
-                {busy ? tr('addAgent.spawning') : tr('addAgent.spawn')}
+                {busy ? tr('addAgent.spawning', sctx) : tr('addAgent.spawn', sctx)}
               </PixelButton>
             </div>
           </div>

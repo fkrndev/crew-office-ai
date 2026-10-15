@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 import type { CSSProperties } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { Icon } from './Icon';
@@ -127,6 +128,7 @@ export interface PtyTerminalViewProps {
 
 export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFullscreen, fullscreen, embedded }: PtyTerminalViewProps) {
   const { t } = useTranslation();
+  const simpleUi = useIsSimpleMode();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const onStreamDataRef = useRef(onStreamData);
   onStreamDataRef.current = onStreamData;
@@ -379,7 +381,7 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
           boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
           animation: 'cth-pulse 1200ms steps(2, end) infinite'
         }} />
-        {t('ptyTerminal.livePty', { id: ptyId })}
+        {t('ptyTerminal.livePty', { id: ptyId, ...(simpleUi ? { context: 'simple' } : {}) })}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
           {/* v0.3.4: the theme + enter-fullscreen buttons moved to the TITLE BAR
               (top right) — more accessible, and the theme now darkens the whole

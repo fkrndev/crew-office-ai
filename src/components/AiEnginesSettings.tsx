@@ -18,37 +18,39 @@ import { useStore } from '@/store/store';
 
 /** Backend model-providers whose keys the CLIs read from standard env vars. Must
  *  match BACKEND_KEY_ENV in src/main/index.ts. */
-const BACKENDS: Array<{ id: string; label: string; envVar: string }> = [
-  { id: 'anthropic', label: 'Anthropic', envVar: 'ANTHROPIC_API_KEY' },
-  { id: 'openai', label: 'OpenAI', envVar: 'OPENAI_API_KEY' },
-  { id: 'google', label: 'Google · Gemini', envVar: 'GEMINI_API_KEY' },
+export const BACKENDS: Array<{ id: string; label: string; envVar: string }> = [
+  // The two keys the default engine (Hermes) runs on cheaply lead the list.
   { id: 'openrouter', label: 'OpenRouter', envVar: 'OPENROUTER_API_KEY' },
-  { id: 'groq', label: 'Groq', envVar: 'GROQ_API_KEY' },
   // OpenAI-compatible — the key reaches agents as DEEPSEEK_API_KEY (+ OPENAI_
   // API_KEY, which most OpenAI-compatible CLIs read). Pair it with a base URL
   // override (https://api.deepseek.com) on the CLI provider below.
-  { id: 'deepseek', label: 'DeepSeek', envVar: 'DEEPSEEK_API_KEY' }
+  { id: 'deepseek', label: 'DeepSeek', envVar: 'DEEPSEEK_API_KEY' },
+  { id: 'anthropic', label: 'Anthropic', envVar: 'ANTHROPIC_API_KEY' },
+  { id: 'openai', label: 'OpenAI', envVar: 'OPENAI_API_KEY' },
+  { id: 'google', label: 'Google · Gemini', envVar: 'GEMINI_API_KEY' },
+  { id: 'groq', label: 'Groq', envVar: 'GROQ_API_KEY' }
 ];
 
 /** CLI engines that take a per-provider local base-URL + default model. `hint`
  *  values are technical endpoint descriptions — kept English (technical data). */
-const CLIS: Array<{ id: AgentProvider; label: string; hint: string; hintKey?: string }> = [
-  { id: 'opencode', label: 'OpenCode', hint: 'http://localhost:11434/v1 (Ollama) — injected as a local provider' },
-  { id: 'crush', label: 'Crush', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
-  { id: 'pi', label: 'Pi', hint: 'local models are file-based (models.json); base-URL reserved' },
-  { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
+export const CLIS: Array<{ id: AgentProvider; label: string; hint: string; hintKey?: string }> = [
   // Hermes reads OPENAI_BASE_URL natively — pointing it at api.deepseek.com
   // (+ a DeepSeek key above) makes a Hermes worker talk DeepSeek.
   // The hint is an i18n key: the one-liner used to say only "exported as
   // OPENAI_BASE_URL", which tells a Hermes user nothing about when it applies
-  // (answer: only when ~/.hermes has no provider of its own).
+  // (answer: only when ~/.hermes has no provider of its own). Hermes is the
+  // default engine, so it leads the list.
   { id: 'hermes', label: 'Hermes', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL (e.g. https://api.deepseek.com)', hintKey: 'aiEngines.hermesHint' },
+  { id: 'opencode', label: 'OpenCode', hint: 'http://localhost:11434/v1 (Ollama) — injected as a local provider' },
+  { id: 'crush', label: 'Crush', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
+  { id: 'pi', label: 'Pi', hint: 'local models are file-based (models.json); base-URL reserved' },
+  { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' },
   // OpenClaw honors the same OPENAI_BASE_URL reroute on its openai-compat
   // route; provider keys ride in via the API-key section above.
   { id: 'openclaw', label: 'OpenClaw', hint: 'OpenAI-compatible endpoint — exported as OPENAI_BASE_URL' }
 ];
 
-const inputStyle: CSSProperties = {
+export const inputStyle: CSSProperties = {
   width: '100%',
   padding: '6px 8px 4px',
   background: 'var(--cth-paper-100)',
@@ -59,7 +61,7 @@ const inputStyle: CSSProperties = {
   color: 'var(--cth-ink-900)',
   outline: 'none'
 };
-const labelStyle: CSSProperties = {
+export const labelStyle: CSSProperties = {
   fontFamily: 'var(--cth-font-display)',
   fontSize: 8,
   lineHeight: '12px',
@@ -71,7 +73,11 @@ const headStyle: CSSProperties = {
   color: 'var(--cth-ink-500)', textTransform: 'uppercase', marginBottom: 2
 };
 
-export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
+/** Write-only provider API keys: which backends already have one stored (boolean
+ *  only — never the value), the drafts being typed, and the save / remove calls.
+ *  Shared by the full engines list below and the one-field "AI connection" tab of
+ *  simple mode, so both talk to the same secret broker the same way. */
+export function useProviderKeys() {
   const { t } = useTranslation();
   // Keep the global "OpenAI key present" signal (boolean only) live so the Talk
   // button's missing-key warning clears the instant the user saves their OpenAI key
@@ -82,16 +88,6 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
   const [hasKey, setHasKey] = useState<Record<string, boolean>>({});
   const [draftKey, setDraftKey] = useState<Record<string, string>>({});
   const [note, setNote] = useState<Record<string, string>>({});
-  // Base-URL + default-model drafts, seeded from config.
-  const [baseUrls, setBaseUrls] = useState<Partial<Record<AgentProvider, string>>>(
-    config.providerBaseUrls ?? {}
-  );
-  const [models, setModels] = useState<Partial<Record<AgentProvider, string>>>(
-    config.providerDefaultModels ?? {}
-  );
-  // Per-CLI save feedback for the blur-saved base-URL / model fields. Without
-  // this the user gets zero signal — the field just keeps its value silently.
-  const [cliNote, setCliNote] = useState<Partial<Record<AgentProvider, { ok: boolean; msg: string }>>>({});
 
   // Reseed set/not-set flags on mount (write-only — only the boolean is fetched).
   useEffect(() => {
@@ -117,6 +113,8 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
         setNote((s) => ({ ...s, [backend]: t('aiEngines.saved') }));
         // OpenAI key gates Talk — mirror presence to the store so the warning clears now.
         if (backend === 'openai') setHasOpenAiKey(true);
+        // A saved key answers a "needs an API key" spawn — drop the call to action.
+        useStore.getState().setEngineNeedsKey(false);
       } else setNote((s) => ({ ...s, [backend]: r.error ?? t('aiEngines.failed') }));
     } catch (e) { setNote((s) => ({ ...s, [backend]: e instanceof Error ? e.message : String(e) })); }
   };
@@ -129,6 +127,61 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
       if (backend === 'openai') setHasOpenAiKey(false);
     } catch { /* noop */ }
   };
+  const setDraft = (backend: string, value: string) =>
+    setDraftKey((s) => ({ ...s, [backend]: value }));
+  return { hasKey, draftKey, note, saveKey, clearKey, setDraft };
+}
+export type ProviderKeys = ReturnType<typeof useProviderKeys>;
+
+/** One API-key row: label, masked input, Save, and Remove once a key is stored.
+ *  `plain` is the simple-mode wording — no environment-variable names. */
+export function ProviderKeyField({ backend, keys, plain = false }: {
+  backend: { id: string; label: string; envVar: string };
+  keys: ProviderKeys;
+  plain?: boolean;
+}) {
+  const { t } = useTranslation();
+  const b = backend;
+  const { hasKey, draftKey, note } = keys;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <label style={labelStyle}>
+        {plain
+          ? <>{t('simpleMode.aiConnection.keyFor', { label: b.label })} {hasKey[b.id] ? `· ${t('aiEngines.setCheck')}` : ''}</>
+          : <>{b.label} {hasKey[b.id] ? `· ${t('aiEngines.setCheck')}` : ''} <span style={{ opacity: 0.6 }}>({b.envVar})</span></>}
+      </label>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={hasKey[b.id] ? t('aiEngines.keyStoredPlaceholder') : t('aiEngines.keyPlaceholder', { label: b.label })}
+          value={draftKey[b.id] ?? ''}
+          onChange={(e) => keys.setDraft(b.id, e.target.value)}
+          style={inputStyle}
+        />
+        <PixelButton variant="secondary" size="sm" onClick={() => keys.saveKey(b.id)} disabled={!(draftKey[b.id] ?? '').trim()}>{t('common.save')}</PixelButton>
+        {hasKey[b.id] && (
+          <PixelButton variant="secondary" size="sm" onClick={() => keys.clearKey(b.id)}>{t('aiEngines.removeKey')}</PixelButton>
+        )}
+      </div>
+      {note[b.id] && <div style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{note[b.id]}</div>}
+    </div>
+  );
+}
+
+/** Per-CLI local endpoint + default model, blur-saved into HarnessConfig. */
+export function useCliEndpoints(config: HarnessConfig) {
+  const { t } = useTranslation();
+  // Base-URL + default-model drafts, seeded from config.
+  const [baseUrls, setBaseUrls] = useState<Partial<Record<AgentProvider, string>>>(
+    config.providerBaseUrls ?? {}
+  );
+  const [models, setModels] = useState<Partial<Record<AgentProvider, string>>>(
+    config.providerDefaultModels ?? {}
+  );
+  // Per-CLI save feedback for the blur-saved base-URL / model fields. Without
+  // this the user gets zero signal — the field just keeps its value silently.
+  const [cliNote, setCliNote] = useState<Partial<Record<AgentProvider, { ok: boolean; msg: string }>>>({});
 
   const saveBaseUrl = async (id: AgentProvider, value: string) => {
     const next = { ...baseUrls, [id]: value.trim() || undefined };
@@ -150,6 +203,14 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
       setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
     }
   };
+  return { baseUrls, models, cliNote, saveBaseUrl, saveModel };
+}
+export type CliEndpoints = ReturnType<typeof useCliEndpoints>;
+
+export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
+  const { t } = useTranslation();
+  const keys = useProviderKeys();
+  const { baseUrls, models, cliNote, saveBaseUrl, saveModel } = useCliEndpoints(config);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -165,26 +226,7 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
         <div style={headStyle}>{t('aiEngines.apiKeys')}</div>
         <div style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>{t('aiEngines.keysScope')}</div>
         {BACKENDS.map((b) => (
-          <div key={b.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={labelStyle}>
-              {b.label} {hasKey[b.id] ? `· ${t('aiEngines.setCheck')}` : ''} <span style={{ opacity: 0.6 }}>({b.envVar})</span>
-            </label>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <input
-                type="password"
-                autoComplete="off"
-                placeholder={hasKey[b.id] ? t('aiEngines.keyStoredPlaceholder') : t('aiEngines.keyPlaceholder', { label: b.label })}
-                value={draftKey[b.id] ?? ''}
-                onChange={(e) => setDraftKey((s) => ({ ...s, [b.id]: e.target.value }))}
-                style={inputStyle}
-              />
-              <PixelButton variant="secondary" size="sm" onClick={() => saveKey(b.id)} disabled={!(draftKey[b.id] ?? '').trim()}>{t('common.save')}</PixelButton>
-              {hasKey[b.id] && (
-                <PixelButton variant="secondary" size="sm" onClick={() => clearKey(b.id)}>{t('aiEngines.removeKey')}</PixelButton>
-              )}
-            </div>
-            {note[b.id] && <div style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{note[b.id]}</div>}
-          </div>
+          <ProviderKeyField key={b.id} backend={b} keys={keys} />
         ))}
       </div>
 

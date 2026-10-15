@@ -15,7 +15,7 @@
  *
  * Pure and electron-free on purpose so it is testable from node --test.
  */
-import type { AgentProvider } from './agentProvider';
+import { NEW_INSTALL_ENGINE, type AgentProvider } from './agentProvider';
 import type { ToolStatus } from './toolCatalog';
 
 export type EngineAvailabilityState =
@@ -81,25 +81,27 @@ export function engineAvailabilityBadgeKey(a: EngineAvailability): string | null
 
 /** Which engine the onboarding step should PRESELECT for the orchestrator.
  *
- *  The wizard used to hard-code Claude Code — fine for a Claude user, wrong for
- *  someone who only has Hermes (or Codex…) installed: they had to notice and
- *  re-pick, and a default of an engine that is not on the machine is a first run
- *  that installs something they never asked for. Order:
- *   1. Claude Code, if it is installed (it stays the app's long-standing default);
- *   2. otherwise Hermes, if installed (the preferred non-Claude engine);
+ *  Hermes is the recommended starting engine (it runs on any low-cost provider
+ *  key; Claude is billed to a subscription or API credits). But a first run that
+ *  silently installs an engine the user never asked for is worse than reusing one
+ *  they already have, so an INSTALLED engine wins. Order:
+ *   1. Hermes, if installed;
+ *   2. otherwise Claude Code, if installed (someone who already has it keeps it);
  *   3. otherwise the first other INSTALLED engine in picker order;
- *   4. otherwise Claude Code (nothing is installed, or the probe has not run —
- *      it is the engine whose installer the app runs on first spawn).
+ *   4. otherwise Hermes (nothing is installed, or the probe has not run — the
+ *      app runs Hermes' installer on first spawn, and it is the cheap default).
  *  `eligible` is the picker's own order, so a suggestion can never be an engine
- *  the user cannot select. */
+ *  the user cannot select (an eligible list without Hermes falls back to its
+ *  first entry rather than suggesting one that is not selectable). */
 export function suggestOrchestratorEngine(
   statuses: readonly ToolStatus[] | undefined,
   eligible: readonly AgentProvider[]
 ): AgentProvider {
   const installed = (p: AgentProvider) =>
     eligible.includes(p) && classifyEngineAvailability(statuses, p).state === 'installed';
-  if (installed('claude')) return 'claude';
   if (installed('hermes')) return 'hermes';
+  if (installed('claude')) return 'claude';
   const other = eligible.find((p) => installed(p));
-  return other ?? 'claude';
+  if (other) return other;
+  return eligible.includes(NEW_INSTALL_ENGINE) ? NEW_INSTALL_ENGINE : (eligible[0] ?? NEW_INSTALL_ENGINE);
 }

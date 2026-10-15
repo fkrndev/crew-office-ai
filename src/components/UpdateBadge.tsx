@@ -16,11 +16,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { describeUpdate, manualDownloadUrl, manualInstallSteps, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 import { PixelButton } from './PixelButton';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 declare const __APP_VERSION__: string;
 
 export function UpdateBadge() {
   const { t } = useTranslation();
+  // Simple mode drops the version number: it shows up only when an update is
+  // waiting (or one is being checked / just acknowledged), as a plain chip.
+  const simple = useIsSimpleMode();
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [hover, setHover] = useState(false);
@@ -84,6 +88,7 @@ export function UpdateBadge() {
   }, [view.action, busy, status]);
 
   const interactive = view.action !== 'none' && !view.busy;
+  const quiet = simple && view.tone === 'idle' && !checkedOk && !busy;
   // The chip only earns colour when it wants something: ready = mint (act on
   // me), warn = amber (something went wrong), busy/idle stay in the titlebar's
   // own greys so a quiet app looks exactly like it did before.
@@ -95,6 +100,8 @@ export function UpdateBadge() {
   const pending = pendingVersion(status, __APP_VERSION__);
   const steps = manualInstallSteps(window.cth.platform ?? 'darwin');
   const INK = 'var(--cth-ink-900)';
+
+  if (quiet) return null;
 
   return (
     <span
@@ -125,10 +132,10 @@ export function UpdateBadge() {
         cursor: interactive ? 'pointer' : 'default'
       }}
     >
-      <span>v{__APP_VERSION__}</span>
+      {!simple && <span>v{__APP_VERSION__}</span>}
       {view.label && (
         <>
-          <span aria-hidden style={{ color: 'var(--cth-ink-500)' }}>·</span>
+          {!simple && <span aria-hidden style={{ color: 'var(--cth-ink-500)' }}>·</span>}
           <span style={{ fontWeight: view.tone === 'idle' ? 400 : 600 }}>{view.label}</span>
         </>
       )}

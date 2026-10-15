@@ -49,26 +49,39 @@
   },
   "badge": {
     "idle": "idle",
+    "idle_simple": "ready",
     "thinking": "working",
+    "thinking_simple": "working",
     "working": "working",
+    "working_simple": "working",
     "waiting": "waiting",
+    "waiting_simple": "waiting",
     "blocked": "needs you",
+    "blocked_simple": "needs you",
     "success": "done",
+    "success_simple": "done",
     "ghost": "disconnected",
+    "ghost_simple": "offline",
     "compacting": "summarizing",
+    "compacting_simple": "tidying up",
     "looping": "looping",
-    "typing": "draft pending"
+    "looping_simple": "stuck?",
+    "typing": "draft pending",
+    "typing_simple": "you're typing"
   },
   "agentControl": {
     "deliveryPaused": "queued messages held (whole floor)",
     "halting": "stopping after this step…",
     "steersQueued": "{{count}} notes waiting",
     "steerPlaceholder": "send this agent a note — delivered as context on its next turn",
+    "steerPlaceholder_simple": "tell this teammate something new",
     "steer": "note",
+    "steer_simple": "send",
     "flashResumed": "tools allowed again",
     "flashPaused": "tools blocked from the next call on",
     "flashHalt": "will stop after the current step",
     "flashSteer": "note queued, arrives on its next turn",
+    "flashSteer_simple": "sent — it will read it on its next step",
     "export": "export",
     "exportTip": "Save this agent's session — identity, token/cost usage, inbox messages, and recent terminal output — as a Markdown file in a folder you pick.",
     "exportAria": "Export this agent's session as Markdown",
@@ -82,11 +95,17 @@
     "blockToolsTip": "The agent keeps thinking and talking to you, but cannot read, write or run anything until you allow it again. Immediate, and reversible.",
     "blockToolsAria": "Block this agent from using tools",
     "stopAfterStep": "stop after this step",
+    "stopAfterStep_simple": "stop",
     "stopAfterStepTip": "Let it finish the step it is on, then stop. The process and its session survive, so Restart and Continue can pick it back up. To end the process outright, use the X.",
+    "stopAfterStepTip_simple": "Let it finish what it is doing right now, then stop. To remove it from your team entirely, use the X.",
     "stopAfterStepAria": "Stop this agent after the current step",
+    "stopAfterStepAria_simple": "Stop this teammate",
     "steerTip": "Hands the agent a note at its next turn boundary. It does not interrupt what it is doing now, and nothing is typed into its terminal.",
+    "steerTip_simple": "Sends a note it will read before its next step. It does not interrupt what it is doing now.",
     "steerAria": "Send this agent a note",
-    "haltConfirm": "Halt this agent? It stops what it is doing right now."
+    "steerAria_simple": "Send this teammate a note",
+    "haltConfirm": "Halt this agent? It stops what it is doing right now.",
+    "haltConfirm_simple": "Stop this teammate? It stops what it is doing right now."
   },
   "agentCard": {
     "boss": "BOSS",
@@ -102,12 +121,16 @@
   "askMe": {
     "emptyTitle": "Nothing needs you right now. 🌿",
     "emptySub": "When the team blocks a task on your input — a question to answer or a to-do only you can perform — it shows up here (and on the ASK ME board on the floor).",
+    "emptySub_simple": "When your team needs an answer, or something only you can do, it shows up here.",
     "openDetail": "open the full task detail",
     "dismissTitle": "dismiss — clear this off the ASK ME board without answering (history kept)",
+    "dismissTitle_simple": "dismiss — remove this without answering",
     "dismissAria": "dismiss this ask",
     "answerPlaceholder": "Your answer — or 'done', with the result… (Ctrl+Enter to send)",
+    "answerPlaceholder_simple": "Type your answer, or 'done'… (Ctrl+Enter to send)",
     "sending": "sending…",
     "respond": "respond & unblock",
+    "respond_simple": "send answer",
     "viewAnswers": "VIEW {{count}} EARLIER ANSWER",
     "viewAnswersPlural": "VIEW {{count}} EARLIER ANSWERS",
     "viewAnswersHistory": "open the task detail with the full Q&A history",
@@ -124,6 +147,7 @@
     "notePlaceholder": "one line per bullet…",
     "oneLineOneBullet": "one line = one bullet · esc to close",
     "addAgent": "add agent",
+    "addAgent_simple": "add teammate",
     "restoringTitle": "Your previous session's agents are being respawned with their original ids, so memory and inboxes reattach.",
     "restoreTitle": "Previous session: {{names}}",
     "restoringTeam": "restoring your team…",
@@ -226,7 +250,10 @@
       "autonomyBudgets": "Autonomy & Budgets",
       "connections": "Connections",
       "voice": "Voice",
-      "memoryKnowledge": "Memory & Knowledge"
+      "memoryKnowledge": "Memory & Knowledge",
+      "aiConnection": "AI connection",
+      "updates": "Updates",
+      "about": "About"
     },
     "changeHome": {
       "newHome": "New home folder",
@@ -245,11 +272,13 @@
       "keepAwakeDesc": "Blocks display sleep so schedules and terminals keep firing on time. Costs battery — best on AC.",
       "simpleMode": "Explain things simply",
       "simpleModeDesc": "Agents brief you in plain language instead of engineering shorthand.",
+      "simpleModeDesc_simple": "Your team explains things in plain, everyday language.",
       "multiWindow": "Multiple windows (experimental)",
       "multiWindowDesc": "Lets you open extra windows (\"floors\"), each with its own roster and terminals. Floors share one hive with the first window, and closing the first window quits the app. Takes effect on Save. Off by default.",
       "notifications": "Notifications",
       "desktopNotifications": "Desktop notifications",
       "desktopNotificationsDesc": "Native toasts when an agent finishes or needs your input.",
+      "desktopNotificationsDesc_simple": "Get a pop-up when a teammate finishes or needs you.",
       "maintenance": "Maintenance",
       "autoCompact": "Scheduled auto-compact",
       "autoCompactDesc": "Queue each engine's own compact command (/compact, /compress…) for every agent on a schedule (hourly by default; interval in the Triggers tab). Engines with no known command (Crush, Copilot, Cursor, OpenClaw, custom) are skipped. Off by default — long-running agents may overflow their context without it",
@@ -259,6 +288,7 @@
       "telemetryDesc": "A handful of anonymous events (app opened, agent spawned, feature used) — never prompts, code, paths, or agent output. Full list in TELEMETRY.md.",
       "language": "Language",
       "languageDesc": "Choose the language for the app interface. Bahasa Indonesia is the default; English is the fallback for any missing string.",
+      "languageDesc_simple": "Pick the language you want to read the app in.",
       "dangerZone": "DANGER ZONE",
       "dangerDesc": "Reset wipes {{godName}}'s memories, all app data (every agent, message, task, and the board), the memory index, and all settings — then takes you back to onboarding.",
       "resetStartOver": "reset & start over",
@@ -400,7 +430,9 @@
   },
   "commandCenter": {
     "title": "COMMAND CENTER",
+    "title_simple": "YOUR TEAM",
     "runsTheFloor": "{{name}} runs the floor",
+    "runsTheFloor_simple": "{{name}} leads your team",
     "deliveryPaused": "paused",
     "deliveryAuto": "auto",
     "deliveryPausedTitle": "Queued messages are being held for EVERY agent on the floor. Nothing is lost; it is delivered when you switch this back on.",
@@ -409,9 +441,11 @@
     "ide": "IDE",
     "tabs": {
       "terminal": "terminal",
+      "terminal_simple": "talk",
       "floor": "monitor",
       "tasks": "tasks",
       "human": "ask me",
+      "human_simple": "questions",
       "triggers": "triggers",
       "history": "history",
       "memory": "memory",
@@ -476,9 +510,11 @@
     "board": "BOARD",
     "boardEmpty": "The board is empty.",
     "logSpawn": "spawned {{name}}",
+    "logSpawn_simple": "{{name}} joined the team",
     "logMessage": "{{from}} → {{to}}: {{subject}}",
     "logDrain": "{{agent}} drained {{count}} msg(s)",
     "logEscalate": "escalated to human: {{subject}}",
+    "logEscalate_simple": "asked you: {{subject}}",
     "logApprovalGranted": "approval granted",
     "logApprovalDenied": "approval denied",
     "tokenLimitTitle": "Set this agent's token limit (work tokens: input + output + cache writes; cache reads don't count)",
@@ -506,6 +542,7 @@
   },
   "addAgent": {
     "title": "ADD AGENT",
+    "title_simple": "ADD A TEAMMATE",
     "hireImported": "hire imported:",
     "byAuthor": " · by {{author}}",
     "reviewFields": "review every field — especially the command — before spawning.",
@@ -546,6 +583,7 @@
     "saveAsProject": "save as project",
     "saveAsProjectTitle": "Save this folder to your projects so it's a one-click pick next time",
     "gitIsolation": "Git isolation (own worktree)",
+    "gitIsolation_simple": "Work on its own copy of the files (safer)",
     "resumeSession": "Resume session ID (optional)",
     "resumePlaceholder": "paste a {{provider}} session id to continue its conversation",
     "folderFromSession": "folder set from session: {{path}}",
@@ -604,7 +642,9 @@
     "importHireBtn": "import hire…",
     "importHireBtnTitle": "Import a hire manifest (.json)",
     "spawn": "create",
+    "spawn_simple": "Add teammate",
     "spawning": "creating...",
+    "spawning_simple": "Adding…",
     "errName": "Name is required",
     "errFolder": "Pick a folder first",
     "errCommand": "Command is required",
@@ -616,6 +656,7 @@
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
     "shardxProfileHint": "One launcher profile = one logged-in account. Leave blank and this agent gets its own office-<id> profile. Enter a name to bind it to an existing account's profile — share it across agents only when they work the SAME account.",
     "needsKey": "⚠ {{provider}} found no API key from this app. If it opens a setup prompt, finish it in the agent's terminal (Hermes: `hermes setup`), or save a key in Settings → Agents & Models",
+    "needsKey_simple": "⚠ {{provider}} needs your key. Press “Connect your AI” to add it.",
     "needsShardx": "⚠ shardx setup needed — run Settings → MCP → Set up",
     "hireSkipped": "Skipped {{n}} invalid file(s): {{errors}}",
     "spawnFailed": "spawn failed",
@@ -685,13 +726,13 @@
       }
     },
     "providerBlurb": {
-      "claude": "Claude Code — Anthropic",
+      "claude": "Claude Code — Anthropic. Uses your Claude subscription or API credits (higher cost).",
       "codex": "Codex — OpenAI",
       "antigravity": "Antigravity — Google Gemini",
       "qwen": "Qwen — runs a local Qwen model on your machine",
       "gemini": "Gemini CLI - Google Gemini",
       "cursor": "Cursor Agent CLI — uses your Cursor credits (Luna, Composer, …)",
-      "hermes": "Hermes — Nous Research. Uses the provider and model from your own Hermes setup."
+      "hermes": "Hermes — Nous Research. Recommended starting engine: works with low-cost AI providers (bring a key)."
     },
     "home": {
       "descPlain": "Create a new, empty folder for the app to call home. Everything the app remembers — its own settings and your agents' memory — is stored here. Something like ~/HarnessAgents works well. We'll create it for you if it doesn't exist.",
@@ -762,6 +803,37 @@
     "checking": "checking…",
     "checkAgain": "check again",
     "installInstructions": "install instructions"
+  },
+  "quickStart": {
+    "title": "STEP 2 OF 4 · CONNECT YOUR AI",
+    "intro": "Your AI team needs an AI service to think with. Connecting one takes about a minute.",
+    "whatIsKeyHead": "WHAT IS AN API KEY?",
+    "whatIsKey": "An API key is like a password that lets this app use an AI service for you. You create it on the provider's website, copy it, and paste it below. It stays on this computer.",
+    "chooseHead": "CHOOSE A SERVICE",
+    "recommended": "RECOMMENDED",
+    "openrouterBlurb": "One account, many AI models. The simplest place to start.",
+    "deepseekBlurb": "Straight from DeepSeek. A good low-cost option if you prefer it.",
+    "openKeyPage": "open the sign-up / key page",
+    "stepsHint": "1. Open the page, sign up and create a key.  2. Copy the key and paste it below.",
+    "keyLabel": "YOUR API KEY",
+    "keyPlaceholder": "Paste your key here",
+    "skipNote": "No key yet? Press Next to skip — you can add one later in Settings, and the app will remind you.",
+    "costNote": "You pay as you go at the provider. You can set a spending limit in your provider account.",
+    "installNote": "The AI engine (Hermes) is installed automatically the first time your assistant starts. That can take a few minutes.",
+    "hermesInstalledNote": "Hermes is already on this computer. If it is already set up with its own AI provider, use \"I already use…\" below instead.",
+    "advanced": "Advanced",
+    "modelLabel": "Model",
+    "modelNote": "We picked a low-cost model that works well for most tasks. Change it only if you know you want a different one.",
+    "errShort": "That looks too short to be a full key. Make sure you copied all of it.",
+    "errWhitespace": "A key has no spaces or line breaks. Check that you copied it exactly.",
+    "hintPrefix": "{{provider}} keys usually start with \"{{prefix}}\". Double-check you copied the right one.",
+    "checking": "Checking your key…",
+    "checkOk": "Your key works.",
+    "checkRejected": "{{provider}} did not accept that key. Check you copied all of it — or press Next again to continue anyway.",
+    "checkUnreachable": "Could not reach {{provider}} to check the key (are you offline?). Press Next again to continue anyway.",
+    "useCli": "I already use Claude / Codex / another CLI",
+    "useQuick": "New to this? Quick start: connect with an API key instead",
+    "saveFailed": "Could not save your key: {{error}}"
   },
   "office": {
     "gpuError": "The office floor lost its GPU context.\n\nToo many terminals are using the GPU at once.\nClose a few agent terminals, or restart the app, to bring it back.",
@@ -1392,12 +1464,17 @@
   "kanban": {
     "count": "{{count}} tasks",
     "newWorkHint": "new work? dispatch it to {{godName}} (monitor tab)",
+    "newWorkHint_simple": "new work? ask {{godName}} in the Talk tab",
     "colTodo": "TODO",
+    "colTodo_simple": "TO DO",
     "colDoing": "DOING",
+    "colDoing_simple": "IN PROGRESS",
     "colBlocked": "BLOCKED",
+    "colBlocked_simple": "WAITING",
     "colDone": "DONE",
     "openTaskDetails": "open task details",
     "needsYouTitle": "waiting on YOUR answer — see the ASK ME tab",
+    "needsYouTitle_simple": "waiting on your answer — see the QUESTIONS tab",
     "dismissTitle": "dismiss this task (removes it from the board)",
     "dismissAria": "dismiss task",
     "taskTitle": "TASK",
@@ -1416,6 +1493,7 @@
     "transcribing": "transcribing…",
     "voice": "voice",
     "busyQueued": "{{name}} is busy — {{count}} queued",
+    "busyQueued_simple": "{{name}} is busy — {{count}} waiting to send",
     "heldFloor": "held — delivery paused floor-wide",
     "heldDraft": "held — {{name}}'s terminal has unsent text on its prompt",
     "heldPicker": "held — a slash-command picker is open in {{name}}'s terminal",
@@ -1424,6 +1502,7 @@
     "pausedTitle": "Auto-delivery is paused for the whole floor. Resume it in the Command Center, or use \"send now\" on a message below.",
     "dropToAttach": "DROP TO ATTACH",
     "queue": "QUEUE",
+    "queue_simple": "WAITING TO SEND",
     "closePicker": "close picker",
     "recoverPrompt": "recover prompt",
     "clearAllTitle": "Clear all queued messages",
@@ -1431,6 +1510,7 @@
     "removeAttachment": "Remove attachment",
     "messagePlaceholder": "Message {{name}}",
     "busyPlaceholder": "{{name}} is busy — queue a message",
+    "busyPlaceholder_simple": "{{name}} is busy — your message will be sent when it is free",
     "files": "files",
     "collapse": "Collapse this message",
     "showFull": "Show the full message",
@@ -1532,6 +1612,7 @@
   },
   "editAgent": {
     "title": "EDIT AGENT",
+    "title_simple": "EDIT TEAMMATE",
     "provider": "Provider",
     "model": "Model",
     "description": "Description",
@@ -1540,10 +1621,13 @@
     "modelDefaultTitle": "CLI default model",
     "engineNote": "Engine changes are saved for the next restart. Use Command Center → Floor to restart a live session onto a new provider/model now.",
     "goalLabel": "Goal (optional)",
+    "goalLabel_simple": "What should this teammate do?",
     "goalPlaceholder": "long-running directive injected on every prompt",
+    "goalPlaceholder_simple": "describe the job in a sentence or two",
     "descriptionPlaceholder": "what is this agent for",
     "namePlaceholder": "Stanley",
     "saveChanges": "save changes",
+    "saveChanges_simple": "save",
     "unsavedWarning": "You have unsaved changes to this agent. Discard them?"
   },
   "updateToast": {
@@ -1624,13 +1708,20 @@
     "newFloor": "New floor (Ctrl+Shift+N)",
     "floorBadge": "Floor {{n}}",
     "wakingFloor": "WAKING THE FLOOR",
+    "wakingFloor_simple": "GETTING READY",
     "wakingDesc": "{{godName}} is clocking in. The terminal will land here once it is seated.",
+    "wakingDesc_simple": "{{godName}} is getting ready. The conversation will appear here in a moment.",
     "noAgentSelected": "NO AGENT SELECTED",
+    "noAgentSelected_simple": "NO TEAMMATE SELECTED",
     "noAgentDesc": "Spawn an agent from the strip below. The terminal and command bar will land here.",
+    "noAgentDesc_simple": "Add a teammate from the bar below. Their conversation will show up here.",
     "addAgent": "add agent",
+    "addAgent_simple": "add teammate",
     "productName": "Agent Office",
     "emptyFloorTitle": "EMPTY FLOOR",
+    "emptyFloorTitle_simple": "WELCOME",
     "emptyFloorBody": "No agents on the floor yet. Spawn one to see its live terminal output stream in here.",
+    "emptyFloorBody_simple": "Your team is empty. Connect your AI, then add your first teammate.",
     "loadFailedTitle": "COULD NOT START",
     "loadFailedBody": "The app could not read its settings, so it cannot open yet.",
     "retry": "retry",
@@ -1639,6 +1730,7 @@
   },
   "ptyTerminal": {
     "livePty": "live · terminal {{id}}",
+    "livePty_simple": "live conversation",
     "zoomOut": "Zoom out (Ctrl -)",
     "zoomReset": "Reset zoom (Ctrl 0)",
     "zoomIn": "Zoom in (Ctrl +)",
@@ -1749,5 +1841,180 @@
     },
     "noUsage": "{{provider}} does not report tokens or cost, so this agent's cost meter, context gauge and token budgets stay empty.",
     "ownSkills": "Skills from the Skills tab are installed for Claude Code. {{provider}} reads its own skills folder, so they won't show up for this agent."
+  },
+  "conversation": {
+    "regionLabel": "Conversation with {{name}}",
+    "you": "You",
+    "saidYou": "You said:",
+    "saidAssistant": "{{name}} said:",
+    "emptyTitle": "Say hello to {{name}}…",
+    "emptyBody": "Type a message below and press Enter. {{name}} will plan the work, ask your team for help, and report back right here.",
+    "working": "{{name}} is working on it…",
+    "jumpToLatest": "Jump to latest",
+    "pendingWaiting": "Waiting to send",
+    "pendingSending": "Sending…",
+    "teamUpdate": "{{name}} got an update from the team",
+    "showTerminal": "Show live terminal",
+    "hideTerminal": "Hide live terminal",
+    "noteStarting": "{{name}} is getting ready… the chat will appear here in a moment. Meanwhile, this is what is happening behind the scenes.",
+    "noteUnsupported": "With this AI, {{name}}'s replies appear in the live terminal below.",
+    "noteUnreadable": "We can't show this conversation as a chat right now, so here is the live terminal instead."
+  },
+  "simpleMode": {
+    "needMore": "Need more? Show advanced options",
+    "connectAi": "Connect your AI",
+    "status": {
+      "idle": "Ready for work",
+      "thinking": "Thinking it over…",
+      "working": "Working on it…",
+      "waiting": "Waiting for a teammate",
+      "blocked": "Needs your answer",
+      "success": "All done",
+      "ghost": "Offline",
+      "compacting": "Tidying up its notes…",
+      "looping": "Seems stuck — take a look",
+      "typing": "You have an unsent message"
+    },
+    "aiConnection": {
+      "intro": "Your team runs on an AI service. Pick which one, then add its key: a private password that lets this app use your account.",
+      "whichAi": "Which AI should power your team?",
+      "otherOptions": "Other options…",
+      "appliesOnRestart": "{{engine}} will be used the next time the app starts. Press Save to keep this choice.",
+      "yourKey": "Your key",
+      "keySaved": "A key is saved on this computer. You can replace it below.",
+      "noKey": "No key saved yet. Paste one below to get started.",
+      "keyFrom": "Where is your key from?",
+      "keyFor": "{{label}} key",
+      "getKey": "Get a {{label}} key",
+      "claudeLogin": "Already signed in to Claude on this computer? Then you may not need a key at all.",
+      "serverAddress": "Server address (optional)",
+      "serverAddressHint": "Only needed if your provider gave you one, for example https://api.deepseek.com.",
+      "keyPrivacy": "Keys are stored securely on this computer and are never shown again."
+    },
+    "settings": {
+      "advancedTitle": "Show advanced options",
+      "advancedDesc": "Reveal every setting and tool: terminal, triggers, memory, budgets, integrations and more.",
+      "preferences": "Preferences",
+      "themeTitle": "Appearance",
+      "themeDesc": "Light or dark colors for the whole app.",
+      "dark": "Dark",
+      "light": "Light",
+      "hiddenNote": "Simple mode keeps this window short. Voice, integrations, memory, budgets and other technical settings stay hidden until you show advanced options."
+    },
+    "addAgent": {
+      "goalLabel": "What should this teammate do?",
+      "goalPlaceholder": "For example: keep my notes organized and write me a short summary every morning.",
+      "ideasHint": "Not sure? Start from an idea:",
+      "moreOptions": "More options",
+      "lookHead": "Look",
+      "workspaceHead": "Where it works",
+      "engineHead": "AI engine",
+      "roles": {
+        "researcher": "Researcher",
+        "writer": "Writer",
+        "fixer": "Problem solver",
+        "organizer": "Organizer"
+      }
+    }
+  },
+  "engineCost": {
+    "hermes": {
+      "tag": "Recommended · low cost",
+      "desc": "Hermes is the recommended engine. It runs at low cost with an OpenRouter or DeepSeek key."
+    },
+    "claude": {
+      "tag": "Higher cost",
+      "desc": "Claude uses your Claude subscription or API credits, which costs more than the other options."
+    },
+    "codex": {
+      "tag": "Your OpenAI plan",
+      "desc": "Codex uses your OpenAI (ChatGPT) plan or API credits."
+    }
+  },
+  "firstRun": {
+    "title": "Setting up your assistant",
+    "titleFailed": "Setup needs your attention",
+    "stepCounter": "Step {{current}} of {{total}}",
+    "step": {
+      "checking": "Checking your computer",
+      "installing": "Installing your assistant",
+      "starting": "Starting it for the first time",
+      "preparing": "Preparing everything it needs"
+    },
+    "detail": {
+      "python": "Installing Python (a tool it runs on)",
+      "node": "Installing Node.js (a tool it runs on)",
+      "ripgrep": "Installing a fast file-search tool",
+      "ffmpeg": "Installing audio and video tools"
+    },
+    "hint": "The first time can take a few minutes. This only happens once.",
+    "hintLong": "Still working. On a slow connection the first time can take 10 minutes or more. You can leave this window open.",
+    "barLabel": "Setup progress",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "detailsLabel": "Recent setup output",
+    "detailsEmpty": "Nothing to show yet.",
+    "compact": {
+      "working": "Setting up {{engine}}: {{step}} ({{current}}/{{total}})",
+      "failed": "Setup of {{engine}} stopped: {{reason}}"
+    },
+    "card": {
+      "working": "Setting up… {{current}}/{{total}}",
+      "failed": "Setup needs attention"
+    },
+    "action": {
+      "retry": "Try again",
+      "retrying": "Trying again…",
+      "addKey": "Add your key",
+      "openSettings": "Open settings"
+    },
+    "retryFailed": "Couldn't start the setup again ({{error}}). Close and reopen the app, then try again.",
+    "failure": {
+      "network": {
+        "title": "Can't reach the internet",
+        "body": "We couldn't download the assistant. Check your internet connection and try again."
+      },
+      "no_key": {
+        "title": "Your assistant needs a key",
+        "body": "It started, but it has no key to think with. Add your key and it will be ready."
+      },
+      "installer_error": {
+        "title": "The installation stopped",
+        "body": "Nothing on your computer was harmed. Trying again usually fixes it."
+      },
+      "installer_unavailable": {
+        "title": "It can't be installed automatically here",
+        "body": "Choose another AI in Settings, or install it yourself and restart the app."
+      },
+      "engine_missing": {
+        "title": "The installation didn't finish",
+        "body": "The assistant isn't there yet. Try again to finish installing it."
+      },
+      "engine_exit": {
+        "title": "The assistant stopped right after starting",
+        "body": "Trying again often fixes this. If it keeps happening, check your key in Settings."
+      },
+      "timeout": {
+        "title": "This is taking much longer than expected",
+        "body": "Something may be stuck. Try again."
+      },
+      "spawn_error": {
+        "title": "Couldn't start the assistant",
+        "body": "Try again. If it keeps failing, open the details and share them with support."
+      }
+    },
+    "choice": {
+      "legend": "Which Hermes setup should your assistant use?",
+      "intro": "You already have Hermes set up on this computer. Pick which setup your assistant should use.",
+      "own": "Use my existing Hermes setup (provider: {{provider}})",
+      "ownNote": "No key needed here. Recommended if it already works.",
+      "ownNoKeyNote": "No key needed here, but we didn't find a key in it, so it may not work yet.",
+      "recommended": "RECOMMENDED",
+      "app": "Use the key I paste here instead",
+      "appNote": "Your assistant uses the provider and key you set in this app. Your own Hermes files are never changed.",
+      "ownChosen": "Your assistant will use your existing Hermes setup. Nothing to paste here.",
+      "saved": "Saved. This applies the next time your assistant starts.",
+      "saveFailed": "Couldn't save that choice. Please try again."
+    }
   }
 }

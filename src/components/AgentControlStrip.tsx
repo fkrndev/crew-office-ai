@@ -6,6 +6,7 @@ import { isComposingKey } from '@shared/imeGuard';
 import { stripAnsi } from './ansiText';
 import { buildSessionExport, sessionExportFileName } from '@shared/sessionExport';
 import { useStore } from '@/store/store';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 
 /**
  * Operator control for one agent (#7C.1-7C.3) — pause (deny tools at the next
@@ -37,7 +38,13 @@ interface Snapshot {
 }
 
 export function AgentControlStrip({ agentId }: { agentId: string }) {
-  const { t } = useTranslation();
+  const { t: t0 } = useTranslation();
+  // Simple mode keeps two controls — stop, and "tell it something new" — and
+  // words them plainly (`agentControl.<key>_simple`). Blocking tools, the 1:1
+  // hold and session export are advanced.
+  const simple = useIsSimpleMode();
+  const t = (key: string, opts?: Record<string, unknown>): string =>
+    t0(key, simple ? { ...opts, context: 'simple' } : opts);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [steer, setSteer] = useState('');
   const [note, setNote] = useState('');
@@ -115,7 +122,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
         {/* Neither of these kills anything, and the old two-word labels never
             said so — the difference is WHEN the agent stops and whether it keeps
             its session. Say the consequence on the button, the detail on hover. */}
-        <PixelButton variant={snap?.paused ? 'primary' : 'secondary'} size="sm" onClick={togglePause}>
+        {!simple && <PixelButton variant={snap?.paused ? 'primary' : 'secondary'} size="sm" onClick={togglePause}>
           <span
             className="cth-tip cth-tip-left cth-tip-wrap"
             data-tip={snap?.paused
@@ -125,7 +132,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
           >
             {snap?.paused ? t('agentControl.allowTools') : t('agentControl.blockTools')}
           </span>
-        </PixelButton>
+        </PixelButton>}
         <PixelButton variant="destructive" size="sm" onClick={halt}>
           <span
             className="cth-tip cth-tip-left cth-tip-wrap"
@@ -139,8 +146,8 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             control — the two above restrain the agent, this one restrains
             Michael — so the tooltip carries that distinction now that the
             grouping no longer does. */}
-        <AgentHoldButton agentId={agentId} />
-        <PixelButton variant="secondary" size="sm" onClick={exportSession}>
+        {!simple && <AgentHoldButton agentId={agentId} />}
+        {!simple && <PixelButton variant="secondary" size="sm" onClick={exportSession}>
           <span
             className="cth-tip cth-tip-wrap"
             data-tip={t('agentControl.exportTip')}
@@ -148,7 +155,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
           >
             {t('agentControl.export')}
           </span>
-        </PixelButton>
+        </PixelButton>}
         {/* v0.3.4: the auto-delivery switch moved to the god's Command Center
             header — ONE floor-wide control instead of a per-agent toggle. */}
         {snap?.autoDeliveryPaused && (

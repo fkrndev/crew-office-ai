@@ -7,8 +7,10 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyEngineAvailability,
   engineAvailabilityBadge,
-  engineAvailabilityBadgeKey
+  engineAvailabilityBadgeKey,
+  suggestOrchestratorEngine
 } from '@/shared/engineAvailability';
+import type { AgentProvider } from '@/shared/agentProvider';
 
 type Row = { id: string; found: boolean; path: string | null; installCommand?: string; docsUrl?: string };
 
@@ -60,5 +62,24 @@ describe('badges', () => {
       expect(engineAvailabilityBadgeKey({ state: s, path: null, installCommand: '' })).toMatch(/^onboarding\.orchestrator\.badge/);
     }
     expect(engineAvailabilityBadgeKey({ state: 'unknown', path: null, installCommand: '' })).toBeNull();
+  });
+});
+
+describe('suggestOrchestratorEngine (Hermes-first)', () => {
+  const eligible: AgentProvider[] = ['hermes', 'claude', 'codex', 'gemini'];
+  const row = (provider: string, found: boolean): Row => ({
+    id: `engine:${provider}`, found, path: found ? '/bin/' + provider : null, installCommand: found ? undefined : 'x'
+  });
+  const installedProbe = (installed: string[]) => probe(eligible.map((p) => row(p, installed.includes(p))));
+
+  it('installed Hermes wins, then installed Claude, then any installed engine', () => {
+    expect(suggestOrchestratorEngine(installedProbe(['hermes', 'claude']), eligible)).toBe('hermes');
+    expect(suggestOrchestratorEngine(installedProbe(['claude', 'codex']), eligible)).toBe('claude');
+    expect(suggestOrchestratorEngine(installedProbe(['gemini']), eligible)).toBe('gemini');
+  });
+
+  it('suggests Hermes when NOTHING is installed (it used to be Claude)', () => {
+    expect(suggestOrchestratorEngine(installedProbe([]), eligible)).toBe('hermes');
+    expect(suggestOrchestratorEngine(undefined, eligible)).toBe('hermes');
   });
 });

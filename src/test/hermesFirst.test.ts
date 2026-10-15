@@ -93,21 +93,23 @@ describe('suggestOrchestratorEngine', () => {
       }))
     );
 
-  it('keeps Claude when it is installed', () => {
-    expect(suggestOrchestratorEngine(probe(['claude', 'hermes']), eligible)).toBe('claude');
-  });
-  it('prefers Hermes over other installed engines when Claude is missing', () => {
+  it('prefers an INSTALLED Hermes, even when Claude is installed too', () => {
+    expect(suggestOrchestratorEngine(probe(['claude', 'hermes']), eligible)).toBe('hermes');
     expect(suggestOrchestratorEngine(probe(['codex', 'hermes', 'gemini']), eligible)).toBe('hermes');
+  });
+  it('keeps an installed Claude when Hermes is not installed', () => {
+    expect(suggestOrchestratorEngine(probe(['claude', 'codex']), eligible)).toBe('claude');
   });
   it('takes the first installed engine otherwise', () => {
     expect(suggestOrchestratorEngine(probe(['gemini', 'openclaw']), eligible)).toBe('gemini');
   });
-  it('falls back to Claude when nothing is installed or the probe has not run', () => {
-    expect(suggestOrchestratorEngine(probe([]), eligible)).toBe('claude');
-    expect(suggestOrchestratorEngine(undefined, eligible)).toBe('claude');
+  it('falls back to Hermes when nothing is installed or the probe has not run', () => {
+    expect(suggestOrchestratorEngine(probe([]), eligible)).toBe('hermes');
+    expect(suggestOrchestratorEngine(undefined, eligible)).toBe('hermes');
   });
   it('never suggests an engine outside the eligible list', () => {
     expect(suggestOrchestratorEngine(probe(['hermes']), ['claude', 'codex'])).toBe('claude');
+    expect(suggestOrchestratorEngine(undefined, ['codex', 'claude'])).toBe('codex');
   });
 });
 
