@@ -46,10 +46,12 @@ export interface ProviderCapabilities {
 const NO_USAGE_TELEMETRY: ReadonlySet<AgentProvider> = new Set<AgentProvider>(['hermes']);
 
 /** Skills land in ~/.claude/skills and <agent>/.claude/skills (src-tauri
- *  skills.rs). Hermes reads $HERMES_HOME/skills (+ `skills.external_dirs`). */
+ *  skills.rs). Hermes reads $HERMES_HOME/skills plus `skills.external_dirs`,
+ *  and the per-agent Hermes config mounts ~/.claude/skills there (src-tauri
+ *  hive.rs install_hermes_hooks_seeded_at), so user-scope skills reach it. */
 const APP_SKILLS: Partial<Record<AgentProvider, 'yes' | 'no'>> = {
   claude: 'yes',
-  hermes: 'no'
+  hermes: 'yes'
 };
 
 const MODEL_HINT: Partial<Record<AgentProvider, string>> = {

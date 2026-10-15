@@ -31,10 +31,10 @@ describe('SkillsTab offline catalog', () => {
     const cth = installFakeBridge({ skillsBundled: async () => bundled });
     render(<SkillsTab />);
 
-    fireEvent.click(screen.getByText('offline'));
+    fireEvent.click(screen.getByText('built-in'));
 
-    await waitFor(() => expect(screen.getByText('META-ADS')).toBeTruthy());
-    expect(screen.getByText('TICKET-TRIAGE')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('meta-ads')).toBeTruthy());
+    expect(screen.getByText('ticket-triage')).toBeTruthy();
     // The ONLINE catalog was never fetched.
     expect(cth.calls.every((c) => c.method !== 'skillsCatalog')).toBe(true);
   });
@@ -52,8 +52,8 @@ describe('SkillsTab offline catalog', () => {
     });
     render(<SkillsTab />);
 
-    fireEvent.click(screen.getByText('offline'));
-    await waitFor(() => expect(screen.getByText('META-ADS')).toBeTruthy());
+    fireEvent.click(screen.getByText('built-in'));
+    await waitFor(() => expect(screen.getByText('meta-ads')).toBeTruthy());
 
     fireEvent.click(screen.getByText('install'));
 
@@ -66,8 +66,8 @@ describe('SkillsTab offline catalog', () => {
     installFakeBridge({ skillsBundled: async () => bundled });
     render(<SkillsTab />);
 
-    fireEvent.click(screen.getByText('offline'));
-    await waitFor(() => expect(screen.getByText('TICKET-TRIAGE')).toBeTruthy());
+    fireEvent.click(screen.getByText('built-in'));
+    await waitFor(() => expect(screen.getByText('ticket-triage')).toBeTruthy());
 
     // One install button only — for the not-yet-installed row.
     expect(screen.getAllByText('install')).toHaveLength(1);
@@ -78,15 +78,15 @@ describe('SkillsTab offline catalog', () => {
     installFakeBridge({ skillsBundled: async () => bundled });
     render(<SkillsTab />);
 
-    fireEvent.click(screen.getByText('offline'));
-    await waitFor(() => expect(screen.getByText('META-ADS')).toBeTruthy());
+    fireEvent.click(screen.getByText('built-in'));
+    await waitFor(() => expect(screen.getByText('meta-ads')).toBeTruthy());
 
     fireEvent.change(screen.getByTitle('Categories as published by the catalog'), {
       target: { value: 'support' }
     });
 
     expect(screen.queryByText('META-ADS')).toBeNull();
-    expect(screen.getByText('TICKET-TRIAGE')).toBeTruthy();
+    expect(screen.getByText('ticket-triage')).toBeTruthy();
   });
 
   it('failed install surfaces the error inline', async () => {
@@ -96,8 +96,8 @@ describe('SkillsTab offline catalog', () => {
     });
     render(<SkillsTab />);
 
-    fireEvent.click(screen.getByText('offline'));
-    await waitFor(() => expect(screen.getByText('META-ADS')).toBeTruthy());
+    fireEvent.click(screen.getByText('built-in'));
+    await waitFor(() => expect(screen.getByText('meta-ads')).toBeTruthy());
     fireEvent.click(screen.getByText('install'));
 
     await waitFor(() => expect(screen.getByText('not a bundled skill')).toBeTruthy());

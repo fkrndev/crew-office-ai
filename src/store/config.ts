@@ -90,6 +90,10 @@ export interface HarnessConfig {
    *  while away (battery cost; best on AC). Default off = survive + catch up on
    *  resume. Mirrors the main-process field (src/main/config.ts). */
   strongKeepalive?: boolean;
+  /** Multi-window "floors" (experimental, default OFF; Settings → General):
+   *  exposes New Floor — extra windows with their own roster and terminals.
+   *  Mirrors the main-process field (src/main/config.ts). */
+  multiWindow?: boolean;
   /** Auto-update from GitHub releases (default ON; Settings → General). */
   autoUpdate?: boolean;
   /** Anonymous product analytics (default ON, opt-out; see TELEMETRY.md).

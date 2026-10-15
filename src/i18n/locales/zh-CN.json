@@ -244,6 +244,8 @@
       "keepAwakeDesc": "阻止显示屏休眠，让计划任务和终端准时触发。更耗电——最好接电源。",
       "simpleMode": "用通俗方式解释",
       "simpleModeDesc": "智能体用日常语言而不是工程术语向你汇报。",
+      "multiWindow": "多窗口（实验性）",
+      "multiWindowDesc": "可打开额外窗口（“楼层”），每个楼层有自己的智能体名册和终端。所有楼层与第一个窗口共用同一个 hive，关闭第一个窗口会退出应用。保存后生效。默认关闭。",
       "notifications": "通知",
       "desktopNotifications": "桌面通知",
       "desktopNotificationsDesc": "智能体完成或需要你输入时弹出系统通知。",
@@ -1244,6 +1246,7 @@
   },
   "skillsTab": {
     "installed": "已安装",
+    "installedSummary": "{{mine}} 个是你的 · {{builtin}} 个内置于应用",
     "browse": "浏览",
     "searchInstalled": "搜索已安装的技能…",
     "searchCatalog": "搜索技能目录…",
@@ -1272,10 +1275,10 @@
     "removeFailed": "无法移除",
     "uninstallFailed": "卸载失败",
     "catalogUnreachable": "无法访问目录",
-    "offline": "离线",
+    "offline": "内置",
     "searchOffline": "搜索内置技能…",
     "offlineNote": "应用内置 {{count}} 个技能 — 无需联网即可安装。",
-    "engineNote": "这里的技能位于 ~/.claude/skills，由 Claude Code 读取。Hermes 有它自己的技能（在 Hermes 中使用 /skills，或运行 `hermes skills`），所以从此标签页安装的技能不会到达 Hermes 智能体。"
+    "engineNote": "在此安装的技能位于 ~/.claude/skills。Claude Code 和 Hermes 智能体都可以使用（Hermes 会在下次启动时加载）。其他引擎使用各自的技能。"
   },
   "workersTab": {
     "stopping": "停止中",
@@ -1582,7 +1585,13 @@
     "restarting": "正在重启…",
     "restartToUpdate": "重启以更新",
     "download": "下载 {{version}}",
-    "openReleases": "打开发布页"
+    "openReleases": "打开发布页",
+    "availableBody": "已签名的更新可供下载。何时重启由你决定 — 不会自动重启。",
+    "downloading": "正在下载 v{{version}}… {{percent}}%",
+    "downloadingBody": "你可以继续工作。下载内容在安装前会先通过签名校验。",
+    "downloadingShort": "下载中…",
+    "downloadUpdate": "下载更新",
+    "manualBodyReason": "此安装无法自行更新（{{reason}}）— 从发布页面获取新版本。"
   },
   "booting": {
     "title": "打卡上班",
@@ -1612,6 +1621,8 @@
     "focusMode": "专注模式",
     "exitFocusMode": "退出专注模式",
     "toggleFocusMode": "切换专注模式",
+    "newFloor": "新建楼层 (Ctrl+Shift+N)",
+    "floorBadge": "楼层 {{n}}",
     "wakingFloor": "正在唤醒工作区",
     "wakingDesc": "{{godName}} 正在就位。终端会在这里出现。",
     "noAgentSelected": "未选择 agent",
@@ -1636,7 +1647,11 @@
   },
   "notice": {
     "queueDropped": "发给 {{agent}} 的消息无法送达，已被丢弃：“{{text}}”",
-    "sendFailed": "无法发送：{{error}}"
+    "sendFailed": "无法发送：{{error}}",
+    "hiveDegraded": {
+      "proxyBind": "{{agent}} 正在无 hive 事件的状态下运行（其代理桥未能绑定）— 实时状态、费用和收件箱唤醒均已关闭。重新启动该智能体即可重试。",
+      "generic": "{{agent}} 正以降级模式运行，没有 hive 事件。重新启动该智能体即可重试。"
+    }
   },
   "realtime": {
     "micDenied": "麦克风权限被拒绝 — 请允许访问麦克风以便与 {{godName}} 对话",
@@ -1673,6 +1688,17 @@
     "save": "保存",
     "openInIde": "在 IDE 中打开",
     "loading": "加载中…"
+  },
+  "floor": {
+    "closeTitle": "关闭此楼层？",
+    "closeBody": "此楼层还有 {{count}} 个终端在运行。关闭将停止该智能体。其他楼层继续运行。",
+    "closeBodyPlural": "此楼层还有 {{count}} 个终端在运行。关闭将停止这些智能体。其他楼层继续运行。",
+    "keepOpen": "保持楼层打开",
+    "stopAndClose": "停止智能体并关闭楼层",
+    "closing": "正在关闭…",
+    "closeFailed": "无法关闭此楼层：{{error}}",
+    "newFailed": "无法打开新楼层：{{error}}",
+    "disabled": "多窗口已关闭。请在 设置 > 通用 中开启。"
   },
   "restorePrompt": {
     "title": "恢复上次会话",

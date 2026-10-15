@@ -1,3 +1,5 @@
+import { floorKey } from '@/floors';
+
 /** Which store the roster is loaded FROM at boot — the file beside the hive, or
  *  this origin's localStorage.
  *
@@ -22,12 +24,27 @@ export const ROSTER_STORAGE_KEYS = [
   'cth.messageQueues'
 ] as const;
 
+/** The roster keys as THIS window uses them: `main` keeps the plain names, a
+ *  multi-window floor gets its own copies (see src/floors.ts) so floors never
+ *  share or overwrite each other's roster in the one WebView2 profile. */
+export function rosterStorageKeys(label?: string): [string, string, string, string, string] {
+  const [agents, archived, restorable, selected, queues] = ROSTER_STORAGE_KEYS;
+  return [
+    floorKey(agents, label),
+    floorKey(archived, label),
+    floorKey(restorable, label),
+    floorKey(selected, label),
+    floorKey(queues, label)
+  ];
+}
+
 /** Remove every roster key and hand back an undo, for a switch that then fails. */
 export function stashRosterStorage(
-  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
+  label?: string
 ): () => void {
   const saved: Array<[string, string]> = [];
-  for (const key of ROSTER_STORAGE_KEYS) {
+  for (const key of rosterStorageKeys(label)) {
     const v = storage.getItem(key);
     if (v !== null) saved.push([key, v]);
     storage.removeItem(key);

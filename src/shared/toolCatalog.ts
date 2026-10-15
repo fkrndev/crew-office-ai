@@ -158,20 +158,27 @@ export function normalizeToolsProbe(
   if (!Array.isArray(raw)) return [];
   const rows = raw.filter((r): r is Record<string, unknown> => !!r && typeof r === 'object');
   if (rows.length > 0 && rows.every((r) => typeof r.kind === 'string')) return rows as unknown as ToolStatus[];
-  const probed = new Map<string, { found: boolean; path: string | null }>();
+  const probed = new Map<string, { found: boolean; path: string | null; detail?: string }>();
   for (const r of rows) {
     if (typeof r.id !== 'string') continue;
-    probed.set(r.id, { found: r.found === true, path: typeof r.path === 'string' ? r.path : null });
+    probed.set(r.id, {
+      found: r.found === true,
+      path: typeof r.path === 'string' ? r.path : null,
+      detail: typeof r.detail === 'string' ? r.detail : undefined
+    });
   }
   const out: ToolStatus[] = [];
   for (const spec of toolCatalog()) {
+    // Specs without a binary (mempalace — its status comes from the memory
+    // subsystem) are probed under their own id.
     const bin = spec.bin?.trim().split(/\s+/)[0];
-    const hit = bin ? probed.get(bin) : undefined;
+    const hit = probed.get(bin ?? spec.id);
     if (!hit) continue;
     out.push({
       ...spec,
       found: hit.found,
       path: hit.path,
+      ...(hit.detail ? { detail: hit.detail } : {}),
       installCommand: platform === 'win32' ? spec.install.win32 : spec.install.posix
     });
   }

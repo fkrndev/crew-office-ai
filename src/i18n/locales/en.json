@@ -245,6 +245,8 @@
       "keepAwakeDesc": "Blocks display sleep so schedules and terminals keep firing on time. Costs battery — best on AC.",
       "simpleMode": "Explain things simply",
       "simpleModeDesc": "Agents brief you in plain language instead of engineering shorthand.",
+      "multiWindow": "Multiple windows (experimental)",
+      "multiWindowDesc": "Lets you open extra windows (\"floors\"), each with its own roster and terminals. Floors share one hive with the first window, and closing the first window quits the app. Takes effect on Save. Off by default.",
       "notifications": "Notifications",
       "desktopNotifications": "Desktop notifications",
       "desktopNotificationsDesc": "Native toasts when an agent finishes or needs your input.",
@@ -1244,6 +1246,7 @@
   },
   "skillsTab": {
     "installed": "Installed",
+    "installedSummary": "{{mine}} yours · {{builtin}} built into the app",
     "browse": "browse",
     "searchInstalled": "Search installed skills…",
     "searchCatalog": "Search the skills catalog…",
@@ -1272,10 +1275,10 @@
     "removeFailed": "could not remove it",
     "uninstallFailed": "uninstall failed",
     "catalogUnreachable": "could not reach the catalog",
-    "offline": "offline",
+    "offline": "built-in",
     "searchOffline": "Search bundled skills…",
     "offlineNote": "{{count}} skills ship with the app — install without a network.",
-    "engineNote": "Skills here live in ~/.claude/skills and are read by Claude Code. Hermes keeps its own skills (use /skills inside Hermes, or `hermes skills`), so skills installed from this tab do not reach Hermes agents."
+    "engineNote": "Skills installed here live in ~/.claude/skills. Claude Code and Hermes agents can use them (Hermes picks them up the next time it starts). Other engines keep their own skills."
   },
   "workersTab": {
     "stopping": "stopping",
@@ -1554,7 +1557,13 @@
     "restarting": "restarting…",
     "restartToUpdate": "restart to update",
     "download": "download {{version}}",
-    "openReleases": "open releases"
+    "openReleases": "open releases",
+    "availableBody": "A signed update is ready to download. You choose when to restart — nothing restarts on its own.",
+    "downloading": "Downloading v{{version}}… {{percent}}%",
+    "downloadingBody": "You can keep working. The download is signature-verified before it can be installed.",
+    "downloadingShort": "downloading…",
+    "downloadUpdate": "download update",
+    "manualBodyReason": "This install can't update itself ({{reason}}) — grab the new build from the releases page."
   },
   "booting": {
     "title": "CLOCKING IN",
@@ -1612,6 +1621,8 @@
     "focusMode": "Focus mode",
     "exitFocusMode": "Exit focus mode",
     "toggleFocusMode": "Toggle focus mode",
+    "newFloor": "New floor (Ctrl+Shift+N)",
+    "floorBadge": "Floor {{n}}",
     "wakingFloor": "WAKING THE FLOOR",
     "wakingDesc": "{{godName}} is clocking in. The terminal will land here once it is seated.",
     "noAgentSelected": "NO AGENT SELECTED",
@@ -1636,7 +1647,11 @@
   },
   "notice": {
     "queueDropped": "Message to {{agent}} could not be delivered and was dropped: \"{{text}}\"",
-    "sendFailed": "Could not send: {{error}}"
+    "sendFailed": "Could not send: {{error}}",
+    "hiveDegraded": {
+      "proxyBind": "{{agent}} is running without hive events (its proxy bridge did not bind) — live status, cost and inbox wake are off. Respawn the agent to retry.",
+      "generic": "{{agent}} is running in a degraded mode without hive events. Respawn the agent to retry."
+    }
   },
   "realtime": {
     "micDenied": "microphone permission denied — allow mic access to talk to {{godName}}",
@@ -1673,6 +1688,17 @@
     "save": "save",
     "openInIde": "Open in the IDE",
     "loading": "loading…"
+  },
+  "floor": {
+    "closeTitle": "Close this floor?",
+    "closeBody": "{{count}} terminal is still running on this floor. Closing it stops that agent. Other floors keep running.",
+    "closeBodyPlural": "{{count}} terminals are still running on this floor. Closing it stops those agents. Other floors keep running.",
+    "keepOpen": "Keep floor open",
+    "stopAndClose": "Stop agents & close floor",
+    "closing": "Closing…",
+    "closeFailed": "Could not close this floor: {{error}}",
+    "newFailed": "Could not open a new floor: {{error}}",
+    "disabled": "Multiple windows are off. Turn them on in Settings > General."
   },
   "restorePrompt": {
     "title": "Restore last session",

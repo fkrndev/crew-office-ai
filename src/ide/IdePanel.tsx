@@ -10,6 +10,7 @@ import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { HistoryPane, ComparePane } from './GitPanes';
 import { isImagePath, isSvgPath } from '@shared/imageTypes';
 import { joinPath, relativeTo } from '@shared/pathUtil';
+import { changedFilesFrom, pathLabel, type StatusLike } from '@shared/gitStatus';
 import { ideBarStyle, ideIconBtn as iconBtn, ideTextBtn as textBtn } from './chrome';
 
 // v0.3.4 markdown preview: per-md-tab view mode, defaulted from the last choice.
@@ -28,8 +29,7 @@ function defaultMdView(): MdView {
 const GIT_RAIL_COLLAPSED_KEY = 'cth.ide.gitRailCollapsed';
 
 // ─── Local mirrors of the main-side git shapes (kept renderer-local like GitTab) ──
-interface GitStatusEntry { path: string; index: string; worktree: string }
-interface GitStatusT { staged: GitStatusEntry[]; unstaged: GitStatusEntry[]; untracked: string[] }
+type GitStatusT = StatusLike;
 
 type TabMode = 'edit' | 'diff' | 'revdiff' | 'image';
 interface Tab {
@@ -309,14 +309,7 @@ export function IdePanel() {
     return () => window.clearInterval(id);
   }, [refreshStatus]);
 
-  const changedFiles = useMemo(() => {
-    if (!status) return [];
-    const map = new Map<string, string>();
-    for (const e of status.unstaged) map.set(e.path, e.worktree);
-    for (const e of status.staged) if (!map.has(e.path)) map.set(e.path, e.index);
-    for (const p of status.untracked) if (!map.has(p)) map.set(p, '?');
-    return [...map.entries()].map(([path, code]) => ({ path, code })).sort((a, b) => a.path.localeCompare(b.path));
-  }, [status]);
+  const changedFiles = useMemo(() => (status ? changedFilesFrom(status) : []), [status]);
 
   const anyDirty = useMemo(
     () => Object.values(editBuffers).some((b) => b.status === 'ready' && b.content !== b.original),
@@ -534,7 +527,7 @@ export function IdePanel() {
                     <div
                       key={f.path}
                       onClick={() => openDiff(f.path)}
-                      title={f.path}
+                      title={pathLabel(f.path, f.oldPath)}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 6, padding: '2px 12px',
                         cursor: 'pointer', fontSize: 12, color: 'var(--cth-ink-900)',
@@ -548,7 +541,7 @@ export function IdePanel() {
                       <span style={{
                         flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                         fontFamily: 'var(--cth-font-mono)', direction: 'rtl', textAlign: 'left'
-                      }}>{f.path}</span>
+                      }}>{pathLabel(f.path, f.oldPath)}</span>
                     </div>
                   );
                 })}

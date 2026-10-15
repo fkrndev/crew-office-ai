@@ -49,6 +49,28 @@ describe('reduceStatus', () => {
     const newer = { state: 'available', version: '0.4.8' } as UpdateStatus;
     expect(reduceStatus(downloaded, newer)).toBe(newer);
   });
+
+  it('signed flow advances available -> downloading -> downloaded', () => {
+    const available = { state: 'available', version: '0.4.8', signed: true } as UpdateStatus;
+    const downloading = { state: 'downloading', version: '0.4.8', percent: 10 } as UpdateStatus;
+    const downloaded = { state: 'downloaded', version: '0.4.8' } as UpdateStatus;
+    expect(reduceStatus(available, downloading)).toBe(downloading);
+    expect(reduceStatus(downloading, { state: 'downloading', version: '0.4.8', percent: 11 } as UpdateStatus).state).toBe('downloading');
+    // (main never re-checks mid-download, so `available` after `downloading`
+    // only ever means "the download failed and may be retried")
+    expect(reduceStatus(downloading, downloaded)).toBe(downloaded);
+  });
+
+  it('a failed download (signature rejected) replaces downloading instead of sticking at 100%', () => {
+    const downloading = { state: 'downloading', version: '0.4.8', percent: 100 } as UpdateStatus;
+    const failed = { state: 'available-manual', version: '0.4.8', url: 'https://github.com/fkrndev/crew-office-ai/releases/tag/v0.4.8', reason: 'signature mismatch' } as UpdateStatus;
+    expect(reduceStatus(downloading, failed)).toBe(failed);
+    const err = { state: 'error', message: 'boom' } as UpdateStatus;
+    expect(reduceStatus(downloading, err)).toBe(err);
+    // ... but a staged download is still protected from re-check noise
+    const downloaded = { state: 'downloaded', version: '0.4.8' } as UpdateStatus;
+    expect(reduceStatus(downloaded, err)).toBe(downloaded);
+  });
 });
 
 describe('clampPercent / installerUrl', () => {

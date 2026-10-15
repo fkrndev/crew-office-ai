@@ -18,7 +18,8 @@ import { preferredAgentRole } from '@shared/agentRole';
 import { isInboxNudge } from '@shared/hiveNudge';
 import { refocusAfterRemoval, focusOnLoad, restoreFocus } from './focusMode';
 import { relativeTo } from '@shared/pathUtil';
-import { chooseRosterSource, ROSTER_STORAGE_KEYS } from './rosterSource';
+import { chooseRosterSource, rosterStorageKeys } from './rosterSource';
+import { floorKey } from '@/floors';
 import i18n from '@/i18n';
 
 export type ToolKind =
@@ -352,10 +353,12 @@ interface State {
 
 const LS_SIDEBAR_WIDTH = 'cth.sidebarWidth';
 const LS_SIDEBAR_TAB = 'cth.sidebarTab';
-const [LS_AGENTS, LS_ARCHIVED, LS_RESTORABLE, LS_SELECTED, LS_QUEUES] = ROSTER_STORAGE_KEYS;
+// Per-floor state is keyed by window label (src/floors.ts): `main` keeps the
+// original key names, a multi-window floor gets its own copies.
+const [LS_AGENTS, LS_ARCHIVED, LS_RESTORABLE, LS_SELECTED, LS_QUEUES] = rosterStorageKeys();
 /** Which hive this origin's roster keys were last written for. See rosterSource.ts. */
-const LS_ROSTER_HOME = 'cth.rosterHome';
-const LS_FOCUS_MODE = 'cth.prefersFocusMode';
+const LS_ROSTER_HOME = floorKey('cth.rosterHome');
+const LS_FOCUS_MODE = floorKey('cth.prefersFocusMode');
 /** True after the user left focus mode with Esc: restoreFocusMode stands down for
  *  the rest of the session (the stored preference is untouched). */
 let focusLeftThisSession = false;

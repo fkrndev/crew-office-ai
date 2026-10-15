@@ -47,12 +47,13 @@ describe('provider capabilities', () => {
     expect(providerNoteKeys('claude', { autoMode: true })).toEqual([]);
   });
 
-  it('hermes: first-run hint, honest auto-mode note, no-telemetry and own-skills notes', () => {
+  it('hermes: first-run hint, honest auto-mode note and no-telemetry note; skills reach it', () => {
     const on = providerNoteKeys('hermes', { autoMode: true });
     expect(on).toContain('providerNotes.hermes.firstRunHint');
     expect(on).toContain('providerNotes.hermes.autoNote');
     expect(on).toContain('providerNotes.noUsage');
-    expect(on).toContain('providerNotes.ownSkills');
+    // ~/.claude/skills is mounted as skills.external_dirs in its per-agent config.
+    expect(on).not.toContain('providerNotes.ownSkills');
     expect(providerNoteKeys('hermes', { autoMode: false })).not.toContain('providerNotes.hermes.autoNote');
     expect(capabilitiesForProvider('hermes').modelHintKey).toBe('providerNotes.hermes.modelHint');
     expect(capabilitiesForProvider('hermes').autoModeFlag).toBe('--yolo');

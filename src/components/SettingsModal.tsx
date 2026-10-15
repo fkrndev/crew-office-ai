@@ -263,6 +263,13 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     setKeepAwake(next);
     stage({ strongKeepalive: next } as Partial<HarnessConfig>);
   };
+  // Multi-window floors — experimental, default OFF (absent reads as off).
+  const [multiWindowOn, setMultiWindowOn] = useState<boolean>(config.multiWindow === true);
+  const toggleMultiWindow = async () => {
+    const next = !multiWindowOn;
+    setMultiWindowOn(next);
+    stage({ multiWindow: next });
+  };
   const [simpleMode, setSimpleMode] = useState<boolean>(cfgX.audience === 'non-technical');
   // Renderer-local, not part of HarnessConfig — it only changes how this window
   // paints pty output. Read once; the setter keeps localStorage in step.
@@ -1036,6 +1043,17 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             </div>
                             <PixelButton variant={keepAwake ? 'primary' : 'secondary'} size="sm" onClick={toggleKeepAwake}>
                               {keepAwake ? t('common.on') : t('common.off')}
+                            </PixelButton>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.general.multiWindow')}</span>
+                              <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                {t('settings.general.multiWindowDesc')}
+                              </span>
+                            </div>
+                            <PixelButton variant={multiWindowOn ? 'primary' : 'secondary'} size="sm" onClick={toggleMultiWindow}>
+                              {multiWindowOn ? t('common.on') : t('common.off')}
                             </PixelButton>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>

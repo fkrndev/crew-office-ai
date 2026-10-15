@@ -1,11 +1,13 @@
 /**
  * Auto-update toast (v0.3.4) — the visual half of the background updater.
  *
- * Main's updater (src/main/updater.ts) downloads a new release in the
- * background and pushes ONE of two states over `update:status`:
+ * Main's updater (cmd_update.rs) checks the signed feed and pushes these over
+ * `update:status`:
+ *   - 'available'         → a SIGNED update exists; offer "download update"
+ *                           (then 'downloading' progress, then 'downloaded').
  *   - 'downloaded'        → the update is staged; offer "restart to update".
- *   - 'available-manual'  → this install can't self-update (win-portable,
- *                           updater error); offer a link to the release page.
+ *   - 'available-manual'  → no signed artifact (or its download failed); offer
+ *                           a link to the release page.
  *
  * Mirrors CompletionToast: self-contained + self-subscribing, mounted once in
  * App.tsx, renders nothing when idle. Installation is ALWAYS user-initiated —
@@ -40,15 +42,21 @@ import { Icon } from '@/components/Icon';
 import { summarizeReleaseNotes } from '@shared/releaseNotes';
 import { extractDropHtml } from '@shared/releaseDrop';
 import { ReleaseDrop } from '@/components/ReleaseDrop';
-import type { UpdateStatus } from '@shared/updateState';
+import { clampPercent, type UpdateStatus } from '@shared/updateState';
 
-/** The toast is the LOUD half — it only interrupts for the two states a user has
- *  to act on. Everything else (checking, available, download progress, errors)
- *  lives quietly in the toolbar badge next to the logo. */
-type ToastStatus = Extract<UpdateStatus, { state: 'downloaded' | 'available-manual' | 'just-updated' }>;
+/** The toast is the LOUD half — it only interrupts for the states a user has
+ *  to act on: a signed update to download (`available`), its progress
+ *  (`downloading`, only while a toast is already up), a staged one to restart
+ *  into (`downloaded`), or the notify-only manual path. Checks and errors live
+ *  quietly in the toolbar badge next to the logo. */
+type ToastStatus = Extract<
+  UpdateStatus,
+  { state: 'available' | 'downloading' | 'downloaded' | 'available-manual' | 'just-updated' }
+>;
 
 function toastable(s: UpdateStatus): ToastStatus | null {
-  return s.state === 'downloaded' || s.state === 'available-manual' || s.state === 'just-updated' ? s : null;
+  return s.state === 'available' || s.state === 'downloading' || s.state === 'downloaded'
+    || s.state === 'available-manual' || s.state === 'just-updated' ? s : null;
 }
 
 const GITHUB_REPO_URL = 'https://github.com/fkrndev/crew-office-ai';
@@ -65,7 +73,11 @@ export function UpdateToast() {
     const t = toastable(next);
     // A non-toastable state (a re-check, say) must not erase a toast the user
     // hasn't answered yet — only a new actionable state replaces it.
-    if (t) setStatus(t);
+    if (!t) return;
+    // Progress ticks only update a toast that is already up: after "later" a
+    // download keeps ticking and must not pop the toast back at every percent.
+    if (t.state === 'downloading') { setStatus((prev) => (prev ? t : prev)); return; }
+    setStatus(t);
   }), []);
 
   // Main may have emitted before this window existed (a downloaded update
@@ -139,6 +151,18 @@ export function UpdateToast() {
    *  can promise a download rather than a page to go hunting on. */
   const hasDownload = status.state === 'available-manual' && !!status.downloadUrl;
 
+  /** Start the signed download. Main answers `manual-download` when it holds no
+   *  signed artifact (the notify-only fallback): then the release page is the
+   *  path, exactly as before. Progress arrives as `downloading` events. */
+  const download = async () => {
+    setBusy(true);
+    try {
+      const res = await window.cth.updateDownload();
+      if (!res?.ok) openRelease();
+    } catch { openRelease(); }
+    setBusy(false);
+  };
+
   // An authored release: hand the whole moment to the centered drop instead of
   // the corner toast. Nothing is passed in but the content — the drop carries no
   // app buttons, and its own links go out through the OS browser.
@@ -186,14 +210,37 @@ export function UpdateToast() {
         <span style={{ fontSize: 13, color: 'var(--cth-ink-900)', fontWeight: 600 }}>
           {status.state === 'downloaded'
             ? t('updateToast.downloaded', { version: status.version })
-            : t('updateToast.available', { version: status.version })}
+            : status.state === 'downloading'
+              ? t('updateToast.downloading', { version: status.version, percent: clampPercent(status.percent) })
+              : t('updateToast.available', { version: status.version })}
         </span>
       </div>
       <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-700)' }}>
         {status.state === 'downloaded'
           ? t('updateToast.downloadedBody')
-          : t('updateToast.manualBody')}
+          : status.state === 'available'
+            ? t('updateToast.availableBody')
+            : status.state === 'downloading'
+              ? t('updateToast.downloadingBody')
+              : status.state === 'available-manual' && status.reason
+                ? t('updateToast.manualBodyReason', { reason: status.reason })
+                : t('updateToast.manualBody')}
       </span>
+      {status.state === 'downloading' && (
+        <div
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={clampPercent(status.percent)}
+          style={{ height: 8, background: 'var(--cth-cream-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)' }}
+        >
+          <div style={{
+            height: '100%', width: `${clampPercent(status.percent)}%`,
+            background: 'var(--cth-mint-light, #d0f0e0)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-900)',
+            transition: 'width 120ms linear'
+          }} />
+        </div>
+      )}
 
       {notes.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -222,7 +269,7 @@ export function UpdateToast() {
           </ul>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <a
-              href={status.state === 'available-manual' ? status.url : GITHUB_RELEASES_URL}
+              href={status.state === 'available-manual' || status.state === 'available' ? (status.url ?? GITHUB_RELEASES_URL) : GITHUB_RELEASES_URL}
               onClick={(e) => { e.preventDefault(); openRelease(); }}
               style={linkStyle}
             >{t('updateToast.readMore')}</a>
@@ -240,6 +287,14 @@ export function UpdateToast() {
         {status.state === 'downloaded' ? (
           <button onClick={restart} disabled={busy} style={buttonStyle}>
             {busy ? t('updateToast.restarting') : t('updateToast.restartToUpdate')}
+          </button>
+        ) : status.state === 'available' ? (
+          <button onClick={() => { void download(); }} disabled={busy} style={buttonStyle}>
+            {t('updateToast.downloadUpdate', { version: status.version })}
+          </button>
+        ) : status.state === 'downloading' ? (
+          <button disabled style={{ ...buttonStyle, cursor: 'default', opacity: 0.7 }}>
+            {t('updateToast.downloadingShort')}
           </button>
         ) : (
           <button

@@ -245,6 +245,8 @@
       "keepAwakeDesc": "Mencegah layar tidur agar jadwal dan terminal tetap berjalan tepat waktu. Menguras baterai — paling baik saat tersambung daya.",
       "simpleMode": "Jelaskan dengan bahasa sederhana",
       "simpleModeDesc": "Agen memberimu penjelasan dalam bahasa sehari-hari, bukan singkatan teknis.",
+      "multiWindow": "Banyak jendela (eksperimental)",
+      "multiWindowDesc": "Memungkinkan membuka jendela tambahan (\"lantai\"), masing-masing dengan daftar agen dan terminalnya sendiri. Semua lantai berbagi satu hive dengan jendela pertama, dan menutup jendela pertama akan menutup aplikasi. Berlaku setelah Simpan. Nonaktif secara default.",
       "notifications": "Notifikasi",
       "desktopNotifications": "Notifikasi desktop",
       "desktopNotificationsDesc": "Toast bawaan saat agen selesai atau butuh masukanmu.",
@@ -1244,6 +1246,7 @@
   },
   "skillsTab": {
     "installed": "Terpasang",
+    "installedSummary": "{{mine}} milik Anda · {{builtin}} bawaan aplikasi",
     "browse": "jelajahi",
     "searchInstalled": "Cari skill terpasang…",
     "searchCatalog": "Cari katalog skill…",
@@ -1272,10 +1275,10 @@
     "removeFailed": "tidak bisa menghapusnya",
     "uninstallFailed": "uninstall gagal",
     "catalogUnreachable": "tidak bisa menjangkau katalog",
-    "offline": "offline",
+    "offline": "bawaan",
     "searchOffline": "Cari skill bawaan…",
     "offlineNote": "{{count}} skill sudah dibundel di app — install tanpa internet.",
-    "engineNote": "Skill di sini disimpan di ~/.claude/skills dan dibaca oleh Claude Code. Hermes punya skill sendiri (pakai /skills di dalam Hermes, atau `hermes skills`), jadi skill yang dipasang dari tab ini tidak sampai ke agen Hermes."
+    "engineNote": "Skill yang dipasang di sini disimpan di ~/.claude/skills. Agen Claude Code dan Hermes bisa memakainya (Hermes membacanya saat dijalankan berikutnya). Engine lain punya skill sendiri."
   },
   "workersTab": {
     "stopping": "menghentikan",
@@ -1582,7 +1585,13 @@
     "restarting": "memulai ulang…",
     "restartToUpdate": "restart untuk update",
     "download": "unduh {{version}}",
-    "openReleases": "buka rilis"
+    "openReleases": "buka rilis",
+    "availableBody": "Update bertanda tangan siap diunduh. Kamu yang menentukan kapan restart — tidak ada yang restart sendiri.",
+    "downloading": "Mengunduh v{{version}}… {{percent}}%",
+    "downloadingBody": "Kamu bisa tetap bekerja. Unduhan diverifikasi tanda tangannya sebelum bisa dipasang.",
+    "downloadingShort": "mengunduh…",
+    "downloadUpdate": "unduh update",
+    "manualBodyReason": "Instalasi ini tidak bisa update sendiri ({{reason}}) — ambil build baru dari halaman rilis."
   },
   "booting": {
     "title": "MASUK KERJA",
@@ -1612,6 +1621,8 @@
     "focusMode": "Mode fokus",
     "exitFocusMode": "Keluar mode fokus",
     "toggleFocusMode": "Ganti mode fokus",
+    "newFloor": "Lantai baru (Ctrl+Shift+N)",
+    "floorBadge": "Lantai {{n}}",
     "wakingFloor": "FLOOR BANGUN",
     "wakingDesc": "{{godName}} sedang masuk. Terminal akan muncul di sini setelah ia duduk.",
     "noAgentSelected": "BELUM ADA AGENT DIPILIH",
@@ -1636,7 +1647,11 @@
   },
   "notice": {
     "queueDropped": "Pesan ke {{agent}} tidak dapat dikirim dan dibuang: \"{{text}}\"",
-    "sendFailed": "Tidak dapat mengirim: {{error}}"
+    "sendFailed": "Tidak dapat mengirim: {{error}}",
+    "hiveDegraded": {
+      "proxyBind": "{{agent}} berjalan tanpa event hive (proxy bridge-nya gagal terikat) — status langsung, biaya, dan pemicu inbox nonaktif. Spawn ulang agen untuk mencoba lagi.",
+      "generic": "{{agent}} berjalan dalam mode terdegradasi tanpa event hive. Spawn ulang agen untuk mencoba lagi."
+    }
   },
   "realtime": {
     "micDenied": "izin mikrofon ditolak — izinkan akses mikrofon untuk berbicara dengan {{godName}}",
@@ -1673,6 +1688,17 @@
     "save": "simpan",
     "openInIde": "Buka di IDE",
     "loading": "memuat…"
+  },
+  "floor": {
+    "closeTitle": "Tutup lantai ini?",
+    "closeBody": "{{count}} terminal masih berjalan di lantai ini. Menutupnya akan menghentikan agen tersebut. Lantai lain tetap berjalan.",
+    "closeBodyPlural": "{{count}} terminal masih berjalan di lantai ini. Menutupnya akan menghentikan agen-agen tersebut. Lantai lain tetap berjalan.",
+    "keepOpen": "Biarkan lantai terbuka",
+    "stopAndClose": "Hentikan agen & tutup lantai",
+    "closing": "Menutup…",
+    "closeFailed": "Tidak dapat menutup lantai ini: {{error}}",
+    "newFailed": "Tidak dapat membuka lantai baru: {{error}}",
+    "disabled": "Banyak jendela nonaktif. Aktifkan di Pengaturan > Umum."
   },
   "restorePrompt": {
     "title": "Pulihkan sesi terakhir",

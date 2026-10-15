@@ -119,7 +119,11 @@ export function UpdatesSection() {
     setBusy(true);
     try {
       if (view.action === 'restart') await window.cth.updateRestartAndInstall();
-      else if (view.action === 'download') await window.cth.updateDownload();
+      else if (view.action === 'download') {
+        // `ok: false` = main holds no signed artifact: the release page it is.
+        const res = await window.cth.updateDownload();
+        if (res && res.ok === false) await window.cth.updateOpenRelease(status && 'url' in status ? status.url : undefined);
+      }
       else if (view.action === 'check') await window.cth.updateCheckNow();
       else if (view.action === 'open-release') {
         await window.cth.updateOpenRelease(status?.state === 'available-manual' ? status.url : undefined);
@@ -151,7 +155,7 @@ export function UpdatesSection() {
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
-          {pending && (
+          {pending && status?.state !== 'downloading' && status?.state !== 'downloaded' && (
             <PixelButton
               variant="secondary"
               size="sm"
@@ -182,6 +186,24 @@ export function UpdatesSection() {
           )}
         </div>
       </div>
+      {status?.state === 'downloading' && (
+        <div
+          role="progressbar"
+          aria-label={t('updatesSection.downloadingHeadline', { version: status.version })}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={clampPercent(status.percent)}
+          style={{
+            marginTop: 10, height: 8, background: 'var(--cth-paper-100)',
+            border: '2px solid var(--cth-ink-900)', boxSizing: 'content-box'
+          }}
+        >
+          <div style={{
+            height: '100%', width: `${clampPercent(status.percent)}%`,
+            background: 'var(--cth-mint-light, #d0f0e0)', transition: 'width 120ms linear'
+          }} />
+        </div>
+      )}
       {manualStarted && (
         <div style={{
           marginTop: 10, padding: '10px 12px', fontSize: 12, lineHeight: 1.5,

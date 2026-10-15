@@ -199,10 +199,10 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const [name, setName] = useState(pendingHire?.name ?? 'Jim');
   const [character, setCharacter] = useState<OfficeCharacterName>(knownCharacter(pendingHire?.character));
   const [accent, setAccent] = useState<AccentColorName>(knownAccent(pendingHire?.accent));
-  const [cwd, setCwd] = useState<string>(config.registeredRepos[0] ?? '');
+  const [cwd, setCwd] = useState<string>(config.registeredRepos?.[0] ?? '');
   // Local mirror of the registered projects so one added from here shows as a
   // quick-pick immediately (the `config` prop is a snapshot taken at open time).
-  const [repos, setRepos] = useState<string[]>(config.registeredRepos);
+  const [repos, setRepos] = useState<string[]>(config.registeredRepos ?? []);
   const [provider, setProvider] = useState<AgentProvider>(pendingHire?.provider ?? initialProvider);
   const [model, setModel] = useState<string | undefined>(
     pendingHire ? pendingHire.model : initialModel

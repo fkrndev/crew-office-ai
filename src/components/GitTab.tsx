@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { CommitGraph } from './git/CommitGraph';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { pathLabel } from '@shared/gitStatus';
 
 interface GitCommit {
   sha: string;
@@ -14,7 +15,7 @@ interface GitCommit {
   time: number;
   refs: string[];
 }
-interface GitStatusEntry { path: string; index: string; worktree: string }
+interface GitStatusEntry { path: string; index: string; worktree: string; oldPath?: string }
 interface GitStatus { staged: GitStatusEntry[]; unstaged: GitStatusEntry[]; untracked: string[] }
 
 export interface GitTabProps {
@@ -224,7 +225,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function StatusGroup({ label, entries }: {
   label: string;
-  entries: Array<{ path: string; code: string }>;
+  entries: Array<{ path: string; code: string; oldPath?: string }>;
 }) {
   const { t } = useTranslation();
   if (entries.length === 0) return null;
@@ -249,7 +250,7 @@ function StatusGroup({ label, entries }: {
           <span style={{
             flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             fontFamily: 'var(--cth-font-mono)', fontSize: 13
-          }} title={e.path}>{e.path}</span>
+          }} title={pathLabel(e.path, e.oldPath)}>{pathLabel(e.path, e.oldPath)}</span>
           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
             {statusLabelKey(e.code) ? t(statusLabelKey(e.code)) : ''}
           </span>

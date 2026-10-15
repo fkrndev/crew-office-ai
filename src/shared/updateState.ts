@@ -13,8 +13,10 @@ export type UpdateStatus =
   | { state: 'idle' }
   | { state: 'checking' }
   | { state: 'not-available' }
-  | { state: 'available'; version: string; notes?: string }
-  | { state: 'downloading'; version: string; percent: number }
+  /** A SIGNED update the app can download and install itself (the official
+   *  updater found it in latest.json); `url` is its release page. */
+  | { state: 'available'; version: string; notes?: string; url?: string; signed?: boolean }
+  | { state: 'downloading'; version: string; percent: number; notes?: string }
   | { state: 'downloaded'; version: string; notes?: string }
   /** This install can't self-update (win-portable, or the native path failed):
    *  notify-only, link to the release page. `reason` is the underlying error.
@@ -168,6 +170,11 @@ export function reduceStatus(prev: UpdateStatus | null, next: UpdateStatus): Upd
   const nv = versionOf(next);
   if (pv && nv && isNewer(nv, pv)) return next;   // a newer release supersedes
   if (pv && nv && pv !== nv) return next;         // different (e.g. rolled back) release
+  // A FAILED download (signature rejected, network dropped) is reported as
+  // error / available-manual / available. They all rank below `downloading`, so
+  // without this the UI would sit on "downloading 100%" forever.
+  if (prev.state === 'downloading'
+    && (next.state === 'error' || next.state === 'available-manual' || next.state === 'available')) return next;
   return rank(next) >= rank(prev) ? next : prev;
 }
 
@@ -207,7 +214,7 @@ export function describeUpdate(status: UpdateStatus | null, currentVersion: stri
     if (status?.state === 'available') {
       return {
         label: `v${pending} · update`, action: 'download', tone: 'ready', busy: false,
-        title: `Downloading v${pending} in the background; click to start it if it has not begun`
+        title: `Click to download v${pending} (signature-verified), then restart to install`
       };
     }
     const why = status?.state === 'available-manual' && status.reason

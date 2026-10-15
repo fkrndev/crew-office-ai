@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { stashRosterStorage } from '@/store/rosterSource';
+import { listenTarget } from '@/floors';
 import { normalizeToolsProbe } from '@shared/toolCatalog';
 
 /** Where "open the release page" lands when the caller has no specific URL —
@@ -13,6 +14,13 @@ const warned = new Set<string>();
 const missing = (name: string) => (..._args: unknown[]) => {
   if (!warned.has(name)) { warned.add(name); console.warn('[cth] unimplemented:', name); }
   return Promise.resolve(null);
+};
+/** Like `on`, but scoped to THIS window's label: the backend addresses a PTY's
+ *  stream to the window that owns it (floors.rs), and an untargeted listener
+ *  would hear another floor's output too. Broadcasts still reach it. */
+const onHere = <T>(channel: string, cb: (e: T) => void): (() => void) => {
+  const p = listen<T>(channel, (ev) => cb((ev as { payload: T }).payload), { target: listenTarget() });
+  return () => { void p.then((u) => u()); };
 };
 const pack = (vals: unknown[], names: string[]): Record<string, unknown> => {
   const o: Record<string, unknown> = {};
@@ -293,7 +301,7 @@ export function installCth(): void {
       invoke<Record<string, unknown>>('git_show_file', pack(args, ["cwd","rev","path"])),
       (r) => (isPlainObject(r) ? r : {})
     ),
-    gitCompareRefs: (...args: unknown[]) => gitSafe(invoke('git_compare_refs', pack(args, ["cwd","base","head"]))),
+    gitCompareRefs: (...args: unknown[]) => gitSafe(invoke('git_compare_refs', pack(args, ["cwd","base","head","mode"]))),
     gitWorktrees: (...args: unknown[]) => gitSafe(invoke('git_worktrees', pack(args, ["cwd"]))),
     // Tauri keys a raw `r#ref` parameter as `ref`.
     gitCheckout: (...args: unknown[]) => envelope(
@@ -325,7 +333,7 @@ export function installCth(): void {
     // Native rows are bare {id,found,path}; join them with the catalog (see normalizeToolsProbe).
     toolsStatus: async (...args: unknown[]) => normalizeToolsProbe(await invoke('tools_status', pack(args, [])), platform),
     heroPayload: (...args: unknown[]) => invoke('hero_payload', pack(args, ["force"])),
-    modelCatalog: (...args: unknown[]) => invoke('models_catalog', pack(args, [])),
+    modelCatalog: (...args: unknown[]) => invoke('models_catalog', pack(args, ['force'])),
     // `cwds` is Vec<String>; callers hand a single cwd (or nothing).
     skillsLocal: (cwds?: unknown) => invoke('skills_local', { cwds: toArray(cwds) }),
     skillsCatalog: (...args: unknown[]) => invoke('skills_catalog', pack(args, ["force"])),
@@ -390,19 +398,20 @@ export function installCth(): void {
     // Resolve a source URL into a validated manifest ({ok,manifest,...}); rejects
     // with the reason (SSRF block, bad JSON, invalid manifest).
     hireFetch: (url: string) => invoke('hire_fetch', { url }),
-    // File picker -> {ok,manifests,errors}. The backend validates ONE file and
-    // answers {ok,manifest,warnings} | {ok:false,errors} | {ok:false,error}.
+    // Multi-select picker -> {ok,manifests,errors,error?}. The backend validates
+    // every selected file independently (valid neighbours survive an invalid
+    // one) and names a bad file by its basename.
     importHireFiles: async () => {
       try {
         const r = await invoke<{
-          ok?: boolean; manifest?: unknown; errors?: string[]; error?: string; warnings?: string[];
-        }>('hire_open_file');
-        if (r?.ok && r.manifest) {
-          return { ok: true, manifests: [r.manifest], errors: [] as string[], warnings: r.warnings ?? [] };
-        }
-        // One file, so its validation errors collapse into one entry.
-        const errors = Array.isArray(r?.errors) && r.errors.length ? [r.errors.join('; ')] : [];
-        return { ok: false, manifests: [], errors, error: r?.error };
+          ok?: boolean; manifests?: unknown[]; errors?: string[]; error?: string;
+        }>('hire_open_files');
+        return {
+          ok: r?.ok === true,
+          manifests: r?.manifests ?? [],
+          errors: r?.errors ?? [],
+          ...(r?.error ? { error: r.error } : {})
+        };
       } catch (e) {
         return { ok: false, manifests: [], errors: [] as string[], error: errMsg(e) };
       }
@@ -412,7 +421,10 @@ export function installCth(): void {
     // Re-arms the closing-time protocol (same rail as startClosingTime).
     confirmClose: (...args: unknown[]) => invoke('app_confirm_close', pack(args, [])),
     cancelClose: (...args: unknown[]) => invoke('app_cancel_close', pack(args, [])),
+    // Multi-window floors (floors.rs): `{ok}` — false when the multiWindow
+    // flag is off. closeFloor is the CONFIRMED close of the calling floor.
     newFloor: (...args: unknown[]) => invoke('window_new_floor', pack(args, [])),
+    closeFloor: (...args: unknown[]) => invoke('window_close_floor', pack(args, [])),
     startClosingTime: (...args: unknown[]) => invoke('closing_time_start', pack(args, [])),
     cancelClosingTime: (...args: unknown[]) => invoke('closing_time_cancel', pack(args, [])),
     resetAll: (...args: unknown[]) => invoke('app_reset_all', pack(args, [])),
@@ -423,7 +435,7 @@ export function installCth(): void {
     telemetrySnapshot: (...args: unknown[]) => invoke('telemetry_snapshot', pack(args, [])),
     setBreakerState: (...args: unknown[]) => invoke('control_set_breaker_state', pack(args, ["agentId","enabled"])),
     controlPause: (...args: unknown[]) => invoke('control_pause', pack(args, ["agentId","on"])),
-    controlAutoDelivery: (...args: unknown[]) => invoke('control_auto_delivery', pack(args, ["agentId","enabled"])),
+    controlAutoDelivery: (...args: unknown[]) => invoke('control_auto_delivery', pack(args, ["agentId","paused"])),
     controlResume: (...args: unknown[]) => invoke('control_resume', pack(args, ["agentId"])),
     controlGateTool: (...args: unknown[]) => invoke('control_gate_tool', pack(args, ["agentId","tool","on"])),
     controlSteer: (...args: unknown[]) => invoke('control_steer', pack(args, ["agentId","text"])),
@@ -572,13 +584,15 @@ export function installCth(): void {
       on<{ agentId: string; tokens: number; limit: number }>('hive:contextUpdate', cb),
     // Per-id channels, exactly like upstream's `pty:data:<id>`/`pty:exit:<id>`
     // — the backend emits those alongside the aggregate events.
+    // Window-scoped (onHere): each PTY's stream goes only to the window that
+    // spawned it, so a floor's terminals never leak into another window.
     onPtyData: (id: string, cb: (data: string) => void) =>
-      on<string>(`pty:data:${id}`, cb),
+      onHere<string>(`pty:data:${id}`, cb),
     onPtyExit: (
       id: string,
       cb: (info: { exitCode: number | null; signal: number | null }) => void
-    ) => on<{ exitCode: number | null; signal: number | null }>(`pty:exit:${id}`, cb),
-    onPtyRelaunch: (id: string, cb: () => void) => on<void>(`pty:relaunch:${id}`, () => cb()),
+    ) => onHere<{ exitCode: number | null; signal: number | null }>(`pty:exit:${id}`, cb),
+    onPtyRelaunch: (id: string, cb: () => void) => onHere<void>(`pty:relaunch:${id}`, () => cb()),
     onHookEvent: (cb: (e: unknown) => void) => on<unknown>('hive:hookEvent', cb),
     onHiveHookEvent: (cb: (e: unknown) => void) => on<unknown>('hive:hookEvent', cb),
     onAgentStatus: (cb: (e: unknown) => void) => on<unknown>('agent-status', cb),
@@ -586,6 +600,8 @@ export function installCth(): void {
     onHiveAgentSpawned: (cb: (e: unknown) => void) => on<unknown>('hive:agentSpawned', cb),
     onAgentArchived: (cb: (e: unknown) => void) => on<unknown>('hive:agentArchived', cb),
     onHiveAgentArchived: (cb: (e: { id: string }) => void) => on<{ id: string }>('hive:agentArchived', cb),
+    onHiveDegraded: (cb: (e: { agentId?: string; name?: string; reason?: string; message?: string }) => void) =>
+      on<{ agentId?: string; name?: string; reason?: string; message?: string }>('hive:degraded', cb),
     onBreakerState: (cb: (e: unknown) => void) => on<unknown>('control:breakerState', cb),
     onRealtimeCompletion: (cb: (e: unknown) => void) => on<unknown>('realtime:completion', cb),
     onUpdateState: (cb: (e: unknown) => void) => on<unknown>('update:status', cb),
@@ -593,7 +609,12 @@ export function installCth(): void {
     onTriggerHistory: (cb: (e: unknown) => void) => on<unknown>('triggerHistory:updated', cb),
     onMissionsUpdated: (cb: (e: unknown) => void) => on<unknown>('missions:updated', cb),
     onConfigChanged: (cb: (e: unknown) => void) => on<unknown>('config:changed', cb),
-    onCloseRequested: (cb: (e: unknown) => void) => on<unknown>('app:closeRequested', cb),
+    // Window-scoped: main addresses it to itself; a floor must not show the
+    // app-quit warning.
+    onCloseRequested: (cb: (e: unknown) => void) => onHere<unknown>('app:closeRequested', cb),
+    // A floor with live PTYs was asked to close — payload {ptyCount}.
+    onFloorCloseRequested: (cb: (e: { ptyCount: number }) => void) =>
+      onHere<{ ptyCount: number }>('floor:closeRequested', cb),
     onClosingTime: (cb: (e: unknown) => void) => on<unknown>('app:closingTime', cb),
     // Payload = the deep link's manifest source URL (string).
     onHirePending: (cb: (src: string) => void) => on<string>('hire-pending', cb),

@@ -21,10 +21,12 @@ import { bridgeOf, providerPreset } from '@shared/agentProvider';
 import { isDurableRole, preferredAgentRole, roleForHiveSpawn } from '@shared/agentRole';
 import { inboxNudgeText } from '@shared/hiveNudge';
 import { resolveGodName } from '@shared/godIdentity';
+import { audienceBrief, audienceChangeMessage, type Audience } from '@shared/audience';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
+import { isFloorWindow } from '@/floors';
 
 const GOD_ID = 'god';
 /** Accent palette for MAIN-spawned (voice-hired) agents — picked deterministically
@@ -72,10 +74,17 @@ function withStandingGoal(agent: Agent, text: string): string {
   return `<goal>\n${goal}\n</goal>\n\n${text}`;
 }
 
+/** The orientation prompt plus, for a non-technical human, the instruction to
+ *  talk to them in plain language (config.audience — see shared/audience.ts). */
+export const initialGodPrompt = (godName: string, audience?: Audience): string => {
+  const brief = audienceBrief(audience);
+  return brief ? `${baseGodPrompt(godName)}\n${brief}` : baseGodPrompt(godName);
+};
+
 // The first thing god is told on a fresh spawn — orient it and put it to work
 // running the floor. Kept terse and action-oriented. Names god by its current
 // (possibly renamed) display name.
-const initialGodPrompt = (godName: string): string => [
+const baseGodPrompt = (godName: string): string => [
   `You're online as ${godName}, the orchestrator of the hive. Get oriented, then start running the floor:`,
   '1. Read your memory.md and drain every message in your inbox.',
   '2. Review board.md + tasks.json and the current roster of agents (active vs archived).',
@@ -378,6 +387,9 @@ export function useHive(config: HarnessConfig | null): void {
   // 1) Bootstrap the god agent (source of truth = live PTYs, to dodge restarts).
   useEffect(() => {
     if (!config?.onboardingComplete || !config.harnessHome) return;
+    // The hive's god lives with the PRIMARY window (floors share its hive on
+    // disk — floors.rs); a floor never boots a second one.
+    if (isFloorWindow()) { useStore.getState().setGodStatus('ready'); return; }
     let cancelled = false;
     useStore.getState().setGodStatus('booting');
     // Boot watchdog: if spawnPty hangs (pending IPC that neither resolves nor
@@ -481,7 +493,7 @@ export function useHive(config: HarnessConfig | null): void {
             // main process hands it back as seedPrompt — type it FIRST (identity), then
             // the orientation kick. Serialized via writeChains so they can't jam. (ondev-b)
             if (res.seedPrompt) await submitToPty(GOD_PTY, res.seedPrompt, godProvider);
-            await submitToPty(GOD_PTY, initialGodPrompt(godName), godProvider);
+            await submitToPty(GOD_PTY, initialGodPrompt(godName, config.audience), godProvider);
           }
         } catch { /* PTY may have died during startup */ }
         finally { bootGraceUntil.current[GOD_ID] = 0; }
@@ -498,6 +510,24 @@ export function useHive(config: HarnessConfig | null): void {
     }, 1200);
     return () => { cancelled = true; clearTimeout(t); clearTimeout(watchdog); };
   }, [config?.onboardingComplete, config?.harnessHome]);
+
+  // A running god never sees the boot prompt again (resumed sessions skip it),
+  // so a change of the "explain things simply" setting is delivered as a hive
+  // message. The first config we see is just the baseline, and while god is
+  // still booting the boot prompt already carries the current value.
+  const audienceSeen = useRef<{ known: boolean; value?: Audience }>({ known: false });
+  useEffect(() => {
+    if (!config) return;
+    const prev = audienceSeen.current;
+    audienceSeen.current = { known: true, value: config.audience };
+    if (!prev.known || prev.value === config.audience) return;
+    if (useStore.getState().godStatus !== 'ready') return;
+    if (isFloorWindow()) return; // the primary window already told god
+    const msg = audienceChangeMessage(config.audience);
+    void Promise.resolve(
+      window.cth.hiveSend({ to: 'god', act: 'inform', subject: msg.subject, body: msg.body })
+    ).catch(() => { /* hive not ready — the next boot prompt carries the setting */ });
+  }, [config?.audience]);
 
   // 2) Drive avatars from real hook events emitted by each agent's shim.
   useEffect(() => {
@@ -993,6 +1023,9 @@ export function useHive(config: HarnessConfig | null): void {
     if (!config?.onboardingComplete) return;
     const offSpawn = window.cth.onHiveAgentSpawned?.((rec) => {
       if (!rec?.id) return;
+      // Main-initiated spawns (god's workers, voice hires) belong to the primary
+      // window — their terminal output is routed there, so a floor must not card them.
+      if (isFloorWindow()) return;
       // addAgent is idempotent, but bail early if the renderer already carded it.
       if (useStore.getState().agents.some((a) => a.id === rec.id)) return;
       // An explicit character wins; otherwise infer it from the name, which is
@@ -1039,7 +1072,17 @@ export function useHive(config: HarnessConfig | null): void {
     const offArchive = window.cth.onHiveAgentArchived?.((e) => {
       if (e?.id) useStore.getState().archiveAgent(e.id);
     });
-    return () => { offSpawn?.(); offArchive?.(); };
+    // An agent that spawned but runs degraded (its proxy bridge never bound, so
+    // no live status/cost/inbox wake): one translated line through the same
+    // cth:notice banner the dropped-queue notice uses. Main also logs
+    // `proxy-degraded` to the hive log; this is the part the user can see.
+    const offDegraded = window.cth.onHiveDegraded?.((e) => {
+      const reason = e?.reason === 'proxy-bind' ? 'proxyBind' : 'generic';
+      window.dispatchEvent(new CustomEvent('cth:notice', {
+        detail: { text: i18n.t(`notice.hiveDegraded.${reason}`, { agent: e?.name || e?.agentId || '?' }) }
+      }));
+    });
+    return () => { offSpawn?.(); offArchive?.(); offDegraded?.(); };
   }, [config?.onboardingComplete]);
 
   // 5c) v0.3.4 voice bridge: main stages queue insertions (clear_context) and

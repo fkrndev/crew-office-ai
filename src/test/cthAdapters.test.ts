@@ -187,20 +187,41 @@ describe('cth adapters', () => {
     expect(await cth().clipboardImageToFile('x')).toEqual({ ok: false, error: 'decode image: bad' });
   });
 
-  it('importHireFiles folds the single-file answer into {ok,manifests,errors}', async () => {
-    const manifest = { name: 'Dana' };
-    backend({ hire_open_file: { ok: true, manifest, warnings: ['w'] } });
-    expect(await cth().importHireFiles()).toEqual({ ok: true, manifests: [manifest], errors: [], warnings: ['w'] });
+  it('importHireFiles uses the multi-select picker and passes {ok,manifests,errors} through', async () => {
+    const m1 = { name: 'Dana' };
+    const m2 = { name: 'Eli' };
+    backend({ hire_open_files: { ok: true, manifests: [m1, m2], errors: ['bad.json: nope'] } });
+    expect(await cth().importHireFiles()).toEqual({ ok: true, manifests: [m1, m2], errors: ['bad.json: nope'] });
+    expect(lastOf('hire_open_files')).toBeUndefined();
 
     // Cancel is not an error and must not throw on `.manifests.length`.
-    backend({ hire_open_file: { ok: false, error: 'cancelled' } });
+    backend({ hire_open_files: { ok: false, manifests: [], errors: [], error: 'cancelled' } });
     expect(await cth().importHireFiles()).toEqual({ ok: false, manifests: [], errors: [], error: 'cancelled' });
 
-    // Validation failures: one file, so one entry.
-    backend({ hire_open_file: { ok: false, errors: ['"name" is required', 'bad spec'] } });
+    // Nothing valid: per-file errors survive, the summary error rides along.
+    backend({ hire_open_files: { ok: false, manifests: [], errors: ['a.json: x', 'b.json: y'], error: 'no valid hire manifests selected' } });
     const bad = await cth().importHireFiles();
     expect(bad.manifests).toEqual([]);
-    expect(bad.errors).toEqual(['"name" is required; bad spec']);
+    expect(bad.errors).toEqual(['a.json: x', 'b.json: y']);
+
+    // A rejected invoke folds into {ok:false,error}.
+    invoke.mockImplementationOnce(async () => { throw 'dialog failed'; });
+    expect(await cth().importHireFiles()).toEqual({ ok: false, manifests: [], errors: [], error: 'dialog failed' });
+  });
+
+  it('modelCatalog carries `force` to the backend; gitCompareRefs carries `mode`', async () => {
+    const payload = { catalog: null, fetchedAt: 0, stale: true };
+    backend({ models_catalog: payload, git_compare_refs: { ahead: 1, behind: 0, mergeBase: 'abc', files: [] } });
+    expect(await cth().modelCatalog(true)).toEqual(payload);
+    expect(lastOf('models_catalog')).toEqual({ force: true });
+    await cth().modelCatalog();
+    expect(lastOf('models_catalog')).toEqual({ force: undefined });
+
+    await cth().gitCompareRefs('/r', 'main', 'feat', 'two');
+    expect(lastOf('git_compare_refs')).toEqual({ cwd: '/r', base: 'main', head: 'feat', mode: 'two' });
+    // A rejection still arrives as the `{error}` shape the git panes test for.
+    invoke.mockImplementationOnce(async () => { throw 'invalid revision'; });
+    expect(await cth().gitCompareRefs('/r', '-x', 'feat', 'three')).toEqual({ error: 'invalid revision' });
   });
 
   it('hireFetch / drainPendingHires use the real command names; onHirePending exists', async () => {

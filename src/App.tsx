@@ -33,6 +33,8 @@ import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
 import { useHoldOptionToTalk } from '@/freeflow/holdOption';
+import { FloorCloseModal } from '@/components/FloorCloseModal';
+import { floorNumber, isFloorWindow, isNewFloorShortcut, newFloorEnabled } from '@/floors';
 import brandLogo from '@brand/logo.png?url';
 
 // Injected at build time from package.json (see electron.vite.config.ts).
@@ -67,6 +69,8 @@ export function App() {
   // leaves a one-shot localStorage flag so we don't bounce back onto the picker for
   // the hive we just chose. Also set true on onboarding completion (below).
   const [hiveOpened, setHiveOpened] = useState<boolean>(() => {
+    // A floor is opened from inside an already-open hive — never re-ask.
+    if (isFloorWindow()) return true;
     try {
       if (window.localStorage.getItem('cth.skipHivePickerOnce')) {
         window.localStorage.removeItem('cth.skipHivePickerOnce');
@@ -121,7 +125,8 @@ export function App() {
     setConfig(c);
     // Mirror the Free Flow flag into the store so the composer mic button shows
     // only when enabled (Settings keeps this in sync on save).
-    useStore.getState().setFreeflowEnabled(!!c.freeflowEnabled);
+    // On unless explicitly turned off — the same default Settings shows.
+    useStore.getState().setFreeflowEnabled(c.freeflowEnabled !== false);
     // Mirror boolean key-presence ONLY (never the key value) so the composer can
     // show the voice button disabled-with-tooltip when Free Flow is on but no
     // Groq key is set (Settings keeps this in sync on save).
@@ -182,6 +187,33 @@ export function App() {
 
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
+
+  // Multi-window floors. A floor that still owns live terminals is asked to
+  // close → confirm here (stop ITS agents and close, or keep it open).
+  const [floorClose, setFloorClose] = useState<{ ptyCount: number } | null>(null);
+  useEffect(() => window.cth.onFloorCloseRequested?.((info) => setFloorClose(info)), []);
+  const multiWindowOn = newFloorEnabled(config);
+  const openNewFloor = useCallback(async () => {
+    try {
+      const res = await window.cth.newFloor();
+      if (res && res.ok === false) setNotice(res.error ?? t('floor.disabled'));
+    } catch (err) {
+      setNotice(t('floor.newFailed', { error: err instanceof Error ? err.message : String(err) }));
+    }
+  }, [t]);
+  // Ctrl+Shift+N. Capture phase: xterm would otherwise swallow it as a key for
+  // the terminal's own process.
+  useEffect(() => {
+    if (!multiWindowOn) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (!isNewFloorShortcut(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void openNewFloor();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [multiWindowOn, openNewFloor]);
 
   // Shareable hires: a validated manifest arriving via the agent-office://
   // deep link (or file import) pre-fills the Add-Agent modal. Never spawns by itself.
@@ -396,6 +428,19 @@ export function App() {
         {/* v0.3.7: the version is no longer inert text — it doubles as the
             update control (check / download / restart to update). */}
         <UpdateBadge />
+        {isFloorWindow() && (
+          <span
+            data-testid="floor-badge"
+            style={{
+              fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
+              padding: '2px 6px', color: 'var(--cth-ink-900)',
+              background: 'var(--cth-lemon-light, #f6ecc4)',
+              boxShadow: 'inset 0 0 0 1px var(--cth-ink-500)'
+            }}
+          >
+            {t('app.floorBadge', { n: floorNumber() })}
+          </span>
+        )}
         <span style={{
           fontFamily: 'var(--cth-font-ui)',
           fontSize: 13,
@@ -482,6 +527,27 @@ export function App() {
         >
           {fullscreenAgentId ? <CollapseGlyph /> : <ExpandGlyph />}
         </button>
+
+        {/* Multi-window floors (experimental, Settings → General): only while
+            the flag is on. Ctrl+Shift+N does the same. */}
+        {multiWindowOn && (
+          <button
+            className="cth-titlebar-nodrag cth-tip"
+            onClick={() => { void openNewFloor(); }}
+            data-tip={t('app.newFloor')}
+            aria-label={t('app.newFloor')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 28, height: 28, padding: 0,
+              background: 'var(--cth-paper-100)',
+              boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+              border: 'none', borderRadius: 2, cursor: 'pointer',
+              color: 'var(--cth-ink-900)'
+            }}
+          >
+            <NewFloorGlyph />
+          </button>
+        )}
 
       </div>
 
@@ -602,6 +668,16 @@ export function App() {
         />
       )}
 
+      {floorClose && (
+        <FloorCloseModal
+          ptyCount={floorClose.ptyCount}
+          onCancel={() => setFloorClose(null)}
+          // Stops only this floor's PTYs and destroys the window; a rejection
+          // is shown by the modal.
+          onConfirm={() => window.cth.closeFloor()}
+        />
+      )}
+
       {notice && (
         <div
           role="alert"
@@ -686,6 +762,15 @@ function ExpandGlyph() {
   return (
     <Glyph>
       <path d="M6.2 3H3v3.2M9.8 3H13v3.2M6.2 13H3V9.8M9.8 13H13V9.8" />
+    </Glyph>
+  );
+}
+
+/** Two stacked window outlines with a plus — open another floor. */
+function NewFloorGlyph() {
+  return (
+    <Glyph>
+      <path d="M5.5 5.5V3.5h8v6h-2M2.5 5.5h8v7h-8zM6.5 7.2v3.6M4.7 9h3.6" />
     </Glyph>
   );
 }

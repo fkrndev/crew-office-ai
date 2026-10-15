@@ -34,6 +34,39 @@ function Chip({ text, tone = 'quiet' }: { text: string; tone?: 'quiet' | 'accent
   );
 }
 
+/** Skill name in the readable UI face. The pixel display font in all-caps broke
+ *  long hyphenated names ("ACCOUNT-HEALTH-CHECK-META-ADS") across four lines. */
+function SkillName({ name }: { name: string }) {
+  return (
+    <span style={{
+      fontFamily: 'var(--cth-font-ui)', fontSize: 13, fontWeight: 600, lineHeight: 1.3,
+      flex: 1, minWidth: 0, overflowWrap: 'anywhere'
+    }}>{name}</span>
+  );
+}
+
+/** Description clamped to three lines; a click expands it (the old 220-char cut
+ *  with "…" had no way to read the rest). */
+function SkillDesc({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 150;
+  return (
+    <div
+      onClick={long ? () => setOpen((o) => !o) : undefined}
+      style={{
+        fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.45,
+        cursor: long ? 'pointer' : 'default',
+        ...(long && !open
+          ? { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }
+          : {})
+      }}
+    >{text}</div>
+  );
+}
+
+/** Yours first: project skills, then user skills, the built-in bulk last. */
+const SCOPE_RANK: Record<LocalSkill['scope'], number> = { project: 0, user: 1, bundled: 2 };
+
 export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<Mode>('installed');
@@ -81,11 +114,18 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
   const q = query.trim().toLowerCase();
 
   const shownLocal = useMemo(() => {
-    const list = local ?? [];
+    const list = [...(local ?? [])].sort(
+      (a, b) => SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] || a.name.localeCompare(b.name)
+    );
     if (!q) return list;
     return list.filter((s) =>
       s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
   }, [local, q]);
+
+  const builtinCount = useMemo(
+    () => (local ?? []).filter((s) => s.scope === 'bundled').length,
+    [local]
+  );
 
   const owners = useMemo(() => {
     const counts = new Map<string, number>();
@@ -286,27 +326,32 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
                 : t('skillsTab.nothingMatches')}
             </Muted>
           ) : (
+            <>
+            <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', marginBottom: 8 }}>
+              {t('skillsTab.installedSummary', {
+                mine: (local?.length ?? 0) - builtinCount,
+                builtin: builtinCount
+              })}
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {shownLocal.map((s) => (
                 <div key={s.id + s.path} style={rowStyle}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span style={{ fontFamily: 'var(--cth-font-display)', fontSize: 11, flex: 1, minWidth: 0 }}>
-                      {s.name.toUpperCase()}
-                    </span>
-                    <Chip text={PROVIDER_LABEL[s.provider]} />
+                    <SkillName name={s.name} />
+                    {/* Claude Code is the norm here (see the note above), so only
+                        the other engines get a provider chip. */}
+                    {s.provider !== 'claude' && <Chip text={PROVIDER_LABEL[s.provider]} />}
                     <Chip text={s.scope} tone={s.scope === 'project' ? 'accent' : 'quiet'} />
                   </div>
-                  {s.description && (
-                    <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.45 }}>
-                      {s.description.length > 220 ? `${s.description.slice(0, 220)}…` : s.description}
-                    </div>
-                  )}
-                  <div style={{
-                    fontFamily: 'var(--cth-font-mono)', fontSize: 10.5,
-                    color: 'var(--cth-ink-500)', wordBreak: 'break-all'
-                  }}>{s.path}</div>
+                  {s.description && <SkillDesc text={s.description} />}
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button onClick={() => void window.cth.skillsReveal(s.path)} style={actionBtn('quiet')}>
+                    {/* The full path moved into the tooltip — it is an internal
+                        detail that was printed on every card. */}
+                    <button
+                      onClick={() => void window.cth.skillsReveal(s.path)}
+                      title={s.path}
+                      style={actionBtn('quiet')}
+                    >
                       {t('skillsTab.openFolder')}
                     </button>
                     {s.scope === 'bundled' ? (
@@ -337,6 +382,7 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
                 </div>
               ))}
             </div>
+            </>
           )
         ) : mode === 'offline' ? (
           bundled === null ? <Muted>{t('skillsTab.loadingCatalog')}</Muted>
@@ -354,17 +400,11 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
                   return (
                     <div key={s.dirName} style={rowStyle}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <span style={{ fontFamily: 'var(--cth-font-display)', fontSize: 11, flex: 1, minWidth: 0 }}>
-                          {s.name.toUpperCase()}
-                        </span>
+                        <SkillName name={s.name} />
                         <Chip text={s.category} />
-                        <Chip text="offline" tone="accent" />
+                        <Chip text={t('skillsTab.offline')} tone="accent" />
                       </div>
-                      {s.description && (
-                        <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.45 }}>
-                          {s.description.length > 220 ? `${s.description.slice(0, 220)}…` : s.description}
-                        </div>
-                      )}
+                      {s.description && <SkillDesc text={s.description} />}
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                         {s.installed ? (
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('skillsTab.installed')}</span>
@@ -408,15 +448,11 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
               {shownCatalog.map((s) => (
                 <div key={s.url + s.name} style={rowStyle}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span style={{ fontFamily: 'var(--cth-font-display)', fontSize: 11, flex: 1, minWidth: 0 }}>
-                      {s.name.toUpperCase()}
-                    </span>
+                    <SkillName name={s.name} />
                     <Chip text={s.category} />
                     <Chip text={s.owner} />
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.45 }}>
-                    {s.description}
-                  </div>
+                  <SkillDesc text={s.description} />
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button
                       onClick={() => void install(s)}
