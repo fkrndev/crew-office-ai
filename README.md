@@ -218,6 +218,60 @@ npm run test:rs          # backend only (cargo test: lib + parity + shim +
                          #   onboarding + e2e suites, ~135 tests)
 ```
 
+## Releasing signed updates
+
+Installed copies update themselves through the official Tauri updater. Every
+update is verified against a **minisign public key baked into the app**
+(`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`); an installer that
+is not signed with the matching private key is rejected before anything is
+installed. This signature is unrelated to OS code-signing (SmartScreen /
+Gatekeeper) and is mandatory.
+
+Behaviour: the app checks `releases/latest/download/latest.json` in the
+background (config `autoUpdate`, default on) and shows an update toast. It
+never downloads or installs without a click: *download update* fetches and
+verifies the installer, *restart to update* installs it. If no signed
+`latest.json` exists yet the check falls back to a plain "a newer release
+exists" notice with a link to the release page.
+
+**One-time setup**
+
+1. Generate the key pair (empty password shown; pick a real one if you like):
+
+   ```bash
+   npx tauri signer generate -w ~/.tauri/agent-office-updater.key
+   ```
+
+   The `.pub` file's content is the value of `plugins.updater.pubkey`
+   (already set for the key generated for this repo — only replace it if you
+   generate a new pair, and then no existing install can update to a build
+   signed by the new key).
+2. **Back up the private key (`agent-office-updater.key`) somewhere safe and
+   offline, plus its password. Never commit it.**
+3. In the GitHub repo: *Settings → Secrets and variables → Actions* and add
+   - `TAURI_SIGNING_PRIVATE_KEY` — the full content of the private key file
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — its password (empty string if none)
+
+**Cutting a release**
+
+1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`
+   (the workflow refuses a tag that does not match both).
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` — `.github/workflows/release.yml`
+   builds the Windows NSIS + MSI installers, signs them, and publishes the
+   release with `latest.json`. Installed apps pick it up on their next check.
+
+> **WARNING — losing the private key is permanent.** Installs only accept
+> updates signed by the key whose public half they ship with. If the private
+> key is lost or leaked you can never again update the installs already out
+> there (they must be reinstalled by hand from a build with a new public key),
+> and anyone holding a leaked key can push malicious updates to every
+> install. Back it up, keep it out of the repo, rotate only deliberately.
+
+Local builds: `createUpdaterArtifacts` is on, so `npm run tauri build` needs
+the key in the environment (`TAURI_SIGNING_PRIVATE_KEY` /
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). For an unsigned local installer use
+`npm run tauri build -- --config '{"bundle":{"createUpdaterArtifacts":false}}'`.
+
 ## Troubleshooting
 
 - **An engine shows "not installed"** — the picker greys out engines the

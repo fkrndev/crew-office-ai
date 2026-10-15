@@ -6,3 +6,7 @@ src-tauri/target
 vitest.config.ts.timestamp-*.mjs
 
 src-tauri/permissions/
+
+# updater signing keys must never be committed
+*.key
+.tauri/

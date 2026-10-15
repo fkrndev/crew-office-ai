@@ -1,0 +1,71 @@
+name: release
+
+# Builds the Windows installers (NSIS + MSI), SIGNS the updater artifacts with
+# the Tauri updater key, and publishes a GitHub release that carries
+# `latest.json` - the file the in-app updater polls
+# (plugins.updater.endpoints in src-tauri/tauri.conf.json).
+#
+# Trigger: push a tag like v0.2.0. The tag MUST equal the version in
+# src-tauri/tauri.conf.json and src-tauri/Cargo.toml (checked below).
+#
+# Required repository secrets (create them yourself - see README "Releasing
+# signed updates"):
+#   TAURI_SIGNING_PRIVATE_KEY           content of the updater private key file
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty string if none)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$tag tauri.conf.json=$conf Cargo.toml=$cargo"
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$cargo" ]; then
+            echo "::error::Tag v$tag does not match tauri.conf.json ($conf) / Cargo.toml ($cargo). Bump both, then re-tag."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Agent Office ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install this version.'
+          # Published immediately: /releases/latest/download/latest.json only
+          # resolves for a published, non-prerelease release.
+          releaseDraft: false
+          prerelease: false
+          # Uploads latest.json (with the per-installer signatures) to the release.
+          includeUpdaterJson: true
+          args: --bundles nsis,msi

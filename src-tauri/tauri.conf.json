@@ -30,12 +30,22 @@
       "desktop": {
         "schemes": ["agent-office"]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg4OUY4MTEzMkUyRTE4NDcKUldSSEdDNHVFNEdmaUZYTTdFZ2ZvMnJJNlp1M00zRkI5SUhMWFpPRVJTUldoT0xleHV2a0tzSHYK",
+      "endpoints": [
+        "https://github.com/fkrndev/crew-office-ai/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
     "active": true,
     "resources": ["resources"],
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "publisher": "fkrndev",
     "category": "DeveloperTool",
     "shortDescription": "Coordinate many coding-agent CLIs from one desktop office.",
