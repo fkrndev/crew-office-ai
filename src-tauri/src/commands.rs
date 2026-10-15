@@ -808,6 +808,20 @@ pub fn respawn_agent(
     agent_id: String,
 ) -> Result<Spawned, String> {
     crate::panic_guard::cmd_guard("respawn_agent", || {
+    respawn_agent_core(&app, window.label(), &agent_id)
+    })
+}
+
+/// The respawn body, shared with `engine_setup_retry` (the first-run "Try
+/// again" button re-runs the whole spawn ladder for the same agent).
+pub(crate) fn respawn_agent_core<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    owner: &str,
+    agent_id: &str,
+) -> Result<Spawned, String> {
+    let agent_id = agent_id.to_string();
+    let app = app.clone();
+    {
     let st = state(&app);
     let entry = st
         .hive
@@ -882,11 +896,11 @@ pub fn respawn_agent(
             // No renderer consumed this spawn's result — keep the server-side
             // seed typing the old single-shot path had.
             auto_type_seed: true,
-            owner: Some(window.label().to_string()),
+            owner: Some(owner.to_string()),
         },
     )
     .map(|o| Spawned { id: o.pty_id })
-    })
+    }
 }
 
 pub(crate) fn spawn_inner<R: tauri::Runtime>(
@@ -957,6 +971,10 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
                 );
             }
         }
+    }
+    if let Err(e) = &res {
+        // A setup in flight (first-run progress card) ends as a failure.
+        crate::engine_setup::spawn_failed(claimed.as_ref().map(|c| c.0.as_str()), e);
     }
     if res.is_err() {
         if let Some((pty_id, agent_id, fresh)) = claimed {
@@ -1052,6 +1070,22 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // the failure cleanup only deletes rows this call created.
     let fresh = !st.hive.registry().iter().any(|a| a.id == agent_id);
     *claimed = Some((pty_id.clone(), agent_id.clone(), fresh));
+    // First-run progress (engine_setup.rs): a Hermes spawn is the one whose
+    // setup can take minutes (installer, then a first start that prepares its
+    // dependencies), so it announces itself from the first step. The
+    // missing-CLI relaunch (no_auto_install) is the SAME attempt continuing:
+    // its watch already exists.
+    if crate::engine_setup::watches(&args.provider) && !args.no_auto_install {
+        crate::engine_setup::begin(
+            &app,
+            &pty_id,
+            &agent_id,
+            &owner,
+            &args.provider,
+            crate::engine_setup::Phase::Checking,
+            "binary",
+        );
+    }
 
     // Git isolation (index.ts:2730): when requested and the cwd is a real
     // repo, give the agent its own `agent/<id>` worktree under
@@ -1373,6 +1407,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 agent_env.extend(crate::mcp::externalize_mcp_secrets(&mut seed.mcp_servers));
                 seed
             };
+            // Who decides the provider when the user already has their own
+            // Hermes config: the choice made in the quick-start wizard /
+            // Settings → AI connection (`hermesSource`, default 'own').
+            let mut seed = seed;
+            seed.source = crate::hive::HermesSource::from_raw(&st.config_store.raw_value());
+            let mut home_has_key = false;
             if let Ok(home) = st.hive.install_hermes_hooks_seeded(&agent_dir, bin, &seed) {
                 agent_env.insert("HERMES_HOME".into(), home.display().to_string());
                 agent_env.insert(
@@ -1380,21 +1420,31 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                     home.join("runtime").display().to_string(),
                 );
                 agent_env.insert("HERMES_ACCEPT_HOOKS".into(), "1".into());
+                // A key in the (copied) user .env counts: "use my existing
+                // Hermes setup" needs no key from this app.
+                home_has_key = std::fs::read_to_string(home.join(".env"))
+                    .map(|s| crate::hive::env_has_api_key(&s))
+                    .unwrap_or(false);
             }
             // Authless detection — extracted so the 401 surface is pinned by
             // tests (see hermes_needs_key).
-            if hermes_needs_key(&seed, &agent_env) {
+            if !home_has_key && hermes_needs_key(&seed, &agent_env) {
                 needs_key = Some("hermes".to_string());
             }
         }
         // OpenAI-compatible reroute — Settings → Agents & Models → Hermes base
         // URL lands here as OPENAI_BASE_URL so the agent hits DeepSeek/Ollama/
         // vLLM instead of api.openai.com (hermes reads it natively).
+        // Not when the user chose "use my existing Hermes setup" and has a
+        // provider of their own: a stale app endpoint must not reroute it.
+        let own_wins = crate::hive::HermesSource::from_raw(&st.config_store.raw_value())
+            == crate::hive::HermesSource::Own
+            && crate::hive::user_hermes_provider().is_some();
         let env_pair = {
             let cfg = st.config.lock_safe();
             crate::misc::openai_base_url_env(&cfg, "hermes")
         };
-        if let Some((k, v)) = env_pair {
+        if let (Some((k, v)), false) = (env_pair, own_wins) {
             agent_env.insert(k, v);
         }
     }
@@ -1869,6 +1919,17 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 );
             }
             let spawn_gen = handle.spawn_gen;
+            // Setup progress: the installer is the current step (the manual
+            // rung arms no relaunch - reported as a failure, not a wait).
+            crate::engine_setup::installing(
+                &app,
+                &pty_id,
+                &agent_id,
+                &owner,
+                &args.provider,
+                install_rung_name,
+                relaunch,
+            );
             st.ptys.lock_safe().insert(pty_id.clone(), handle);
             st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
             // A child that already exited ran its teardown before the insert.
@@ -2116,6 +2177,9 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             .unwrap_or(0),
     );
     let spawn_gen = handle.spawn_gen;
+    // Setup progress: the engine process itself is up now (a no-op for engines
+    // that are not being watched). `needs_key` means no credential resolved.
+    crate::engine_setup::launched(&pty_id, args.no_auto_install, needs_key.is_some());
     st.ptys.lock_safe().insert(pty_id.clone(), handle);
     // upstream ptyToAgent.set(opts.id, opts.hive.id) — every agent-keyed
     // lookup (hooks, breaker, watchdog, missions) resolves through this.
@@ -2288,6 +2352,9 @@ pub(crate) fn kill_agent_core<R: tauri::Runtime>(app: &AppHandle<R>, id: &str) -
 /// a double call is a harmless no-op.
 pub(crate) fn teardown_pty_core<R: tauri::Runtime>(app: &AppHandle<R>, pty_id: &str, status: &str) {
     let st = state(app);
+    // A setup still being watched when the PTY goes away (killed by the user,
+    // or the spawn was torn down) is over - say so, never leave a card spinning.
+    crate::engine_setup::forget(pty_id);
     // Upstream `ptyToAgent.get(id)` — the agent id this PTY owned. Resolved
     // FIRST: the map drop below is exactly what makes the mapping unreadable
     // after teardown (same ordering hazard upstream documents).
@@ -2433,6 +2500,57 @@ pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
+/// readConfig deep-fills DEFAULTS: every Claude agent defaults to `defaultModel`
+/// (config.ts — wins over the role tiers) and the god to `godModel`. Without
+/// these the renderer sees undefined and cannot mark the default in its pickers.
+///
+/// Both defaults are CLAUDE model ids, so they must never reach another engine:
+/// `godModel` is only filled while the orchestrator is on Claude (an absent
+/// `godProvider` is a legacy config = Claude). Filling it for a Hermes god made
+/// the renderer spawn `hermes chat --model claude-opus-4-8`. `defaultModel` is
+/// only ever read for Claude agents (other engines use providerDefaultModels).
+pub(crate) fn apply_model_defaults(merged: &mut serde_json::Map<String, serde_json::Value>) {
+    // drop_stale_god_model writes null to clear a stored value; to the renderer
+    // that is simply "unset" (and a null would defeat the fill below).
+    if merged.get("godModel").is_some_and(|v| v.is_null()) {
+        merged.remove("godModel");
+    }
+    merged
+        .entry("defaultModel")
+        .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_MODEL));
+    let god_is_claude = merged
+        .get("godProvider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map_or(true, |p| p == "claude");
+    if god_is_claude {
+        merged
+            .entry("godModel")
+            .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_GOD_MODEL));
+    }
+}
+
+/// A patch that moves the orchestrator to a DIFFERENT engine without naming a
+/// model leaves the previous engine's `godModel` in config.json (an undefined
+/// field never survives JSON), and the new engine would be spawned with it
+/// (`--model claude-opus-…` on Hermes). Null it so the new engine starts on its
+/// own default. `current_god` is the stored provider (absent = legacy Claude).
+pub(crate) fn drop_stale_god_model(
+    patch: &mut serde_json::Map<String, serde_json::Value>,
+    current_god: Option<&str>,
+) {
+    let Some(next) = patch.get("godProvider").and_then(|v| v.as_str()) else {
+        return;
+    };
+    if patch.contains_key("godModel") {
+        return;
+    }
+    if next != current_god.filter(|p| !p.is_empty()).unwrap_or("claude") {
+        patch.insert("godModel".into(), serde_json::Value::Null);
+    }
+}
+
 #[tauri::command(async)]
 /// config:get — upstream readConfig(): the persisted file deep-filled with
 /// defaults and returned as the camelCase object the renderer expects. The
@@ -2448,16 +2566,7 @@ pub fn get_config(app: AppHandle) -> Result<serde_json::Value, String> {
             merged.insert(k.clone(), v.clone());
         }
     }
-    // readConfig deep-fills DEFAULTS: every Claude agent defaults to
-    // `defaultModel` (config.ts — wins over the role tiers) and the god to
-    // `godModel`. Without these the renderer sees undefined and cannot mark
-    // the default in its pickers.
-    merged
-        .entry("defaultModel")
-        .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_MODEL));
-    merged
-        .entry("godModel")
-        .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_GOD_MODEL));
+    apply_model_defaults(&mut merged);
     // normalizeStoredHomes: never hand a consumer a literal `~` path.
     crate::misc::normalize_stored_homes(&mut merged);
     // A fresh config has no list keys; the renderer indexes into them.
@@ -2884,6 +2993,13 @@ pub fn config_update(
         .cloned()
         .unwrap_or_default();
     crate::misc::normalize_config_patch(&mut patch_obj, &current_recents);
+    drop_stale_god_model(
+        &mut patch_obj,
+        st.config_store
+            .raw_value()
+            .get("godProvider")
+            .and_then(|v| v.as_str()),
+    );
     // Goes through ConfigStore::update so patch keys the typed Config doesn't
     // model (onboardingComplete, godProvider, officeTheme…) persist — the old
     // save(&cfg) path re-read the PRE-patch file and silently dropped them,
@@ -5633,6 +5749,65 @@ fn err_str(e: anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    /// Claude's defaults must never leak onto another engine: a Hermes god with
+    /// no stored model reads as "no model" (the CLI/seed decides), never
+    /// claude-opus; a legacy config (no godProvider) is Claude and keeps them.
+    #[test]
+    fn model_defaults_fill_god_model_only_for_claude() {
+        let mut legacy = obj(serde_json::json!({ "onboardingComplete": true }));
+        apply_model_defaults(&mut legacy);
+        assert_eq!(legacy["godModel"], crate::spawn_ext::DEFAULT_GOD_MODEL);
+        assert_eq!(legacy["defaultModel"], crate::spawn_ext::DEFAULT_MODEL);
+
+        let mut claude = obj(serde_json::json!({ "godProvider": "claude" }));
+        apply_model_defaults(&mut claude);
+        assert_eq!(claude["godModel"], crate::spawn_ext::DEFAULT_GOD_MODEL);
+
+        let mut hermes = obj(serde_json::json!({ "godProvider": "hermes" }));
+        apply_model_defaults(&mut hermes);
+        assert!(!hermes.contains_key("godModel"), "claude god model leaked to hermes");
+
+        // An explicit pick always stands, on any engine.
+        let mut picked = obj(serde_json::json!({ "godProvider": "hermes", "godModel": "deepseek-flash" }));
+        apply_model_defaults(&mut picked);
+        assert_eq!(picked["godModel"], "deepseek-flash");
+
+        // A nulled (cleared) model is unset, not "null" and not re-filled for hermes.
+        let mut cleared = obj(serde_json::json!({ "godProvider": "hermes", "godModel": null }));
+        apply_model_defaults(&mut cleared);
+        assert!(!cleared.contains_key("godModel"));
+        let mut cleared_claude = obj(serde_json::json!({ "godProvider": "claude", "godModel": null }));
+        apply_model_defaults(&mut cleared_claude);
+        assert_eq!(cleared_claude["godModel"], crate::spawn_ext::DEFAULT_GOD_MODEL);
+    }
+
+    #[test]
+    fn switching_god_engine_without_a_model_clears_the_stale_one() {
+        // claude (legacy, absent) -> hermes with no model: clear.
+        let mut p = obj(serde_json::json!({ "godProvider": "hermes" }));
+        drop_stale_god_model(&mut p, None);
+        assert_eq!(p["godModel"], serde_json::Value::Null);
+        // same engine: untouched.
+        let mut same = obj(serde_json::json!({ "godProvider": "hermes" }));
+        drop_stale_god_model(&mut same, Some("hermes"));
+        assert!(!same.contains_key("godModel"));
+        let mut same_legacy = obj(serde_json::json!({ "godProvider": "claude" }));
+        drop_stale_god_model(&mut same_legacy, None);
+        assert!(!same_legacy.contains_key("godModel"));
+        // a model named in the patch always wins.
+        let mut named = obj(serde_json::json!({ "godProvider": "hermes", "godModel": "x" }));
+        drop_stale_god_model(&mut named, Some("claude"));
+        assert_eq!(named["godModel"], "x");
+        // a patch that does not touch the engine is not our business.
+        let mut other = obj(serde_json::json!({ "autoMode": true }));
+        drop_stale_god_model(&mut other, Some("claude"));
+        assert!(!other.contains_key("godModel"));
+    }
+
     use super::*;
 
     fn tmp_home(tag: &str) -> PathBuf {
@@ -6288,6 +6463,39 @@ mod tests {
         assert!(seed.api_key.is_none());
         assert!(seed.base_url.is_none());
         assert!(hermes_needs_key(&seed, &std::collections::HashMap::new()));
+    }
+
+    /// The first-run quick start (src/shared/quickStart.ts) writes exactly this
+    /// config: OpenRouter = NO hermes base URL + its model slug; DeepSeek = the
+    /// DeepSeek base URL + its model id. The seed must resolve each to the
+    /// matching first-class provider with the stored key and the chosen model.
+    #[test]
+    fn hermes_seed_matches_what_quick_start_writes() {
+        // OpenRouter: only an OpenRouter key exists, providerBaseUrls has no hermes entry.
+        let mut cfg = crate::config::Config::default();
+        cfg.provider_default_models
+            .insert("hermes".into(), "deepseek/deepseek-v4.1-flash".into());
+        let seed = hermes_seed_plan(&cfg, &|k| {
+            (k == "PROVIDER_KEY_OPENROUTER").then(|| "sk-or-test".to_string())
+        });
+        assert_eq!(seed.provider.as_deref(), Some("openrouter"));
+        assert_eq!(seed.base_url, None);
+        assert_eq!(seed.model.as_deref(), Some("deepseek/deepseek-v4.1-flash"));
+        assert_eq!(seed.api_key.as_deref(), Some("sk-or-test"));
+
+        // DeepSeek: base URL selects the first-class provider and its key.
+        let mut cfg = crate::config::Config::default();
+        cfg.provider_base_urls
+            .insert("hermes".into(), "https://api.deepseek.com".into());
+        cfg.provider_default_models
+            .insert("hermes".into(), "deepseek-flash".into());
+        let seed = hermes_seed_plan(&cfg, &|k| {
+            (k == "PROVIDER_KEY_DEEPSEEK").then(|| "sk-ds-test".to_string())
+        });
+        assert_eq!(seed.provider.as_deref(), Some("deepseek"));
+        assert_eq!(seed.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(seed.model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(seed.api_key.as_deref(), Some("sk-ds-test"));
     }
 
     /// The configured-and-happy path: deepseek base URL + key → first-class
@@ -7496,5 +7704,97 @@ mod tests {
         if let Some(mut h) = pty {
             let _ = h.kill();
         }
+    }
+
+    /// First-run progress wiring (engine_setup.rs): the same install-exit-0
+    /// rail moves a watched setup `installing` -> `starting` (finish_natural_exit
+    /// -> on_exit), the relaunched spawn does not announce it twice
+    /// (spawn_inner -> launched), and tearing the agent down ends the watch with
+    /// `stopped` (teardown_pty_core -> forget). The watch is armed with a
+    /// recorder instead of an AppHandle emitter.
+    #[test]
+    fn install_exit_zero_advances_the_setup_watch_and_teardown_stops_it() {
+        use crate::engine_setup::{begin_with, Phase};
+        let app = tauri::test::mock_app();
+        let handle = app.app_handle().clone();
+        let home = tmp_home("setup-watch");
+        handle.manage(AppState::new(home.clone()).unwrap());
+        let st = state(&handle);
+
+        let rec: std::sync::Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+        let r2 = rec.clone();
+        begin_with(
+            std::sync::Arc::new(move |v| r2.lock_safe().push(v)),
+            "pty-ew",
+            "agent-ew",
+            "hermes",
+            Phase::Installing,
+            "native",
+        );
+
+        let (mut args, mut plan) = translate_spawn_request(&req(serde_json::json!({
+            "id": "pty-ew", "cwd": home.display().to_string(),
+            "command": "more", "provider": "custom",
+            "hive": { "id": "agent-ew", "name": "EW", "role": "worker" }
+        })))
+        .unwrap();
+        args.no_auto_install = true;
+        plan.pty_id = Some("pty-ew".into());
+        plan.auto_type_seed = true;
+        PENDING_INSTALLS
+            .lock_safe()
+            .insert("pty-ew".into(), PendingInstall { args, plan });
+        let env: std::collections::HashMap<String, String> = Default::default();
+        let h = crate::pty::spawn(
+            "pty-ew", "exit 0", &home.display().to_string(), &env, 80, 24, handle.clone(), "main",
+        )
+        .unwrap();
+        st.ptys.lock_safe().insert("pty-ew".into(), h);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut answered = 0usize;
+        loop {
+            {
+                let mut ptys = st.ptys.lock_safe();
+                if let Some(h) = ptys.get_mut("pty-ew") {
+                    let cur = h.tail().matches("\u{1b}[6n").count();
+                    if cur < answered {
+                        answered = 0;
+                    }
+                    for _ in answered..cur {
+                        let _ = h.write("\u{1b}[24;80R");
+                    }
+                    answered = cur;
+                }
+            }
+            let armed = PENDING_INSTALLS.lock_safe().contains_key("pty-ew");
+            let relaunched = st
+                .ptys
+                .lock_safe()
+                .get("pty-ew")
+                .map(|h| h.command.contains("more"))
+                .unwrap_or(false);
+            if !armed && relaunched {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "relaunch never happened");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let seen: Vec<String> = rec
+            .lock_safe()
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(seen, vec!["installing", "starting"], "{seen:?}");
+        assert_eq!(rec.lock_safe()[1]["detail"], "relaunch");
+
+        // Killing the agent mid-setup ends the card instead of leaving it spinning.
+        let _ = kill_agent_core(&handle, "pty-ew");
+        let seen: Vec<String> = rec
+            .lock_safe()
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(seen.last().map(String::as_str), Some("stopped"), "{seen:?}");
     }
 }

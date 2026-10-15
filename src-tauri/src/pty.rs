@@ -1012,6 +1012,9 @@ fn finish<R: tauri::Runtime>(
                             &format!("pty:data:{event_id}"),
                             serde_json::json!(data),
                         );
+                        // First-run progress: observe-only, AFTER the chunk is
+                        // delivered; one atomic load when nothing is watched.
+                        crate::engine_setup::observe_output(&event_id, &data);
                     });
                 }
                 Err(_) => break,
@@ -1256,6 +1259,14 @@ pub(crate) fn finish_natural_exit<R: tauri::Runtime>(
             );
         }
     }
+    // First-run progress: the exit ends (or advances) whatever setup phase was
+    // being watched. Observation only - the logic below is unchanged.
+    crate::engine_setup::on_exit(
+        pty_id,
+        code,
+        trace.as_ref().map(|t| t.tail.as_str()).unwrap_or(""),
+        crate::commands::PENDING_INSTALLS.lock_safe().contains_key(pty_id),
+    );
     if code == Some(0) {
         if let Some(pending) = crate::commands::PENDING_INSTALLS
             .lock_safe()

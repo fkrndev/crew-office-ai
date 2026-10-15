@@ -401,6 +401,11 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     } else {
         log::warn!("[hive] rejected invalid hook event: {event}");
     }
+    // First-run progress: an engine's first hook event proves it is up and
+    // talking to the hive (engine_setup.rs `ready`/`hook`).
+    if !agent_id.is_empty() {
+        crate::engine_setup::note_hook(&agent_id);
+    }
 
     // Status-line telemetry (context_window) — pure telemetry, early {} exactly
     // like upstream: never feeds status or any gate.

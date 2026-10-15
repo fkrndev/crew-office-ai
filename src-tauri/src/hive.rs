@@ -1085,7 +1085,7 @@ type EventEmitter = Box<dyn Fn(&str, &Value) -> bool + Send + Sync>;
 /// %LOCALAPPDATA%, so reading only `~/.hermes` found no config and workers
 /// booted with no provider. The legacy `~/.hermes` stays a fallback for
 /// installs that still keep their config there.
-fn user_hermes_home() -> PathBuf {
+pub(crate) fn user_hermes_home() -> PathBuf {
     let suffix = std::env::var("HERMES_DATA_DIR_SUFFIX").unwrap_or_default();
     let home = dirs::home_dir().unwrap_or_default();
     let legacy = home.join(format!(".hermes{suffix}"));
@@ -1112,6 +1112,13 @@ fn user_hermes_home() -> PathBuf {
         .unwrap_or(primary)
 }
 
+/// The provider the user's OWN Hermes config declares (None = no config, or
+/// none declared). Read-only; same home resolution as the seed copy.
+pub(crate) fn user_hermes_provider() -> Option<String> {
+    let cfg = fs::read_to_string(user_hermes_home().join("config.yaml")).ok()?;
+    yaml_model_summary(&cfg).0
+}
+
 /// App-driven seed for a worker's HERMES_HOME when the user never ran
 /// `hermes setup`. base_url/model come from config.providerBaseUrls /
 /// providerDefaultModels["hermes"]; api_key comes straight out of the OS
@@ -1130,6 +1137,313 @@ pub struct HermesSeed {
     /// {command,args,env} stdio shape claude's --settings mcpServers uses, so
     /// the merged map ports verbatim under a snake_case key.
     pub mcp_servers: std::collections::BTreeMap<String, crate::mcp::McpServerSpec>,
+    /// Who decides the provider when the user already has their own Hermes
+    /// config: see [`HermesSource`]. Default `Own` (the long-standing behaviour).
+    pub source: HermesSource,
+}
+
+/// Config `hermesSource`. `Own` = keep the user's existing Hermes setup (their
+/// copied provider wins; the app's seed only fills gaps). `App` = the provider /
+/// key / model / base URL picked in the quick-start wizard or Settings → AI
+/// connection override the copied provider (in the PER-AGENT copy only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HermesSource {
+    #[default]
+    Own,
+    App,
+}
+
+impl HermesSource {
+    /// Read `hermesSource` from the raw config object; anything but `"app"`
+    /// (absent, `"own"`, garbage) is `Own`.
+    pub fn from_raw(raw: &Value) -> Self {
+        match raw.get("hermesSource").and_then(|v| v.as_str()) {
+            Some("app") => Self::App,
+            _ => Self::Own,
+        }
+    }
+}
+
+/// Small file in the agent's `.hermes` dir recording what the last seed was
+/// built from. Never holds a key - only a short id of its hash.
+const SEED_STATE_FILE: &str = ".agent-office-seed.json";
+
+struct SeedState {
+    fp: String,
+    /// `.env` variables THIS app wrote (so a later key change may replace them
+    /// while a line the user typed stays theirs).
+    env_vars: Vec<String>,
+}
+
+fn read_seed_state(home: &Path) -> Option<SeedState> {
+    let v: Value = serde_json::from_str(&fs::read_to_string(home.join(SEED_STATE_FILE)).ok()?).ok()?;
+    Some(SeedState {
+        fp: v.get("fp")?.as_str()?.to_string(),
+        env_vars: v
+            .get("envVars")
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+    })
+}
+
+fn sha256_hex(parts: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p);
+        h.update([0u8]);
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Short, non-reversible id of a key (12 hex chars of its SHA-256).
+fn key_id(key: &str) -> String {
+    sha256_hex(&[key.as_bytes()])[..12].to_string()
+}
+
+/// Digest of the user's own Hermes files - only used (never stored) to notice
+/// that "my existing setup" changed.
+fn user_files_digest(user_home: &Path) -> String {
+    let cfg = fs::read(user_home.join("config.yaml")).unwrap_or_default();
+    let env = fs::read(user_home.join(".env")).unwrap_or_default();
+    sha256_hex(&[&cfg, &env])[..16].to_string()
+}
+
+/// What decides a re-seed. App-authoritative: source, provider, base URL,
+/// model and a hash of the key (never the key). Own: the digest of the user's
+/// own files - the per-agent copy follows their setup.
+fn seed_fingerprint(seed: &HermesSeed, authoritative: bool, user_home: &Path) -> String {
+    if authoritative {
+        let key = seed.api_key.as_deref().map(key_id).unwrap_or_default();
+        let src = if seed.source == HermesSource::App { "app" } else { "own-fill" };
+        sha256_hex(&[
+            b"v1",
+            src.as_bytes(),
+            seed.provider.as_deref().unwrap_or("").as_bytes(),
+            seed.base_url.as_deref().unwrap_or("").as_bytes(),
+            seed.model.as_deref().unwrap_or("").as_bytes(),
+            key.as_bytes(),
+        ])
+    } else {
+        sha256_hex(&[b"v1", b"own", user_files_digest(user_home).as_bytes()])
+    }
+}
+
+fn write_seed_state(home: &Path, seed: &HermesSeed, authoritative: bool, fp: &str, env_vars: &[String]) {
+    let state = serde_json::json!({
+        "v": 1,
+        "fp": fp,
+        "source": if seed.source == HermesSource::App { "app" } else { "own" },
+        "authoritative": authoritative,
+        "provider": seed.provider,
+        "baseUrl": seed.base_url,
+        "model": seed.model,
+        "keyId": seed.api_key.as_deref().map(key_id),
+        "envVars": env_vars,
+    });
+    if let Ok(s) = serde_json::to_string_pretty(&state) {
+        let _ = fs::write(home.join(SEED_STATE_FILE), s);
+    }
+}
+
+/// Copy `path` to `<name>.agent-office-<unix secs>.bak` next to it (keeps the
+/// newest 3 per file). Best-effort; None when there was nothing to back up.
+fn backup_agent_file(path: &Path) -> Option<PathBuf> {
+    if !path.is_file() {
+        return None;
+    }
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut dst = path.with_file_name(format!("{name}.agent-office-{secs}.bak"));
+    let mut n = 1;
+    while dst.exists() {
+        dst = path.with_file_name(format!("{name}.agent-office-{secs}-{n}.bak"));
+        n += 1;
+    }
+    fs::copy(path, &dst).ok()?;
+    // Prune: newest 3 by modified time.
+    let prefix = format!("{name}.agent-office-");
+    if let Some(dir) = path.parent() {
+        let mut baks: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let f = e.file_name().to_string_lossy().to_string();
+                f.starts_with(&prefix) && f.ends_with(".bak")
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        baks.sort_by(|a, b| b.cmp(a));
+        for (_, old) in baks.into_iter().skip(3) {
+            let _ = fs::remove_file(old);
+        }
+    }
+    Some(dst)
+}
+
+/// Any `provider:` line (the old "has a provider" content test).
+fn yaml_has_provider(yaml: &str) -> bool {
+    yaml.lines().any(|l| l.trim_start().starts_with("provider:"))
+}
+
+fn yaml_unquote(v: &str) -> String {
+    let v = v.split(" #").next().unwrap_or(v).trim();
+    v.trim_matches(|c| c == '"' || c == '\'').trim().to_string()
+}
+
+/// `(provider, model)` of the top-level `model:` entry of a Hermes config.yaml:
+/// the nested `provider:` / `default:` of the mapping form, or the scalar form's
+/// value as the model. Read-only, line-based (no YAML dependency).
+pub(crate) fn yaml_model_summary(yaml: &str) -> (Option<String>, Option<String>) {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let Some(i) = lines.iter().position(|l| l.starts_with("model:")) else {
+        return (None, None);
+    };
+    let inline = yaml_unquote(&lines[i]["model:".len()..]);
+    if !inline.is_empty() && !inline.starts_with('#') {
+        return (None, Some(inline));
+    }
+    let (mut provider, mut model) = (None, None);
+    for l in &lines[i + 1..] {
+        if !(l.starts_with(' ') || l.starts_with('\t') || l.trim().is_empty()) {
+            break;
+        }
+        let t = l.trim();
+        if let Some(v) = t.strip_prefix("provider:") {
+            provider = Some(yaml_unquote(v)).filter(|s| !s.is_empty());
+        } else if let Some(v) = t.strip_prefix("default:").or_else(|| t.strip_prefix("model:")) {
+            model = model.or_else(|| Some(yaml_unquote(v)).filter(|s| !s.is_empty()));
+        }
+    }
+    (provider, model)
+}
+
+/// True when a `.env` text holds at least one non-empty `*_API_KEY=` line.
+/// The value is only tested for emptiness, never kept.
+pub(crate) fn env_has_api_key(env: &str) -> bool {
+    env.lines().any(|l| {
+        env_line_name(l).is_some_and(|n| n.to_ascii_uppercase().ends_with("API_KEY"))
+            && !env_line_value(l).is_empty()
+    })
+}
+
+fn env_line_name(line: &str) -> Option<&str> {
+    let l = line.trim_start();
+    if l.starts_with('#') {
+        return None;
+    }
+    let l = l.strip_prefix("export ").unwrap_or(l);
+    l.split_once('=').map(|(n, _)| n.trim())
+}
+
+fn env_line_value(line: &str) -> &str {
+    line.split_once('=')
+        .map(|(_, v)| v.trim().trim_matches(|c| c == '"' || c == '\''))
+        .unwrap_or("")
+}
+
+/// Set `vars` to `key` in a `.env` text. A missing (or empty-valued) variable
+/// is added/filled; an existing one is replaced only when listed in `replace`.
+/// Returns the new text and the variables actually written.
+pub(crate) fn set_env_vars(env: &str, vars: &[&str], key: &str, replace: &[&str]) -> (String, Vec<String>) {
+    let mut lines: Vec<String> = env.lines().map(String::from).collect();
+    let mut touched = Vec::new();
+    for var in vars {
+        let line = format!("{var}={key}");
+        match lines.iter().position(|l| env_line_name(l) == Some(*var)) {
+            Some(p) => {
+                let empty = env_line_value(&lines[p]).is_empty();
+                if (empty || replace.contains(var)) && lines[p] != line {
+                    lines[p] = line;
+                    touched.push((*var).to_string());
+                }
+            }
+            None => {
+                lines.push(line);
+                touched.push((*var).to_string());
+            }
+        }
+    }
+    let mut out = lines.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    (out, touched)
+}
+
+fn yaml_dq(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The `model:` block the app's seed writes (provider + optional base URL and
+/// model), headed by a comment saying where it came from.
+fn hermes_model_block(seed: &HermesSeed) -> String {
+    let provider = seed.provider.as_deref().unwrap_or("custom");
+    let mut yaml = format!(
+        "# Set by agent-office from the app's AI connection (hermesSource) - edit it there.\nmodel:\n  provider: \"{}\"\n",
+        yaml_dq(provider)
+    );
+    if let Some(url) = &seed.base_url {
+        yaml.push_str(&format!("  base_url: \"{}\"\n", yaml_dq(url)));
+    }
+    if let Some(m) = &seed.model {
+        yaml.push_str(&format!("  default: \"{}\"\n", yaml_dq(m)));
+    }
+    yaml
+}
+
+/// Replace the top-level `model:` entry (scalar or mapping, with its indented
+/// children) of `existing` by `block` - or prepend `block` when there is none.
+/// Every other line, comments included, is kept; our own header comment from an
+/// earlier rewrite is replaced rather than stacked.
+pub(crate) fn rewrite_model_block(existing: &str, block: &str) -> String {
+    let lines: Vec<&str> = existing.lines().collect();
+    let Some(mut start) = lines
+        .iter()
+        .position(|l| l.starts_with("model:"))
+    else {
+        return if existing.trim().is_empty() {
+            block.to_string()
+        } else {
+            format!("{block}\n{existing}")
+        };
+    };
+    let i = start;
+    while start > 0
+        && (lines[start - 1].starts_with("# Set by agent-office")
+            || lines[start - 1].starts_with("# Auto-generated by agent-office"))
+    {
+        start -= 1;
+    }
+    let value = lines[i]["model:".len()..].trim();
+    let scalar = !value.is_empty() && !value.starts_with('#');
+    let mut end = i + 1;
+    if !scalar {
+        while end < lines.len()
+            && (lines[end].trim().is_empty() || lines[end].starts_with(' ') || lines[end].starts_with('\t'))
+        {
+            end += 1;
+        }
+        while end > i + 1 && lines[end - 1].trim().is_empty() {
+            end -= 1;
+        }
+    }
+    let mut out = String::with_capacity(existing.len() + block.len());
+    for l in &lines[..start] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(block);
+    for l in &lines[end..] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
 }
 
 impl Hive {
@@ -1929,6 +2243,8 @@ impl Hive {
         let home = dir.join(".hermes");
         fs::create_dir_all(&home)?;
 
+        let cfg_path = home.join("config.yaml");
+        let env_path = home.join(".env");
         for name in ["config.yaml", ".env"] {
             let (src, dst) = (user_home.join(name), home.join(name));
             if src.exists() && !dst.exists() {
@@ -1936,35 +2252,62 @@ impl Hive {
             }
         }
 
-        // Seed the model provider when the copied/generated config doesn't
-        // declare one. Existence isn't enough — a prior spawn writes this file
-        // with just the hooks block, so check CONTENT: any `provider:` line
-        // under the model block means the user's own choice stands.
-        let cfg_path = home.join("config.yaml");
+        // Who decides the provider? `hermesSource: 'app'` (the user picked the
+        // provider/key in the quick-start wizard or Settings → AI connection)
+        // means the app's values OVERRIDE whatever the copied user config says.
+        // `'own'` keeps the user's own Hermes setup — but when the user has NO
+        // provider of their own there is nothing to respect and the app's seed
+        // is authoritative too (that is the "never ran `hermes setup`" case).
+        let user_cfg = fs::read_to_string(user_home.join("config.yaml")).unwrap_or_default();
+        let user_has_provider = yaml_has_provider(&user_cfg);
+        let seed_has_inputs =
+            seed.base_url.is_some() || seed.provider.is_some() || seed.api_key.is_some();
+        let authoritative =
+            seed_has_inputs && (seed.source == HermesSource::App || !user_has_provider);
+
+        // Fingerprint of the seed inputs (never the key itself): a change
+        // re-seeds, so changing key/provider/model later takes effect on the
+        // next spawn instead of being ignored once the file "has a provider".
+        let prev = read_seed_state(&home);
+        let fp = seed_fingerprint(seed, authoritative, user_home);
+        let changed = prev.as_ref().map(|p| p.fp != fp); // None = first time
+        let mut written_vars: Vec<String> =
+            prev.as_ref().map(|p| p.env_vars.clone()).unwrap_or_default();
+
+        // `own` and the user's setup changed since the last spawn (or the user
+        // just switched back from `app`): refresh the per-agent copy from their
+        // files. The previous per-agent files are backed up first.
+        if !authoritative && changed == Some(true) {
+            for name in ["config.yaml", ".env"] {
+                let (src, dst) = (user_home.join(name), home.join(name));
+                if src.is_file() {
+                    backup_agent_file(&dst);
+                    let _ = fs::copy(&src, &dst);
+                }
+            }
+            written_vars.clear();
+        }
+
         let existing = fs::read_to_string(&cfg_path).unwrap_or_default();
-        let has_provider = existing
-            .lines()
-            .any(|l| l.trim_start().starts_with("provider:"));
-        if !has_provider && (seed.base_url.is_some() || seed.provider.is_some()) {
-            let provider = seed.provider.as_deref().unwrap_or("custom");
-            let mut yaml = format!(
-                "# Auto-generated by agent-office (no ~/.hermes/config.yaml found).\nmodel:\n  provider: \"{provider}\"\n",
-            );
-            if let Some(url) = &seed.base_url {
-                yaml.push_str(&format!("  base_url: \"{}\"\n", url));
+        let wants_model = seed.base_url.is_some() || seed.provider.is_some();
+        if authoritative && changed != Some(false) {
+            // Override: rewrite the `model:` block in the PER-AGENT copy (the
+            // user's own files are never modified; the old file is backed up).
+            if wants_model {
+                backup_agent_file(&cfg_path);
+                let block = hermes_model_block(seed);
+                fs::write(&cfg_path, rewrite_model_block(&existing, &block))?;
             }
-            if let Some(m) = &seed.model {
-                yaml.push_str(&format!("  default: \"{}\"\n", m));
-            }
-            // Prepend — the hooks block below appends later in this function.
-            let merged = format!("{yaml}\n{existing}");
-            fs::write(&cfg_path, merged)?;
+        } else if !authoritative && wants_model && !yaml_has_provider(&existing) {
+            // Own, but the per-agent file has no provider yet (a prior spawn
+            // wrote it with just the hooks block): fill the gap, as before.
+            // Existence isn't enough - check CONTENT.
+            fs::write(&cfg_path, rewrite_model_block(&existing, &hermes_model_block(seed)))?;
         }
         // Seed .env with the stored BYOK key. deepseek reads DEEPSEEK_API_KEY;
         // every other custom/OpenAI-compatible provider reads OPENAI_API_KEY —
         // write whichever the seed provider consumes (deepseek gets BOTH since
         // OpenAI-compatible tooling downstream still keys on OPENAI_API_KEY).
-        let env_path = home.join(".env");
         if let Some(key) = &seed.api_key {
             // Write the env name the seeded provider actually reads — an
             // openrouter worker handed only OPENAI_API_KEY still dies on
@@ -1975,21 +2318,34 @@ impl Hive {
                 Some("anthropic") => &["ANTHROPIC_API_KEY"],
                 _ => &["OPENAI_API_KEY"],
             };
-            let mut s = fs::read_to_string(&env_path).unwrap_or_default();
-            let mut dirty = false;
-            for var in vars {
-                if !s.lines().any(|l| l.starts_with(&format!("{var}="))) {
-                    if !s.is_empty() && !s.ends_with('\n') {
-                        s.push('\n');
-                    }
-                    s.push_str(&format!("{var}={key}\n"));
-                    dirty = true;
+            let reseed = authoritative && changed != Some(false);
+            let s = fs::read_to_string(&env_path).unwrap_or_default();
+            // `app` replaces the line whatever it holds; otherwise only a line
+            // this app wrote earlier (tracked in the seed state) or a missing
+            // one - a key the user put there themselves is never replaced.
+            let replace: Vec<&str> = vars
+                .iter()
+                .copied()
+                .filter(|v| {
+                    reseed && (seed.source == HermesSource::App || written_vars.iter().any(|w| w == v))
+                })
+                .collect();
+            let (next, touched) = set_env_vars(&s, vars, key, &replace);
+            if !touched.is_empty() {
+                if reseed {
+                    backup_agent_file(&env_path);
+                }
+                fs::write(&env_path, next)?;
+            }
+            // Remember only what THIS app wrote, so a later key change can
+            // replace it while a line the user typed themselves stays theirs.
+            for v in touched {
+                if !written_vars.contains(&v) {
+                    written_vars.push(v);
                 }
             }
-            if dirty {
-                fs::write(&env_path, s)?;
-            }
         }
+        write_seed_state(&home, seed, authoritative, &fp, &written_vars);
 
         let cfg_path = home.join("config.yaml");
         let mut cfg = fs::read_to_string(&cfg_path).unwrap_or_default();
@@ -3930,6 +4286,298 @@ mod tests {
         // The isolated source is empty — no .env should exist at all.
         assert!(!home.join(".env").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- hermesSource / fingerprint / backup (all on temp dirs) -------------
+
+    /// A temp "user Hermes home" holding the given files.
+    fn user_hermes_with(dir: &std::path::Path, cfg: Option<&str>, env: Option<&str>) -> std::path::PathBuf {
+        let p = dir.join("user-hermes");
+        std::fs::create_dir_all(&p).unwrap();
+        if let Some(c) = cfg {
+            std::fs::write(p.join("config.yaml"), c).unwrap();
+        }
+        if let Some(e) = env {
+            std::fs::write(p.join(".env"), e).unwrap();
+        }
+        p
+    }
+
+    fn seed_of(
+        source: crate::hive::HermesSource,
+        provider: &str,
+        model: &str,
+        key: &str,
+    ) -> crate::hive::HermesSeed {
+        crate::hive::HermesSeed {
+            provider: Some(provider.into()),
+            model: Some(model.into()),
+            api_key: Some(key.into()),
+            source,
+            ..Default::default()
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("oa-hermes-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn baks(home: &std::path::Path, stem: &str) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(home)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let n = p.file_name().unwrap().to_string_lossy().to_string();
+                n.starts_with(&format!("{stem}.agent-office-")) && n.ends_with(".bak")
+            })
+            .collect()
+    }
+
+    const USER_CFG: &str = "# my hermes\nmodel:\n  default: claude-opus-4.6\n  provider: anthropic\n  base_url: https://api.anthropic.com\n\nagent:\n  max_turns: 40\n";
+    const USER_ENV: &str = "ANTHROPIC_API_KEY=sk-ant-USER\nOPENROUTER_API_KEY=sk-or-OLD\n";
+
+    #[test]
+    fn app_source_overrides_the_users_provider_in_the_agent_copy_only() {
+        use crate::hive::HermesSource::App;
+        let dir = tmp_dir("override");
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user = user_hermes_with(&dir, Some(USER_CFG), Some(USER_ENV));
+        let agent = dir.join("agent");
+        let seed = seed_of(App, "openrouter", "deepseek/deepseek-v4.1-flash", "sk-or-NEW");
+        let home = hive
+            .install_hermes_hooks_seeded_at(&agent, &dir.join("hive-hook.exe"), &seed, &user)
+            .unwrap();
+
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("provider: \"openrouter\""), "{cfg}");
+        assert!(cfg.contains("default: \"deepseek/deepseek-v4.1-flash\""), "{cfg}");
+        assert!(!cfg.contains("anthropic"), "the user's provider must not survive: {cfg}");
+        assert_eq!(cfg.matches("\nmodel:").count() + usize::from(cfg.starts_with("model:")), 1, "{cfg}");
+        assert!(cfg.contains("agent:\n  max_turns: 40"), "unrelated user settings are kept: {cfg}");
+        assert!(cfg.contains("# my hermes"), "{cfg}");
+
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.lines().any(|l| l == "OPENROUTER_API_KEY=sk-or-NEW"), "{env}");
+        assert!(!env.contains("sk-or-OLD"), "{env}");
+        assert!(env.lines().any(|l| l == "ANTHROPIC_API_KEY=sk-ant-USER"), "other keys stay: {env}");
+
+        // The per-agent files were backed up before the rewrite...
+        let cb = baks(&home, "config.yaml");
+        assert_eq!(cb.len(), 1);
+        assert_eq!(std::fs::read_to_string(&cb[0]).unwrap(), USER_CFG);
+        let eb = baks(&home, ".env");
+        assert_eq!(eb.len(), 1);
+        assert_eq!(std::fs::read_to_string(&eb[0]).unwrap(), USER_ENV);
+        // ...and the USER's own files are untouched.
+        assert_eq!(std::fs::read_to_string(user.join("config.yaml")).unwrap(), USER_CFG);
+        assert_eq!(std::fs::read_to_string(user.join(".env")).unwrap(), USER_ENV);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn own_source_keeps_the_users_provider_and_never_backs_anything_up() {
+        use crate::hive::HermesSource::Own;
+        let dir = tmp_dir("own");
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user = user_hermes_with(&dir, Some(USER_CFG), Some(USER_ENV));
+        let seed = seed_of(Own, "openrouter", "deepseek/deepseek-v4.1-flash", "sk-or-NEW");
+        let home = hive
+            .install_hermes_hooks_seeded_at(&dir.join("agent"), &dir.join("hive-hook.exe"), &seed, &user)
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("provider: anthropic"), "{cfg}");
+        assert!(!cfg.contains("openrouter"), "{cfg}");
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("ANTHROPIC_API_KEY=sk-ant-USER"), "{env}");
+        // The user's own OPENROUTER line is theirs: never replaced in own mode.
+        assert!(env.lines().any(|l| l == "OPENROUTER_API_KEY=sk-or-OLD"), "{env}");
+        assert!(baks(&home, "config.yaml").is_empty());
+        assert!(baks(&home, ".env").is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fingerprint_reseeds_on_key_provider_or_model_change_and_not_otherwise() {
+        use crate::hive::HermesSource::App;
+        let dir = tmp_dir("fp");
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user = user_hermes_with(&dir, Some(USER_CFG), Some(USER_ENV));
+        let agent = dir.join("agent");
+        let hook = dir.join("hive-hook.exe");
+        let run = |seed: &crate::hive::HermesSeed| {
+            hive.install_hermes_hooks_seeded_at(&agent, &hook, seed, &user).unwrap()
+        };
+
+        let a = seed_of(App, "openrouter", "m-1", "sk-or-KEY-A-0123456789");
+        let home = run(&a);
+        let state_path = home.join(".agent-office-seed.json");
+        let state1 = std::fs::read_to_string(&state_path).unwrap();
+        assert!(!state1.contains("KEY-A"), "the state file must never hold the key: {state1}");
+        let baks_after_first = baks(&home, "config.yaml").len();
+
+        // Same inputs again: nothing is rewritten (a hand edit survives, no new backup).
+        let cfg_path = home.join("config.yaml");
+        let edited = format!("{}\n# hand edit\n", std::fs::read_to_string(&cfg_path).unwrap());
+        std::fs::write(&cfg_path, &edited).unwrap();
+        run(&a);
+        assert_eq!(std::fs::read_to_string(&cfg_path).unwrap(), edited);
+        assert_eq!(baks(&home, "config.yaml").len(), baks_after_first);
+
+        // New key: .env follows, config untouched apart from the model block.
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // distinct backup stamp
+        let b = seed_of(App, "openrouter", "m-1", "sk-or-KEY-B-0123456789");
+        run(&b);
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.lines().any(|l| l == "OPENROUTER_API_KEY=sk-or-KEY-B-0123456789"), "{env}");
+        assert!(!env.contains("KEY-A"), "{env}");
+        let state2 = std::fs::read_to_string(&state_path).unwrap();
+        assert!(!state2.contains("KEY-B"), "{state2}");
+        assert_ne!(state1, state2, "fingerprint changed with the key");
+        assert!(!baks(&home, ".env").is_empty());
+
+        // New model, then new provider: the model block follows each time and is
+        // never duplicated.
+        let c = seed_of(App, "openrouter", "m-2", "sk-or-KEY-B-0123456789");
+        run(&c);
+        let cfg = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(cfg.contains("default: \"m-2\"") && !cfg.contains("m-1"), "{cfg}");
+        let d = crate::hive::HermesSeed {
+            provider: Some("deepseek".into()),
+            base_url: Some("https://api.deepseek.com".into()),
+            model: Some("deepseek-flash".into()),
+            api_key: Some("sk-ds-0123456789abcdef".into()),
+            source: App,
+            ..Default::default()
+        };
+        run(&d);
+        let cfg = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(cfg.contains("provider: \"deepseek\"") && !cfg.contains("openrouter"), "{cfg}");
+        assert!(cfg.contains("base_url: \"https://api.deepseek.com\""), "{cfg}");
+        assert_eq!(cfg.matches("provider:").count(), 1, "{cfg}");
+        assert_eq!(cfg.matches("# Set by agent-office").count(), 1, "header must not stack: {cfg}");
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("DEEPSEEK_API_KEY=sk-ds-0123456789abcdef"), "{env}");
+        // At most 3 backups per file are kept.
+        assert!(baks(&home, "config.yaml").len() <= 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switching_back_to_own_restores_the_users_setup_in_the_agent_copy() {
+        use crate::hive::HermesSource::{App, Own};
+        let dir = tmp_dir("switch");
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let user = user_hermes_with(&dir, Some(USER_CFG), Some(USER_ENV));
+        let agent = dir.join("agent");
+        let hook = dir.join("hive-hook.exe");
+        let home = hive
+            .install_hermes_hooks_seeded_at(&agent, &hook, &seed_of(App, "openrouter", "m", "sk-or-NEW0123456789"), &user)
+            .unwrap();
+        assert!(std::fs::read_to_string(home.join("config.yaml")).unwrap().contains("openrouter"));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        hive.install_hermes_hooks_seeded_at(&agent, &hook, &seed_of(Own, "openrouter", "m", "sk-or-NEW0123456789"), &user)
+            .unwrap();
+        let cfg = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(cfg.contains("provider: anthropic") && !cfg.contains("openrouter"), "{cfg}");
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("OPENROUTER_API_KEY=sk-or-OLD"), "{env}");
+        // Unchanged own setup: the next spawn leaves the copy alone.
+        let marker = format!("{cfg}\n# keep me\n");
+        std::fs::write(home.join("config.yaml"), &marker).unwrap();
+        hive.install_hermes_hooks_seeded_at(&agent, &hook, &seed_of(Own, "openrouter", "m", "sk-or-NEW0123456789"), &user)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("config.yaml")).unwrap(), marker);
+        // The user changes their own config: the copy follows.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(user.join("config.yaml"), USER_CFG.replace("anthropic", "gemini")).unwrap();
+        hive.install_hermes_hooks_seeded_at(&agent, &hook, &seed_of(Own, "openrouter", "m", "sk-or-NEW0123456789"), &user)
+            .unwrap();
+        assert!(std::fs::read_to_string(home.join("config.yaml")).unwrap().contains("provider: gemini"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn own_without_a_user_provider_still_follows_app_key_changes_but_not_a_users_own_line() {
+        use crate::hive::HermesSource::Own;
+        let dir = tmp_dir("ownfill");
+        let hive = Hive::ensure(&dir.join("hive")).unwrap();
+        let hook = dir.join("hive-hook.exe");
+        // No user config at all: the seed is authoritative, and a later key
+        // change must land (the old code never re-seeded once a provider line existed).
+        let user = no_user_hermes(&dir);
+        let agent = dir.join("agent");
+        let run = |key: &str| {
+            hive.install_hermes_hooks_seeded_at(&agent, &hook, &seed_of(Own, "openrouter", "m", key), &user)
+                .unwrap()
+        };
+        let home = run("sk-or-AAAAAAAAAAAAAAAA");
+        run("sk-or-BBBBBBBBBBBBBBBB");
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("OPENROUTER_API_KEY=sk-or-BBBBBBBBBBBBBBBB") && !env.contains("AAAA"), "{env}");
+
+        // A user-typed key line (user has a .env but no provider) is theirs.
+        let user2 = user_hermes_with(&dir, None, Some("OPENROUTER_API_KEY=sk-or-MINE\n"));
+        let home2 = hive
+            .install_hermes_hooks_seeded_at(&dir.join("agent2"), &hook, &seed_of(Own, "openrouter", "m", "sk-or-CCCCCCCCCCCCCCCC"), &user2)
+            .unwrap();
+        let env2 = std::fs::read_to_string(home2.join(".env")).unwrap();
+        assert!(env2.contains("sk-or-MINE") && !env2.contains("CCCC"), "{env2}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rewrite_model_block_handles_scalar_mapping_missing_and_crlf() {
+        let block = "model:\n  provider: \"x\"\n";
+        // mapping with comments / blank lines inside, followed by another key
+        let out = crate::hive::rewrite_model_block(
+            "a: 1\nmodel:\n  default: m\n  # note\n\n  provider: p\n\nnext:\n  k: v\n",
+            block,
+        );
+        assert_eq!(out, "a: 1\nmodel:\n  provider: \"x\"\n\nnext:\n  k: v\n");
+        // scalar form
+        let out = crate::hive::rewrite_model_block("model: anthropic/claude\nz: 1\n", block);
+        assert_eq!(out, "model:\n  provider: \"x\"\nz: 1\n");
+        // a nested `model:` and `model_x:` are not the top-level key
+        let src = "agent:\n  model: keep\nmodel_x: 1\n";
+        let out = crate::hive::rewrite_model_block(src, block);
+        assert_eq!(out, format!("{block}\n{src}"));
+        // CRLF input is normalised, other content survives
+        let out = crate::hive::rewrite_model_block("model:\r\n  provider: p\r\nk: v\r\n", block);
+        assert_eq!(out, "model:\n  provider: \"x\"\nk: v\n");
+        // empty file
+        assert_eq!(crate::hive::rewrite_model_block("", block), block);
+        // model block at EOF without trailing newline
+        assert_eq!(crate::hive::rewrite_model_block("model:\n  a: 1", block), block);
+    }
+
+    #[test]
+    fn env_and_yaml_helpers() {
+        let (out, touched) = crate::hive::set_env_vars("A=1\nexport K=old\nE=\n", &["K", "E", "N"], "v", &["K"]);
+        assert_eq!(out, "A=1\nK=v\nE=v\nN=v\n");
+        assert_eq!(touched, vec!["K", "E", "N"]);
+        // not in `replace` -> a filled line stays
+        let (out, touched) = crate::hive::set_env_vars("K=mine\n", &["K"], "v", &[]);
+        assert_eq!((out.as_str(), touched.len()), ("K=mine\n", 0));
+        assert!(crate::hive::env_has_api_key("export OPENROUTER_API_KEY=\"sk-x\"\n"));
+        assert!(!crate::hive::env_has_api_key("OPENROUTER_API_KEY=\n# A_API_KEY=x\nTOKEN=zzz\n"));
+        assert_eq!(
+            crate::hive::yaml_model_summary("model:\n  provider: \"openrouter\"  # c\n  default: m/x\n"),
+            (Some("openrouter".into()), Some("m/x".into()))
+        );
+        assert_eq!(crate::hive::yaml_model_summary("model: a/b\n"), (None, Some("a/b".into())));
+        assert_eq!(crate::hive::yaml_model_summary("agent: {}\n"), (None, None));
+        assert_eq!(
+            crate::hive::HermesSource::from_raw(&serde_json::json!({"hermesSource": "app"})),
+            crate::hive::HermesSource::App
+        );
+        assert_eq!(
+            crate::hive::HermesSource::from_raw(&serde_json::json!({"hermesSource": "nope"})),
+            crate::hive::HermesSource::Own
+        );
+        assert_eq!(crate::hive::HermesSource::from_raw(&serde_json::json!({})), crate::hive::HermesSource::Own);
     }
 
     #[test]

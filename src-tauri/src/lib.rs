@@ -16,10 +16,12 @@ mod cmd_update;
 mod codex_remote;
 pub mod commands;
 pub mod config;
+pub mod conversation;
 pub mod mcp;
 mod control;
 pub mod cost_lifetime;
 mod db;
+pub mod engine_setup;
 mod floors;
 mod freeflow;
 pub mod fs_ops;
@@ -1385,6 +1387,9 @@ pub fn run() {
             cmd_misc::app_force_quit,
             commands::app_cancel_close,
             commands::app_info,
+            engine_setup::engine_setup_snapshot,
+            engine_setup::engine_setup_retry,
+            engine_setup::hermes_user_config_status,
             commands::skills_reveal,
             cmd_hive::hive_add_task,
             cmd_hive::hive_delete_task,
@@ -1421,6 +1426,7 @@ pub fn run() {
             cmd_git::git_commit_files,
             cmd_git::git_compare_refs,
             cmd_git::git_show_file,
+            conversation::conversation_read,
             cmd_kg::kg_status,
             cmd_kg::kg_list,
             cmd_kg::kg_search,
@@ -1482,6 +1488,7 @@ pub fn run() {
             cmd_misc::roster_read_sync,
             cmd_misc::provider_key_set,
             cmd_misc::provider_key_has,
+            cmd_misc::provider_key_validate,
             cmd_misc::provider_key_clear,
             cmd_misc::webhook_start,
             cmd_misc::webhook_stop,

@@ -863,6 +863,83 @@ pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Resu
     })
 }
 
+/// The one cheap authenticated GET that tells a pasted key is live, per backend
+/// the first-run "quick start" offers. Fixed constants (never renderer input), so
+/// the key can only ever be sent to these two https endpoints. Neither call
+/// spends credits: OpenRouter's `/auth/key` describes the key, DeepSeek's
+/// `/models` lists models.
+fn provider_check_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openrouter" => Some("https://openrouter.ai/api/v1/auth/key"),
+        "deepseek" => Some("https://api.deepseek.com/models"),
+        _ => None,
+    }
+}
+
+/// Check a key with ONE short GET. `code` is the whole verdict:
+///   * "valid"       2xx — the provider accepted the key;
+///   * "rejected"    401/403 — the provider says this key is not valid;
+///   * "unreachable" anything else (offline, timeout, 429, 5xx, bad TLS) —
+///                   INCONCLUSIVE, so the caller must not treat it as a bad key.
+/// https only (plain http only to a loopback stub, for tests); redirects are not
+/// followed, so the key can never be forwarded to another host. The key is only
+/// ever put in the Authorization header: it is never logged and never echoed
+/// back, and the provider's response body is not read.
+pub(crate) fn check_provider_key(url: &str, key: &str, timeout: std::time::Duration) -> Value {
+    let https = url.starts_with("https://");
+    let loopback = url.starts_with("http://127.0.0.1");
+    if !(https || loopback) {
+        return json!({ "ok": false, "code": "unreachable" });
+    }
+    // A key that could break out of a header is not a key.
+    if key.is_empty() || key.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return json!({ "ok": false, "code": "rejected" });
+    }
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .build(),
+    );
+    let req = ureq::http::Request::builder()
+        .method("GET")
+        .uri(url)
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Accept", "application/json")
+        .body(());
+    let status = req
+        .map_err(|e| e.to_string())
+        .and_then(|r| agent.run(r).map_err(|e| e.to_string()))
+        .map(|resp| resp.status().as_u16());
+    match status {
+        Ok(s) if (200..300).contains(&s) => json!({ "ok": true, "code": "valid", "status": s }),
+        Ok(s @ (401 | 403)) => json!({ "ok": false, "code": "rejected", "status": s }),
+        Ok(s) => json!({ "ok": false, "code": "unreachable", "status": s }),
+        // The transport error text is dropped on purpose: it can carry the URL
+        // and the renderer has nothing useful to do with it.
+        Err(_) => json!({ "ok": false, "code": "unreachable" }),
+    }
+}
+
+/// provider:keyValidate — first-run quick start: does this pasted key work? The
+/// key is checked in memory ONLY; nothing is stored (storing is provider_key_set,
+/// at Finish). Never an Err for a bad key — the wizard shows a friendly retry and
+/// lets the user continue regardless.
+#[tauri::command(async)]
+pub fn provider_key_validate(provider: String, key: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("provider_key_validate", || {
+        let Some(url) = provider_check_url(provider.trim()) else {
+            return Ok(json!({ "ok": false, "code": "unsupported" }));
+        };
+        Ok(check_provider_key(
+            url,
+            key.trim(),
+            std::time::Duration::from_secs(8),
+        ))
+    })
+}
+
 #[tauri::command(async)]
 pub fn provider_key_has(app: AppHandle, provider: String) -> Result<bool, String> {
     crate::panic_guard::cmd_guard("provider_key_has", || {
@@ -1642,6 +1719,80 @@ pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One-shot loopback stub: answers a single request with `status` and hands
+    /// the raw request text back so a test can assert what was (not) sent.
+    fn stub_once(status: u16) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/models", l.local_addr().unwrap());
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let body = "{\"data\":[]}";
+            let _ = write!(
+                s,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        (url, h)
+    }
+
+    #[test]
+    fn key_check_maps_provider_answers_to_a_verdict() {
+        let t = std::time::Duration::from_secs(5);
+        let (url, h) = stub_once(200);
+        let v = check_provider_key(&url, "sk-test-123", t);
+        let req = h.join().unwrap();
+        assert_eq!(v["code"], "valid");
+        assert_eq!(v["ok"], true);
+        assert!(req.starts_with("GET /models"), "{req}");
+        assert!(
+            req.to_lowercase().contains("authorization: bearer sk-test-123"),
+            "{req}"
+        );
+        // The verdict never echoes the key.
+        assert!(!v.to_string().contains("sk-test-123"));
+
+        for (status, code) in [(401, "rejected"), (403, "rejected"), (429, "unreachable"), (503, "unreachable")] {
+            let (url, h) = stub_once(status);
+            assert_eq!(check_provider_key(&url, "k", t)["code"], code, "{status}");
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn key_check_is_https_only_and_never_sends_a_malformed_key() {
+        let t = std::time::Duration::from_secs(1);
+        // Non-loopback plain http is refused before any socket is opened.
+        assert_eq!(check_provider_key("http://example.com/models", "k", t)["code"], "unreachable");
+        assert_eq!(check_provider_key("ftp://x/y", "k", t)["code"], "unreachable");
+        // Header-breaking / empty keys are "rejected" locally.
+        for bad in ["", "a b", "a\r\nX: y", "tab\tkey"] {
+            assert_eq!(check_provider_key("https://openrouter.ai/api/v1/auth/key", bad, t)["code"], "rejected", "{bad:?}");
+        }
+        // Nothing listening: inconclusive, not a bad key.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let v = check_provider_key(&format!("http://127.0.0.1:{port}/models"), "k", t);
+        assert_eq!(v["code"], "unreachable");
+    }
+
+    #[test]
+    fn key_check_endpoints_are_fixed_https_urls() {
+        assert_eq!(provider_check_url("openrouter"), Some("https://openrouter.ai/api/v1/auth/key"));
+        assert_eq!(provider_check_url("deepseek"), Some("https://api.deepseek.com/models"));
+        assert_eq!(provider_check_url("anthropic"), None);
+        assert_eq!(provider_check_url("https://evil.test"), None);
+        let v = provider_key_validate("nope".into(), "k".into()).unwrap();
+        assert_eq!(v["code"], "unsupported");
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("oa-cm-{tag}-{}", uuid::Uuid::new_v4().simple()));

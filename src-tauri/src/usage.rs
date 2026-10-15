@@ -35,7 +35,7 @@ pub(crate) fn normalize_model(model: &str) -> String {
 /// (C:\Users\me\app → C--Users-me-app). The legacy POSIX spelling is skipped:
 /// it only matters for pre-2026 POSIX installs, and this is a Windows-first
 /// port (deviation noted in PORTING.md).
-fn project_key(cwd: &str) -> String {
+pub(crate) fn project_key(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
