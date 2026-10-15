@@ -13,6 +13,8 @@
 //!   - `tool_decision` → accept/reject on the newest span
 //!   - `api_error` → fed straight to the breaker's error-storm arm
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -84,6 +86,15 @@ fn flatten_attrs(v: Option<&Value>) -> HashMap<String, Value> {
     out
 }
 
+/// A usage sample's timestamp when it proves a real turn (input+output tokens
+/// > 0), else 0 — the zero-token session-start sample is not activity.
+pub fn sample_activity_ts(s: Option<&crate::breaker::UsageSample>) -> u64 {
+    match s {
+        Some(s) if s.input.saturating_add(s.output) > 0 => s.ts,
+        _ => 0,
+    }
+}
+
 fn s(v: Option<&Value>) -> String {
     v.and_then(|v| v.as_str()).unwrap_or_default().to_string()
 }
@@ -126,12 +137,12 @@ impl TelemetryCollector {
     /// The pull seam: live OTel aggregate for one agent — the same data the
     /// breaker's UsageSample needs. None when the agent has no live telemetry.
     pub fn sample(&self, agent_id: &str) -> Option<crate::breaker::UsageSample> {
-        let set = self.agent_sessions.lock().unwrap();
+        let set = self.agent_sessions.lock_safe();
         let sids = set.get(agent_id)?;
         if sids.is_empty() {
             return None;
         }
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_safe();
         let mut out = crate::breaker::UsageSample::default();
         let mut seen = false;
         for sid in sids {
@@ -155,12 +166,11 @@ impl TelemetryCollector {
     pub fn session_samples(&self, agent_id: &str) -> Vec<(String, serde_json::Value)> {
         let sids = self
             .agent_sessions
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get(agent_id)
             .cloned()
             .unwrap_or_default();
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_safe();
         let mut out = Vec::new();
         for sid in sids {
             let Some(a) = sessions.get(&sid) else {
@@ -183,37 +193,37 @@ impl TelemetryCollector {
     /// sample) — "no turn" means something for a telemetry-exporting agent.
     pub fn has_telemetry(&self, agent_id: &str) -> bool {
         self.agent_sessions
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get(agent_id)
             .is_some_and(|s| !s.is_empty())
     }
 
-    /// Timestamp of the most recent span or usage activity — the wake
-    /// watchdog's telemetry evidence channel.
+    /// When the CLI last demonstrably did a TURN, or 0 — the wake watchdog's
+    /// telemetry evidence channel (upstream activityEvidenceAt): a tool span
+    /// always counts; a usage sample only when it carries tokens, because the
+    /// collector stamps an all-zero sample at session start.
     pub fn last_activity_at(&self, agent_id: &str) -> u64 {
         let span = self
             .spans
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get(agent_id)
             .and_then(|r| r.last())
             .map(|s| s.ts)
             .unwrap_or(0);
-        span.max(self.sample(agent_id).map(|s| s.ts).unwrap_or(0))
+        span.max(sample_activity_ts(self.sample(agent_id).as_ref()))
     }
 
     /// Respawn-safe: drop a dead agent's live accumulation so a replacement
     /// starts with a fresh counter (ledger + transcripts untouched).
     pub fn forget(&self, agent_id: &str) {
-        if let Some(sids) = self.agent_sessions.lock().unwrap().remove(agent_id) {
-            let mut sessions = self.sessions.lock().unwrap();
+        if let Some(sids) = self.agent_sessions.lock_safe().remove(agent_id) {
+            let mut sessions = self.sessions.lock_safe();
             for sid in sids {
                 sessions.remove(&sid);
             }
         }
-        self.spans.lock().unwrap().remove(agent_id);
-        self.api_errors.lock().unwrap().remove(agent_id);
+        self.spans.lock_safe().remove(agent_id);
+        self.api_errors.lock_safe().remove(agent_id);
     }
 
     /// Recent tool spans, oldest→newest — the per-agent waterfall seam
@@ -221,8 +231,7 @@ impl TelemetryCollector {
     #[allow(dead_code)]
     pub fn spans(&self, agent_id: &str) -> Vec<ToolSpan> {
         self.spans
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get(agent_id)
             .cloned()
             .unwrap_or_default()
@@ -237,8 +246,8 @@ impl TelemetryCollector {
     }
 
     fn freshest_session(&self, agent_id: &str) -> Option<(String, String)> {
-        let sids = self.agent_sessions.lock().unwrap().get(agent_id).cloned()?;
-        let sessions = self.sessions.lock().unwrap();
+        let sids = self.agent_sessions.lock_safe().get(agent_id).cloned()?;
+        let sessions = self.sessions.lock_safe();
         let mut best: Option<(String, u64, String)> = None;
         for sid in sids {
             if let Some(a) = sessions.get(&sid) {
@@ -256,8 +265,7 @@ impl TelemetryCollector {
     pub fn snapshot(&self) -> serde_json::Value {
         let agent_ids: Vec<String> = self
             .agent_sessions
-            .lock()
-            .unwrap()
+            .lock_safe()
             .keys()
             .cloned()
             .collect();
@@ -275,8 +283,7 @@ impl TelemetryCollector {
         }
         let spans: serde_json::Map<String, serde_json::Value> = self
             .spans
-            .lock()
-            .unwrap()
+            .lock_safe()
             .iter()
             .map(|(k, v)| {
                 (
@@ -293,8 +300,7 @@ impl TelemetryCollector {
     /// just timestamps each stamp again at feed time).
     pub fn take_api_errors(&self, agent_id: &str) -> Vec<u64> {
         self.api_errors
-            .lock()
-            .unwrap()
+            .lock_safe()
             .remove(agent_id)
             .unwrap_or_default()
     }
@@ -303,14 +309,12 @@ impl TelemetryCollector {
 
     fn session(&self, agent_id: &str, session_id: &str) {
         self.agent_sessions
-            .lock()
-            .unwrap()
+            .lock_safe()
             .entry(agent_id.to_string())
             .or_default()
             .insert(session_id.to_string());
         self.sessions
-            .lock()
-            .unwrap()
+            .lock_safe()
             .entry(session_id.to_string())
             .or_default();
     }
@@ -354,7 +358,7 @@ impl TelemetryCollector {
                         let model = crate::usage::normalize_model(&s(attrs.get("model")));
                         let value = point_value(dp);
                         {
-                            let mut sessions = self.sessions.lock().unwrap();
+                            let mut sessions = self.sessions.lock_safe();
                             // `forget` (agent teardown) can drop the session
                             // between `self.session()` and this lock — skip
                             // the point instead of unwrapping into an abort.
@@ -446,7 +450,7 @@ impl TelemetryCollector {
                                 duration_ms: f(attrs.get("duration_ms")),
                                 decision: None,
                             };
-                            let mut spans = self.spans.lock().unwrap();
+                            let mut spans = self.spans.lock_safe();
                             let ring = spans.entry(agent_id.clone()).or_default();
                             ring.push(span.clone());
                             if ring.len() > SPAN_RING_CAP {
@@ -466,7 +470,7 @@ impl TelemetryCollector {
                             } else {
                                 "accept"
                             };
-                            if let Some(ring) = self.spans.lock().unwrap().get_mut(&agent_id) {
+                            if let Some(ring) = self.spans.lock_safe().get_mut(&agent_id) {
                                 if let Some(last) = ring.last_mut() {
                                     last.decision = Some(decision.into());
                                 }
@@ -474,8 +478,7 @@ impl TelemetryCollector {
                         }
                         "api_error" => {
                             self.api_errors
-                                .lock()
-                                .unwrap()
+                                .lock_safe()
                                 .entry(agent_id.clone())
                                 .or_default()
                                 .push(now);
@@ -511,39 +514,41 @@ impl TelemetryCollector {
         };
         let me = self;
         std::thread::spawn(move || loop {
-            let mut req = match server.recv_timeout(Duration::from_millis(500)) {
-                Ok(Some(r)) => r,
-                Ok(None) => continue,
-                Err(_) => continue,
-            };
-            if req.method().as_str() != "POST" {
-                let _ = req.respond(tiny_http::Response::empty(405));
-                continue;
-            }
-            let mut body = Vec::new();
-            let mut take = std::io::Read::take(req.as_reader(), MAX_BODY_BYTES + 1);
-            let over = std::io::Read::read_to_end(&mut take, &mut body)
-                .map(|_| body.len() as u64 > MAX_BODY_BYTES)
-                .unwrap_or(true);
-            let url = req.url().to_string();
-            if over {
-                let _ = req.respond(tiny_http::Response::empty(413));
-                continue;
-            }
-            if let Ok(v) = serde_json::from_slice::<Value>(&body) {
-                if url.contains("/v1/metrics") {
-                    me.ingest_metrics(&v, Some(&app));
-                } else if url.contains("/v1/logs") {
-                    me.ingest_logs(&v, Some(&app));
+            panic_guard::guarded("telemetry-collector", || {
+                let mut req = match server.recv_timeout(Duration::from_millis(500)) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return,
+                    Err(_) => return,
+                };
+                if req.method().as_str() != "POST" {
+                    let _ = req.respond(tiny_http::Response::empty(405));
+                    return;
                 }
-            }
-            let _ = req.respond(
-                tiny_http::Response::from_string("{}").with_header(
-                    "Content-Type: application/json"
-                        .parse::<tiny_http::Header>()
-                        .unwrap(),
-                ),
-            );
+                let mut body = Vec::new();
+                let mut take = std::io::Read::take(req.as_reader(), MAX_BODY_BYTES + 1);
+                let over = std::io::Read::read_to_end(&mut take, &mut body)
+                    .map(|_| body.len() as u64 > MAX_BODY_BYTES)
+                    .unwrap_or(true);
+                let url = req.url().to_string();
+                if over {
+                    let _ = req.respond(tiny_http::Response::empty(413));
+                    return;
+                }
+                if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+                    if url.contains("/v1/metrics") {
+                        me.ingest_metrics(&v, Some(&app));
+                    } else if url.contains("/v1/logs") {
+                        me.ingest_logs(&v, Some(&app));
+                    }
+                }
+                let _ = req.respond(
+                    tiny_http::Response::from_string("{}").with_header(
+                        "Content-Type: application/json"
+                            .parse::<tiny_http::Header>()
+                            .unwrap(),
+                    ),
+                );
+            });
         });
         Ok(bound)
     }
@@ -609,6 +614,27 @@ mod tests {
         assert!(s.ts > 0);
         assert!(t.has_telemetry("w1"));
         assert!(t.sample("nobody").is_none());
+    }
+
+    #[test]
+    fn zero_token_sample_is_not_activity() {
+        let t = TelemetryCollector::new();
+        // Session-start sample: every counter zero.
+        let zero = json!({"resourceMetrics": [{"scopeMetrics": [{"metrics": [{
+            "name": "claude_code.token.usage",
+            "sum": {"dataPoints": [{"asInt": "0", "attributes": [
+                {"key": "agent.id", "value": {"stringValue": "w1"}},
+                {"key": "session.id", "value": {"stringValue": "s1"}},
+                {"key": "type", "value": {"stringValue": "input"}}
+            ]}]}
+        }]}]}]});
+        t.ingest_metrics(&zero, None);
+        assert!(t.has_telemetry("w1"), "it still proves the CLI exports telemetry");
+        assert!(t.sample("w1").unwrap().ts > 0);
+        assert_eq!(t.last_activity_at("w1"), 0, "but it is not a turn");
+        t.ingest_metrics(&otlp_metrics(), None);
+        assert!(t.last_activity_at("w1") > 0);
+        assert_eq!(sample_activity_ts(None), 0);
     }
 
     #[test]

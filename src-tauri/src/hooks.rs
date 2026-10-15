@@ -11,6 +11,8 @@
 //! NOT a forced `{decision:'block'}` continuation, which upstream removed for
 //! bypassing terminal-draft/HITL safety.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -79,22 +81,156 @@ pub struct HookServer {
     pub addr: String,
 }
 
+/// Live state of the hook endpoint — the ONE socket every lifecycle hook,
+/// proxy-bridge emit and cost sample travels through (upstream
+/// HookSocketHealth). Written into fleet.json (`hooks`) by
+/// `Hive::write_fleet_snapshot` so an operator or god can see a dead control
+/// plane without a debugger. `orphans` is always 0 on this transport (it
+/// counts abandoned unix-socket listeners).
+#[derive(Clone, Default)]
+struct HookHealth {
+    path: Option<String>,
+    listening: bool,
+    since: Option<u64>,
+    last_error: Option<String>,
+    attempts: u64,
+}
+
+static HOOK_HEALTH: std::sync::Mutex<HookHealth> = std::sync::Mutex::new(HookHealth {
+    path: None,
+    listening: false,
+    since: None,
+    last_error: None,
+    attempts: 0,
+});
+
+/// fleet.json's `hooks` field: `{path, listening, since, lastError, attempts,
+/// orphans}`.
+pub fn health() -> Value {
+    let h = HOOK_HEALTH.lock_safe().clone();
+    json!({
+        "path": h.path,
+        "listening": h.listening,
+        "since": h.since,
+        "lastError": h.last_error,
+        "attempts": h.attempts,
+        "orphans": 0,
+    })
+}
+
+/// The `log.jsonl` entry for a bind outcome (pure, so it is testable without
+/// the process-global health record).
+fn bind_outcome_entry(h: &HookHealth) -> Value {
+    if h.listening {
+        let mut e = json!({ "kind": "hooks", "state": "listening", "path": h.path });
+        // Bound only after earlier attempts failed: say so (the retry worked).
+        if h.attempts > 0 {
+            e["retries"] = json!(h.attempts);
+        }
+        e
+    } else {
+        json!({
+            "kind": "hooks", "state": "bind-failed", "path": h.path,
+            "code": h.last_error, "attempt": h.attempts
+        })
+    }
+}
+
+/// Record the bind outcome in the hive's own log.jsonl (upstream logs both
+/// `listening` and `bind-failed` there — a packaged app has no console).
+/// Called once the hive exists; the bind itself happens before AppState. A
+/// failed bind leaves its record in HOOK_HEALTH (attempts + last error), so a
+/// hive that becomes available later still gets its `hooks bind-failed` line.
+pub fn log_bind_outcome(hive: &crate::hive::Hive) {
+    let h = HOOK_HEALTH.lock_safe().clone();
+    if h.listening {
+        log::info!("[hive] hook server listening on {}", h.path.as_deref().unwrap_or("?"));
+    } else {
+        log::error!("[hive] hook server bind FAILED: every agent hook is allowed until this recovers");
+    }
+    let _ = hive.log(&bind_outcome_entry(&h));
+}
+
+/// Bind attempts before giving up, and the pause before each retry (a loopback
+/// bind only fails transiently — a port-exhaustion blip, a security product
+/// holding the stack for a moment — so a short backoff is enough).
+const BIND_ATTEMPTS: u32 = 3;
+const BIND_BACKOFF: [Duration; 2] = [Duration::from_millis(150), Duration::from_millis(500)];
+
+/// Run `bind` up to `attempts` times, sleeping `backoff[i]` before retry `i+1`.
+/// `on_fail(n, err)` records every failure; the final error is returned.
+fn bind_with_retry<T>(
+    mut bind: impl FnMut() -> std::io::Result<T>,
+    attempts: u32,
+    backoff: &[Duration],
+    mut on_fail: impl FnMut(u32, &std::io::Error),
+    sleep: impl Fn(Duration),
+) -> std::io::Result<T> {
+    let mut n = 0u32;
+    loop {
+        n += 1;
+        match bind() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                on_fail(n, &e);
+                if n >= attempts {
+                    return Err(std::io::Error::new(
+                        e.kind(),
+                        format!("{e} (after {n} attempt{})", if n == 1 { "" } else { "s" }),
+                    ));
+                }
+                sleep(backoff.get((n - 1) as usize).copied().unwrap_or_default());
+            }
+        }
+    }
+}
+
 impl HookServer {
     pub fn start(app: &AppHandle) -> std::io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?.to_string();
+        let bound = bind_with_retry(
+            || TcpListener::bind("127.0.0.1:0").and_then(|l| Ok((l.local_addr()?.to_string(), l))),
+            BIND_ATTEMPTS,
+            &BIND_BACKOFF,
+            |n, e| {
+                {
+                let mut h = HOOK_HEALTH.lock_safe();
+                    h.listening = false;
+                    h.attempts = n as u64;
+                    h.last_error = Some(e.kind().to_string());
+                }
+                log::warn!("[hive] hook server bind attempt {n}/{BIND_ATTEMPTS} failed: {e}");
+            },
+            std::thread::sleep,
+        );
+        // Still failing: the caller shows the startup dialog; the record stays
+        // in HOOK_HEALTH for `log_bind_outcome`.
+        let (addr, listener) = bound?;
+        {
+            let mut h = HOOK_HEALTH.lock_safe();
+            // `attempts` keeps the count of failures that preceded this success.
+            let retries = h.attempts;
+            *h = HookHealth {
+                path: Some(addr.clone()),
+                listening: true,
+                since: Some(chrono::Utc::now().timestamp_millis() as u64),
+                last_error: None,
+                attempts: retries,
+            };
+        }
         let handle = app.clone();
         thread::spawn(move || {
             for conn in listener.incoming() {
-                let Ok(stream) = conn else { continue };
-                // At capacity → drop (close) the connection without a thread.
-                let Some(slot) = try_acquire_slot() else {
-                    continue;
-                };
-                let app = handle.clone();
-                thread::spawn(move || {
-                    let _slot = slot;
-                    serve_conn(app, stream)
+                panic_guard::guarded("hook-server-accept", || {
+                    let Ok(stream) = conn else { return };
+                    // At capacity → drop (close) the connection without a thread.
+                    let Some(slot) = try_acquire_slot() else {
+                        return;
+                    };
+                    let app = handle.clone();
+                    thread::spawn(move || {
+                        let _slot = slot;
+                        serve_conn(app, stream)
+                    });
                 });
             }
         });
@@ -162,6 +298,30 @@ fn serve_conn(app: AppHandle, stream: std::net::TcpStream) {
     let _ = w.write_all(out.as_bytes());
 }
 
+/// Port of shared/hookEvents.ts `validateHookEvent`: `event` is a non-empty
+/// string; `agentId`, when present, a non-empty string; `tool` /
+/// `notificationType` / `source` / `message`, when present, strings; `blocked`,
+/// when present, a bool. Provider event names are NOT restricted.
+pub(crate) fn validate_hook_event(v: &Value) -> bool {
+    let Some(o) = v.as_object() else {
+        return false;
+    };
+    if !o.get("event").and_then(|e| e.as_str()).is_some_and(|s| !s.is_empty()) {
+        return false;
+    }
+    if let Some(a) = o.get("agentId") {
+        if !a.as_str().is_some_and(|s| !s.is_empty()) {
+            return false;
+        }
+    }
+    for f in ["tool", "notificationType", "source", "message"] {
+        if o.get(f).is_some_and(|x| !x.is_string()) {
+            return false;
+        }
+    }
+    o.get("blocked").is_none_or(|b| b.is_boolean())
+}
+
 fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
     if let Some(st) = app.try_state::<AppState>() {
         let _ = st.hive.set_status(id, status);
@@ -169,7 +329,7 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
         // agent was mid-work land here at the idle boundary (the same slot
         // upstream's renderer-side queue drained through). Provider verb
         // table: no trustworthy command → leave the terminal alone.
-        if status == "idle" && st.compact_queue.lock().unwrap().remove(id) {
+        if status == "idle" && st.compact_queue.lock_safe().remove(id) {
             let provider = st
                 .hive
                 .registry()
@@ -179,8 +339,7 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, detail: Option<&str>) {
                 .unwrap_or_default();
             let focus = st
                 .config
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .context_trigger
                 .compact
                 .message
@@ -215,18 +374,33 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
     // from the envelope payload; the channel name stays `hook-event` (the
     // frontend already listens on it). `blocked` is always false here —
     // upstream's emit never sets it true in hooks.ts either.
-    let _ = app.emit(
-        "hive:hookEvent",
-        json!({
-            "agentId": agent_id,
-            "event": event,
-            "tool": p.get("tool_name").and_then(|v| v.as_str()),
-            "notificationType": p.get("notification_type").and_then(|v| v.as_str()),
-            "source": p.get("source").and_then(|v| v.as_str()),
-            "message": p.get("message").and_then(|v| v.as_str()),
-            "blocked": false,
-        }),
-    );
+    // The payload is validated before it crosses the IPC boundary
+    // (shared/hookEvents.ts validateHookEvent); a malformed one is dropped
+    // from the feed — hook handling below carries on regardless.
+    let mut feed = serde_json::Map::new();
+    feed.insert("event".into(), json!(event));
+    for (key, field) in [
+        ("agentId", None),
+        ("tool", Some("tool_name")),
+        ("notificationType", Some("notification_type")),
+        ("source", Some("source")),
+        ("message", Some("message")),
+    ] {
+        let v = match field {
+            None => (!agent_id.is_empty()).then(|| json!(agent_id)),
+            Some(f) => p.get(f).filter(|v| !v.is_null()).cloned(),
+        };
+        if let Some(v) = v {
+            feed.insert(key.into(), v);
+        }
+    }
+    feed.insert("blocked".into(), json!(false));
+    let feed = Value::Object(feed);
+    if validate_hook_event(&feed) {
+        let _ = app.emit("hive:hookEvent", feed);
+    } else {
+        log::warn!("[hive] rejected invalid hook event: {event}");
+    }
 
     // Status-line telemetry (context_window) — pure telemetry, early {} exactly
     // like upstream: never feeds status or any gate.
@@ -240,8 +414,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
         ) {
             if !agent_id.is_empty() {
                 st.context_usage
-                    .lock()
-                    .unwrap()
+                    .lock_safe()
                     .insert(agent_id.clone(), (t, l));
             }
             let _ = app.emit(
@@ -268,21 +441,21 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
 
     // 7C.3 — an operator HALT overrides everything at the next hook boundary:
     // stop CLEANLY ({continue:false}) rather than killing the PTY.
-    if !agent_id.is_empty() && st.control.lock().unwrap().should_halt(&agent_id) {
+    if !agent_id.is_empty() && st.control.lock_safe().should_halt(&agent_id) {
         return json!({ "continue": false, "stopReason": "Halted by the operator from the floor." });
     }
 
     // Breaker inputs + the wake watchdog's hook channel (its only turn-proof
     // evidence for engines without telemetry).
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    st.wake.lock().unwrap().note_hook(
+    st.wake.lock_safe().note_hook(
         &agent_id,
         &event,
         p.get("message").and_then(|v| v.as_str()).unwrap_or(""),
         now_ms,
     );
     match event.as_str() {
-        "PostToolUse" => st.breaker.lock().unwrap().record_tool_use(
+        "PostToolUse" => st.breaker.lock_safe().record_tool_use(
             &agent_id,
             p.get("tool_name").and_then(|v| v.as_str()),
             p.get("tool_input").unwrap_or(&Value::Null),
@@ -290,21 +463,18 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
         ),
         "UserPromptSubmit" => st
             .breaker
-            .lock()
-            .unwrap()
+            .lock_safe()
             .record_user_prompt(&agent_id, now_ms),
         // Hermes api_request_error (translated via the shim's --hermes mode)
         // — the breaker's error-storm feed for engines without OTel.
-        "ApiError" => st.breaker.lock().unwrap().record_error(&agent_id),
+        "ApiError" => st.breaker.lock_safe().record_error(&agent_id),
         "PreCompact" => st
             .breaker
-            .lock()
-            .unwrap()
+            .lock_safe()
             .record_compact_start(&agent_id, now_ms),
         "PostCompact" | "SessionStart" => st
             .breaker
-            .lock()
-            .unwrap()
+            .lock_safe()
             .record_compact_end(&agent_id, now_ms),
         _ => {}
     }
@@ -338,7 +508,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
             );
             // 7C.1 — HITL deny at the tool boundary: race-free (no renderer
             // round-trip); slow human approval stays on the CLI's native prompt.
-            let deny = st.control.lock().unwrap().tool_decision(
+            let deny = st.control.lock_safe().tool_decision(
                 &agent_id,
                 p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""),
             );
@@ -408,7 +578,7 @@ fn handle(app: &AppHandle, env: &HookEnvelope) -> Value {
 /// real OS toast; `hive-notify` stays as an in-app mirror the renderer can
 /// also surface.
 fn notify(app: &AppHandle, st: &AppState, agent_id: &str, body: &str) {
-    if !st.config.lock().unwrap().notifications {
+    if !st.config.lock_safe().notifications {
         return;
     }
     let title = if agent_id.is_empty() {
@@ -456,7 +626,7 @@ fn goal_context(
 ) -> Option<String> {
     let goal_raw = standing_goal(st, agent_id);
     let session = session_id.map(str::to_string);
-    let mut delivered_map = st.delivered_goal.lock().unwrap();
+    let mut delivered_map = st.delivered_goal.lock_safe();
     let delivered = delivered_map.get(agent_id).cloned();
     let new_session = delivered.as_ref().map(|d| d.0 != session).unwrap_or(true);
     let changed = delivered
@@ -516,7 +686,7 @@ pub(crate) fn fleet_rows(st: &AppState) -> Vec<Value> {
                 .map(|u| (u * 10_000.0).round() / 10_000.0)
                 .unwrap_or(session_usd);
             let last_tool = st.telemetry.spans(&a.id).last().map(|s| s.tool.clone());
-            let breaker = serde_json::to_value(st.breaker.lock().unwrap().level_for(&a.id))
+            let breaker = serde_json::to_value(st.breaker.lock_safe().level_for(&a.id))
                 .unwrap_or_else(|_| json!("healthy"));
             json!({
                 "id": a.id,
@@ -566,7 +736,7 @@ fn injected_context(st: &AppState, agent_id: &str, event: &str, p: &Value) -> Va
             "ts": chrono::Utc::now().timestamp_millis() as u64,
             "agents": agents,
         }));
-        let ctx_map = st.context_usage.lock().unwrap().clone();
+        let ctx_map = st.context_usage.lock_safe().clone();
         if let Some(r) = st.hive.roster_context(
             &agents,
             Some(chrono::Utc::now().timestamp_millis() as u64),
@@ -588,7 +758,7 @@ fn injected_context(st: &AppState, agent_id: &str, event: &str, p: &Value) -> Va
     }
 
     if event == "UserPromptSubmit" || event == "PostToolUse" {
-        if let Some(note) = st.control.lock().unwrap().take_steer(agent_id) {
+        if let Some(note) = st.control.lock_safe().take_steer(agent_id) {
             parts.push(format!("Operator guidance: {note}"));
         }
     }
@@ -610,6 +780,85 @@ mod tests {
     use super::*;
 
     const TOK: &str = "deadbeefdeadbeefdeadbeefdeadbeef";
+
+    #[test]
+    fn bind_retries_with_backoff_then_succeeds() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(0u32);
+        let sleeps = RefCell::new(Vec::new());
+        let fails = RefCell::new(Vec::new());
+        let r = bind_with_retry(
+            || {
+                *calls.borrow_mut() += 1;
+                if *calls.borrow() < 3 {
+                    Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "busy"))
+                } else {
+                    Ok("bound")
+                }
+            },
+            BIND_ATTEMPTS,
+            &BIND_BACKOFF,
+            |n, e| fails.borrow_mut().push((n, e.kind())),
+            |d| sleeps.borrow_mut().push(d),
+        );
+        assert_eq!(r.unwrap(), "bound");
+        assert_eq!(*calls.borrow(), 3);
+        assert_eq!(*sleeps.borrow(), BIND_BACKOFF.to_vec());
+        assert_eq!(fails.borrow().len(), 2);
+    }
+
+    #[test]
+    fn bind_gives_up_after_three_attempts_and_records_each() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(0u32);
+        let last = RefCell::new(0u32);
+        let r: std::io::Result<()> = bind_with_retry(
+            || {
+                *calls.borrow_mut() += 1;
+                Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope"))
+            },
+            BIND_ATTEMPTS,
+            &BIND_BACKOFF,
+            |n, _| *last.borrow_mut() = n,
+            |_| {},
+        );
+        let e = r.unwrap_err();
+        assert_eq!(*calls.borrow(), 3);
+        assert_eq!(*last.borrow(), 3);
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(e.to_string().contains("after 3 attempts"), "{e}");
+        // the first try succeeding never sleeps or records a failure
+        let r = bind_with_retry(|| Ok(1), 3, &BIND_BACKOFF, |_, _| panic!("no failure"), |_| panic!("no sleep"));
+        assert_eq!(r.unwrap(), 1);
+    }
+
+    #[test]
+    fn bind_outcome_entry_keeps_the_failure_record_for_the_hive_log() {
+        let failed = HookHealth {
+            path: None,
+            listening: false,
+            since: None,
+            last_error: Some("address in use".into()),
+            attempts: 3,
+        };
+        let e = bind_outcome_entry(&failed);
+        assert_eq!(e["kind"], "hooks");
+        assert_eq!(e["state"], "bind-failed");
+        assert_eq!(e["code"], "address in use");
+        assert_eq!(e["attempt"], 3);
+        let ok = HookHealth {
+            path: Some("127.0.0.1:1".into()),
+            listening: true,
+            since: Some(1),
+            last_error: None,
+            attempts: 0,
+        };
+        let e = bind_outcome_entry(&ok);
+        assert_eq!(e["state"], "listening");
+        assert!(e.get("retries").is_none());
+        let recovered = HookHealth { attempts: 2, ..ok };
+        assert_eq!(bind_outcome_entry(&recovered)["retries"], 2);
+    }
 
     #[test]
     fn native_envelope_requires_token() {

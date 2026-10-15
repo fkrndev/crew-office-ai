@@ -17,6 +17,7 @@
 //! 1–5 line delegations, and a true renderer↔backend pass is what the
 //! optional WebDriver suite (@wdio/tauri-service) is for, if we ever want it.
 
+use agent_office_lib::lock_ext::LockExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -182,7 +183,7 @@ fn app_state_boots_and_serves_the_journey() {
     assert!(home.join("hive/PROTOCOL.md").exists());
     assert!(home.join("harness.db").exists());
     // Fresh-home seed: default missions landed through the config store.
-    let cfg_missions = st.config.lock().unwrap().missions.len();
+    let cfg_missions = st.config.lock_safe().missions.len();
     assert!(cfg_missions >= 1, "seed_missions should populate defaults");
 
     // Wizard finish through the same store the command calls.
@@ -192,7 +193,7 @@ fn app_state_boots_and_serves_the_journey() {
         "godProvider": "claude"
     });
     let (cfg, _raw) = st.config_store.update(patch.as_object().unwrap()).unwrap();
-    *st.config.lock().unwrap() = cfg;
+    *st.config.lock_safe() = cfg;
     let on_disk: Value =
         serde_json::from_str(&fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
     assert_eq!(on_disk["onboardingComplete"], true);
@@ -237,7 +238,7 @@ fn app_state_boots_and_serves_the_journey() {
 
     // Breaker state defaults — the floor starts un-paused.
     assert_eq!(
-        st.breaker.lock().unwrap().level_for("a1"),
+        st.breaker.lock_safe().level_for("a1"),
         agent_office_lib::breaker::BreakerLevel::Healthy
     );
 }

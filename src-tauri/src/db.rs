@@ -197,6 +197,79 @@ pub fn db_path(home: &Path) -> PathBuf {
     home.join("harness.db")
 }
 
+// ─── window geometry (kv key `window.bounds`) ───────────────────────────────
+
+/// kv key for the persisted main-window geometry.
+pub const WINDOW_BOUNDS_KEY: &str = "window.bounds";
+
+/// Persisted/restored main-window rect in PHYSICAL pixels. `x`/`y` are absent
+/// when the saved position is unusable (an unplugged monitor) — the caller
+/// then restores the size only and centers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowBounds {
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Validate + clamp saved bounds (upstream clampBounds). `areas` are the
+/// connected monitors' work areas as `(x, y, w, h)` in physical pixels. The
+/// size is raised to `min` and capped at the chosen monitor; the position is
+/// kept only when the window meaningfully overlaps a monitor (a window parked
+/// on an unplugged display, or at the minimized sentinel (-32000,-32000), must
+/// not reopen off-screen) and is then shifted fully inside that monitor.
+/// None for unusable input.
+pub fn clamp_window_bounds(
+    raw: &Value,
+    areas: &[(i32, i32, u32, u32)],
+    min: (u32, u32),
+) -> Option<WindowBounds> {
+    let num = |k: &str| raw.get(k).and_then(|v| v.as_f64()).filter(|n| n.is_finite());
+    let (w, h) = (num("width")?, num("height")?);
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    let mut width = (w.round() as u32).max(min.0);
+    let mut height = (h.round() as u32).max(min.1);
+    let (Some(x), Some(y)) = (num("x"), num("y")) else {
+        return Some(WindowBounds { x: None, y: None, width, height });
+    };
+    let (x, y) = (x.round() as i64, y.round() as i64);
+    // Largest-overlap monitor; require a reachable chunk of the window on it.
+    let overlap = |a: &(i32, i32, u32, u32)| -> i64 {
+        let ox = (x + width as i64).min(a.0 as i64 + a.2 as i64) - x.max(a.0 as i64);
+        let oy = (y + height as i64).min(a.1 as i64 + a.3 as i64) - y.max(a.1 as i64);
+        if ox > 0 && oy > 0 {
+            ox * oy
+        } else {
+            0
+        }
+    };
+    let best = areas
+        .iter()
+        .filter(|a| {
+            // At least ~100x100 of the window must be on it.
+            let ox = (x + width as i64).min(a.0 as i64 + a.2 as i64) - x.max(a.0 as i64);
+            let oy = (y + height as i64).min(a.1 as i64 + a.3 as i64) - y.max(a.1 as i64);
+            ox >= 100 && oy >= 100
+        })
+        .max_by_key(|a| overlap(a));
+    let Some(&(ax, ay, aw, ah)) = best else {
+        return Some(WindowBounds { x: None, y: None, width, height });
+    };
+    width = width.min(aw.max(min.0));
+    height = height.min(ah.max(min.1));
+    let nx = x.clamp(ax as i64, (ax as i64 + aw as i64 - width as i64).max(ax as i64));
+    let ny = y.clamp(ay as i64, (ay as i64 + ah as i64 - height as i64).max(ay as i64));
+    Some(WindowBounds {
+        x: Some(nx as i32),
+        y: Some(ny as i32),
+        width,
+        height,
+    })
+}
+
 fn clamp_limit(n: i64, fallback: i64) -> i64 {
     if n <= 0 {
         fallback
@@ -208,6 +281,62 @@ fn clamp_limit(n: i64, fallback: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_bounds_clamp_to_a_visible_monitor() {
+        let one = [(0, 0, 1920u32, 1040u32)];
+        let two = [(0, 0, 1920u32, 1040u32), (1920, 0, 1920u32, 1040u32)];
+        let min = (960, 600);
+        let b = |v: Value, areas: &[(i32, i32, u32, u32)]| clamp_window_bounds(&v, areas, min);
+        // In-bounds rect is restored verbatim.
+        assert_eq!(
+            b(json!({"x": 100, "y": 50, "width": 1400, "height": 900}), &one),
+            Some(WindowBounds { x: Some(100), y: Some(50), width: 1400, height: 900 })
+        );
+        // Below-minimum size is raised.
+        assert_eq!(
+            b(json!({"x": 0, "y": 0, "width": 300, "height": 200}), &one),
+            Some(WindowBounds { x: Some(0), y: Some(0), width: 960, height: 600 })
+        );
+        // Parked on a now-unplugged second monitor -> position dropped.
+        assert_eq!(
+            b(json!({"x": 2500, "y": 100, "width": 1200, "height": 800}), &one),
+            Some(WindowBounds { x: None, y: None, width: 1200, height: 800 })
+        );
+        // ...but kept when that monitor is still there.
+        assert_eq!(
+            b(json!({"x": 2500, "y": 100, "width": 1200, "height": 800}), &two)
+                .and_then(|r| r.x),
+            Some(2500)
+        );
+        // The minimized sentinel never restores off-screen.
+        assert_eq!(
+            b(json!({"x": -32000, "y": -32000, "width": 1200, "height": 800}), &one)
+                .and_then(|r| r.x),
+            None
+        );
+        // A window hanging off the edge is shifted fully inside; oversize is capped.
+        assert_eq!(
+            b(json!({"x": 1000, "y": 500, "width": 1400, "height": 900}), &one),
+            Some(WindowBounds { x: Some(520), y: Some(140), width: 1400, height: 900 })
+        );
+        assert_eq!(
+            b(json!({"x": 0, "y": 0, "width": 5000, "height": 4000}), &one),
+            Some(WindowBounds { x: Some(0), y: Some(0), width: 1920, height: 1040 })
+        );
+        // Size only (no position) and garbage.
+        assert_eq!(
+            b(json!({"width": 1300, "height": 850}), &one),
+            Some(WindowBounds { x: None, y: None, width: 1300, height: 850 })
+        );
+        assert_eq!(b(json!({"w": 1200}), &one), None);
+        assert_eq!(b(json!("nope"), &one), None);
+        // No monitor info -> size only.
+        assert_eq!(
+            b(json!({"x": 5, "y": 5, "width": 1300, "height": 850}), &[]).and_then(|r| r.x),
+            None
+        );
+    }
 
     #[test]
     fn migrations_kv_and_history() {

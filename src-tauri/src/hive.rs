@@ -17,6 +17,7 @@
 //! Deviation from the Electron version: the router is a poll loop (called on a
 //! tokio interval) instead of an fs watcher — same contract, fewer deps.
 
+use crate::lock_ext::LockExt;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,8 +75,7 @@ pub(crate) fn store_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
     let mut m = LOCKS
         .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+        .lock_safe();
     m.entry(path.to_path_buf()).or_default().clone()
 }
 
@@ -84,7 +84,7 @@ pub(crate) fn store_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 pub(crate) fn lock_store<'a>(
     l: &'a std::sync::Arc<std::sync::Mutex<()>>,
 ) -> std::sync::MutexGuard<'a, ()> {
-    l.lock().unwrap_or_else(|p| p.into_inner())
+    l.lock_safe()
 }
 
 /// Atomic write via a UNIQUE temp file + rename (a fixed `.tmp` name lets two
@@ -738,6 +738,22 @@ const COMMAND_GROUPS: &[(&str, &[CmdItem])] = &[
 
 /// renderCommandsMd (hive.ts:2931) — the Claude Code command reference written
 /// to <hive>/COMMANDS.md, byte-identical to upstream's output.
+/// Write claude's `sandbox` block (and the `permissions.additionalDirectories`
+/// mirror that exists only to support it) into the settings, unless `windows`:
+/// native Windows has no claude sandbox, so enabling it only makes every spawn
+/// print a "Sandbox disabled" warning. WSL runs the Linux build, so it is a
+/// non-windows build and covered.
+fn apply_sandbox(out: &mut serde_json::Value, dirs: &[String], windows: bool) {
+    if windows || dirs.is_empty() {
+        return;
+    }
+    out["sandbox"] = serde_json::json!({
+        "enabled": true,
+        "filesystem": { "allowWrite": dirs }
+    });
+    out["permissions"] = serde_json::json!({ "additionalDirectories": dirs });
+}
+
 fn commands_md() -> String {
     let mut lines: Vec<String> = vec![
         GENERATED_DOC_NOTICE.to_string(),
@@ -813,6 +829,56 @@ const ARCHIVE_KEEP: usize = 500;
 const ARCHIVE_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
 /// `log.jsonl` rotation threshold (one generation kept as `log.jsonl.1`).
 const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Remove `.git/index.lock` / `.git/HEAD.lock` older than 10s (upstream
+/// clearStaleLock): a lock that old has no live holder. Best-effort.
+fn clear_stale_git_locks(root: &Path) {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(10);
+    for name in ["index.lock", "HEAD.lock"] {
+        let p = root.join(".git").join(name);
+        let old = fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE);
+        if old {
+            let _ = fs::remove_file(&p);
+        }
+    }
+}
+
+/// Crash-tail files kept under `<hive>/crashes/` (newest wins).
+const MAX_CRASH_LOGS: usize = 50;
+
+/// Write `bytes` to a NEW file readable by the owner only (0600 on unix; on
+/// Windows the default ACL of the user's profile already confines it).
+fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(bytes)
+}
+
+/// Keep the newest `keep` `*.log` files in `dir` — names begin with a sortable
+/// timestamp, so a lexicographic sort is chronological. Best-effort.
+fn prune_crash_logs(dir: &Path, keep: usize) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut logs: Vec<String> = rd
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".log"))
+        .collect();
+    logs.sort();
+    let excess = logs.len().saturating_sub(keep);
+    for stale in logs.into_iter().take(excess) {
+        let _ = fs::remove_file(dir.join(stale));
+    }
+}
 
 /// Delete archived files in `dir` beyond the newest `keep` or older than
 /// `max_age` (by mtime). Subdirectories and `bad-*` quarantined messages are
@@ -1003,7 +1069,14 @@ pub struct Hive {
     /// `lifetime_usd`).
     usage_fold: std::sync::Mutex<UsageFold>,
     cost_totals: std::sync::Mutex<crate::cost_lifetime::CostLedgerTotals>,
+    /// Renderer event sink (upstream's `emit` ctor arg) — set once at app
+    /// setup. Returns true only when the event actually reached a live window;
+    /// an unset sink counts as "renderer unavailable".
+    emitter: std::sync::OnceLock<EventEmitter>,
 }
+
+/// `(channel, payload) → delivered?` — see `Hive::set_emitter`.
+type EventEmitter = Box<dyn Fn(&str, &Value) -> bool + Send + Sync>;
 
 /// Where the user's own Hermes data (config.yaml, .env) lives — the same
 /// resolution Hermes uses (`HERMES_HOME`, else the platform default:
@@ -1078,6 +1151,7 @@ impl Hive {
             root: root.to_path_buf(),
             usage_fold: Default::default(),
             cost_totals: Default::default(),
+            emitter: std::sync::OnceLock::new(),
         };
         hive.ensure_gitignore_lines(&root.join(".gitignore"), HIVE_GITIGNORE_LINES);
         // Agents created before a provider's private home was on the ignore
@@ -1091,6 +1165,31 @@ impl Hive {
         }
         hive.commit("hive: init");
         Ok(hive)
+    }
+
+    /// Install the renderer event sink (once; later calls are ignored). The
+    /// closure must return whether the event reached a live window.
+    pub fn set_emitter(&self, f: impl Fn(&str, &Value) -> bool + Send + Sync + 'static) {
+        let _ = self.emitter.set(Box::new(f));
+    }
+
+    fn emit_event(&self, channel: &str, payload: &Value) -> bool {
+        self.emitter.get().is_some_and(|f| f(channel, payload))
+    }
+
+    /// Deliberately replace the generated hive docs (PROTOCOL.md, COMMANDS.md)
+    /// with the bundled versions — upstream refreshGeneratedDocs(), called once
+    /// at bootstrap so protocol changes reach hives created by an older build.
+    /// `ensure` only seeds missing files; runtime paths never rewrite them.
+    /// Skips a write whose content is already identical.
+    pub fn refresh_generated_docs(&self) {
+        for (name, body) in [("PROTOCOL.md", PROTOCOL_MD.to_string()), ("COMMANDS.md", commands_md())] {
+            let p = self.root.join(name);
+            if fs::read_to_string(&p).ok().as_deref() == Some(body.as_str()) {
+                continue;
+            }
+            let _ = fs::write(&p, body);
+        }
     }
 
     fn seed(path: &Path, content: &str) -> Result<()> {
@@ -1302,10 +1401,14 @@ impl Hive {
 
     /// writeFleetSnapshot — the live fleet.json god reads (gitignored).
     pub fn write_fleet_snapshot(&self, snapshot: &serde_json::Value) -> Result<()> {
-        fs::write(
-            self.root.join("fleet.json"),
-            serde_json::to_string_pretty(snapshot)?,
-        )?;
+        // `hooks` — the hook endpoint's health (upstream writes
+        // `{ts, agents, hooks: hookServer.health()}`), so a dead control plane
+        // is visible in the file god reads. A caller-supplied value wins.
+        let mut doc = snapshot.clone();
+        if let Some(o) = doc.as_object_mut() {
+            o.entry("hooks").or_insert_with(crate::hooks::health);
+        }
+        fs::write(self.root.join("fleet.json"), serde_json::to_string_pretty(&doc)?)?;
         Ok(())
     }
 
@@ -1436,25 +1539,38 @@ impl Hive {
     }
 
     /// Agent's working-dir "work" clock — git markers (.git/index, logs/HEAD,
-    /// FETCH_HEAD, packed-refs) like index.ts lastWorkAt. None when the caller
-    /// can't tell (no .git), so the breaker's work arm skips it.
+    /// FETCH_HEAD, packed-refs) like index.ts lastWorkAt, plus the cwd's OWN
+    /// mtime — the whole signal when cwd is not a git checkout (a file added or
+    /// removed at its top level). None when the caller can't tell (empty or
+    /// missing cwd), so the breaker's work arm skips it.
     pub fn last_work_at(cwd: &str) -> Option<u64> {
-        let g = Path::new(cwd).join(".git");
-        if !g.exists() {
+        if cwd.is_empty() {
             return None;
         }
-        let t = [
-            g.join("index"),
-            g.join("logs").join("HEAD"),
-            g.join("FETCH_HEAD"),
-            g.join("packed-refs"),
-            g.join("refs").join("remotes"),
-        ]
-        .iter()
-        .map(newest_mtime)
-        .max()
-        .unwrap_or(0);
-        Some(t)
+        let own = fs::metadata(cwd)
+            .ok()?
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let g = Path::new(cwd).join(".git");
+        let git = if g.exists() {
+            [
+                g.join("index"),
+                g.join("logs").join("HEAD"),
+                g.join("FETCH_HEAD"),
+                g.join("packed-refs"),
+                g.join("refs").join("remotes"),
+            ]
+            .iter()
+            .map(newest_mtime)
+            .max()
+            .unwrap_or(0)
+        } else {
+            0
+        };
+        Some(own.max(git))
     }
 
     /// Cumulative usage for one agent, folded from cost-ledger.jsonl each beat —
@@ -1469,7 +1585,7 @@ impl Hive {
         // Incremental: only bytes appended since the last call are parsed
         // (this runs per agent per beat — the whole-file rescan it replaces
         // grew with the ledger).
-        let mut fold = self.usage_fold.lock().unwrap_or_else(|e| e.into_inner());
+        let mut fold = self.usage_fold.lock_safe();
         fold.refresh(&self.root.join("cost-ledger.jsonl"))?;
         fold.sample(agent_id)
     }
@@ -1478,7 +1594,7 @@ impl Hive {
     /// incrementally and shared by every caller (fleet rows, cost_lifetime).
     /// None until the ledger has been read once (cold ≠ zero spend).
     pub fn lifetime_usd(&self) -> Option<std::collections::HashMap<String, f64>> {
-        let mut t = self.cost_totals.lock().unwrap_or_else(|e| e.into_inner());
+        let mut t = self.cost_totals.lock_safe();
         t.refresh_fully(&self.cost_ledger_path());
         t.ready().then(|| t.all())
     }
@@ -1622,12 +1738,33 @@ impl Hive {
     ///
     /// `mcp_servers` is the consent-filtered catalog merge (mcp.rs
     /// build_default_mcp_servers) — written verbatim under `mcpServers` when
-    /// non-empty. Omitted vs upstream: the sandbox/permissions block
-    /// (writableDirs — add when the sandbox story is designed for this backend).
+    /// non-empty.
+    ///
+    /// Sandbox (upstream e42b0e2f — auto mode keeps the OS sandbox on):
+    /// `sandbox.enabled` with `filesystem.allowWrite` for the writable dirs,
+    /// plus `permissions.additionalDirectories` for the same set (two layers:
+    /// the sandbox governs Bash children, additionalDirectories the Edit/Write
+    /// tools). Upstream writes it unconditionally, but on native Windows
+    /// claude has no sandbox and prints "Sandbox disabled ... Commands will run
+    /// WITHOUT sandboxing" on every spawn, so both blocks are skipped there
+    /// (`apply_sandbox`; WSL runs the Linux build and keeps them).
+    /// `hook_settings` covers the hive root — which contains the agent
+    /// dir, board and research deliverables; `hook_settings_with_dirs` adds
+    /// more (the shared palace).
     pub fn hook_settings(
         &self,
         shim_command: &str,
         mcp_servers: &std::collections::BTreeMap<String, crate::mcp::McpServerSpec>,
+    ) -> serde_json::Value {
+        self.hook_settings_with_dirs(shim_command, mcp_servers, &[])
+    }
+
+    /// `hook_settings` plus extra writable dirs (agent dir, MemPalace path).
+    pub fn hook_settings_with_dirs(
+        &self,
+        shim_command: &str,
+        mcp_servers: &std::collections::BTreeMap<String, crate::mcp::McpServerSpec>,
+        extra_writable_dirs: &[String],
     ) -> serde_json::Value {
         let entry = |matcher: Option<&str>| {
             let mut e = serde_json::json!({
@@ -1664,6 +1801,17 @@ impl Hive {
         if !mcp_servers.is_empty() {
             out["mcpServers"] = serde_json::to_value(mcp_servers).unwrap_or_default();
         }
+        // sandboxWritableDirs: the hive root + extras, de-duplicated.
+        let mut dirs: Vec<String> = Vec::new();
+        for d in std::iter::once(self.root.display().to_string())
+            .chain(extra_writable_dirs.iter().cloned())
+            .filter(|d| !d.is_empty())
+        {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        apply_sandbox(&mut out, &dirs, cfg!(windows));
         out
     }
 
@@ -1703,7 +1851,11 @@ impl Hive {
         // to ONE second, which timed every shim call out under concurrent
         // spawns upstream (#v0.3.7 bug); 30s clears cold-start by two orders.
         let mut config = fs::read_to_string(user_home.join("config.toml")).unwrap_or_default();
-        let command = hook_bin.display().to_string();
+        // Quoted like the claude/gemini/agy commands: a user-selected path
+        // with a space would otherwise split at the first space (exit 127 on
+        // every hook). Encoded as a TOML basic string below (JSON escaping is
+        // compatible), so the embedded quotes survive.
+        let command = format!("\"{}\"", hook_bin.display());
         config.push_str("\n# --- agent-office lifecycle hooks (auto-generated; do not edit) ---\n");
         for ev in [
             "PreToolUse",
@@ -2076,6 +2228,23 @@ impl Hive {
             }
             if !source.exists() && target.exists() {
                 let _ = link_dir(&target, &source);
+            }
+        }
+    }
+
+    /// Bootstrap re-exposure (upstream ensureHive, 5196c79a): exposure used to
+    /// happen only at spawn, so a hive whose codex workers predate it — or whose
+    /// rollout dirs were re-created since — stayed invisible to external usage
+    /// scanners until each was respawned. Re-expose every existing codex agent
+    /// that already has a private `.codex` home. Idempotent and best-effort.
+    pub fn reexpose_codex_sessions(&self) {
+        for a in self.registry() {
+            if a.provider != "codex" || a.id.is_empty() {
+                continue;
+            }
+            let dir = self.agent_dir(&a.id);
+            if dir.join(".codex").exists() {
+                self.expose_codex_data(&dir, &a.id);
             }
         }
     }
@@ -2702,21 +2871,48 @@ impl Hive {
             // synthesized Stop can only advance the cursor) get the full
             // message as a terminal work-order handoff INSTEAD of inbox
             // mail — the renderer types it into the REPL. Upstream
-            // routeOnce arms 1c/1d (hive.ts:1740-1763); the port surfaces it
-            // through Delivery.handoff for the event emit in lib.rs. God is
-            // exempt (the bounce target).
+            // routeOnce arms 1c/1d (hive.ts:1740-1763); emitted in-process
+            // through the Hive's event sink (and echoed on Delivery.handoff).
+            // God is exempt (the bounce target).
             let provider = agent.map(|a| a.provider.as_str()).unwrap_or("");
             let hookless = !crate::misc::can_receive_inbox(provider);
             let proxy_terminal = crate::misc::inbox_delivery_terminal(provider);
             let handoff = t != &god_id && (hookless || proxy_terminal);
             if handoff {
+                // The renderer types the work order into the REPL. If the
+                // event cannot be delivered (no live window) the mail would
+                // silently cease to exist — bounce it to god instead of
+                // counting it delivered (upstream emitTerminalHandoff).
+                let payload = serde_json::json!({
+                    "id": msg.id,
+                    "from": msg.from,
+                    "to": t,
+                    "act": msg.act,
+                    "subject": msg.subject,
+                    "body": msg.body,
+                    "requiresReply": msg.requires_reply,
+                    "createdAt": msg.created_at,
+                });
+                let ok = self.emit_event("hive:terminalHandoff", &payload);
                 let _ = self.log(&serde_json::json!({
                     "kind": "terminal-handoff", "from": msg.from, "to": t,
                     "act": msg.act, "subject": msg.subject, "id": msg.id,
-                    "delivered": true
+                    "delivered": ok
                 }));
-                handoffs.insert(t.clone());
-                delivered.push(t.clone());
+                if ok {
+                    handoffs.insert(t.clone());
+                    delivered.push(t.clone());
+                } else {
+                    self.bounce_to_god(
+                        msg,
+                        &god_id,
+                        &format!(
+                            "[terminal handoff failed — \"{t}\" uses {}; renderer unavailable] {}",
+                            if provider.is_empty() { "custom" } else { provider },
+                            msg.subject
+                        ),
+                    );
+                }
                 continue;
             }
             if self.deliver_to(msg, t) {
@@ -3189,6 +3385,60 @@ impl Hive {
         Ok(())
     }
 
+    /// Record an agent's ABNORMAL process exit so a death has a durable cause
+    /// (upstream recordAgentExit): log.jsonl gets the structured, non-sensitive
+    /// fields (exit code, signal, tail path); the raw PTY tail — which can carry
+    /// tokens, paths and prompt fragments — goes to the gitignored
+    /// `<root>/crashes/<ts>-<agent>.log` (0600 on unix, newest 50 kept). A clean
+    /// exit records nothing; a diagnostic must never break teardown.
+    pub fn record_agent_exit(
+        &self,
+        agent_id: &str,
+        exit_code: Option<u32>,
+        signal: Option<&str>,
+        tail: &str,
+        command: &str,
+    ) {
+        let abnormal = signal.is_some_and(|s| !s.is_empty()) || exit_code.is_some_and(|c| c != 0);
+        if !abnormal {
+            return;
+        }
+        let mut tail_path: Option<String> = None;
+        if !tail.is_empty() {
+            let dir = self.root.join("crashes");
+            if fs::create_dir_all(&dir).is_ok() {
+                let safe_id: String = agent_id
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
+                    .collect();
+                let p = dir.join(format!("{}-{safe_id}.log", stamp()));
+                let mut text = format!("agent:    {agent_id}\nexitCode: {}\nsignal:   {}\n",
+                    exit_code.map(|c| c.to_string()).unwrap_or_else(|| "undefined".into()),
+                    signal.unwrap_or("undefined"));
+                if !command.is_empty() {
+                    text.push_str(&format!("command:  {command}\n"));
+                }
+                text.push_str(&format!(
+                    "captured: {}\n--- last {} bytes of pty output ---\n{tail}",
+                    Utc::now().to_rfc3339(),
+                    tail.len()
+                ));
+                if write_private_file(&p, text.as_bytes()).is_ok() {
+                    tail_path = Some(p.display().to_string());
+                    prune_crash_logs(&dir, MAX_CRASH_LOGS);
+                }
+            }
+        }
+        let _ = self.log(&serde_json::json!({
+            "kind": "agent-exit",
+            "agentId": agent_id,
+            "exitCode": exit_code,
+            "signal": signal,
+            "abnormal": true,
+            "tailPath": tail_path,
+        }));
+    }
+
     /// Bounded retention for the append-forever files (called at startup and
     /// at most every few minutes from the router loop — never per tick):
     /// per-agent `inbox/.done` + `outbox/.sent` archives are pruned to the
@@ -3221,7 +3471,34 @@ impl Hive {
         let _ = self.try_commit(message);
     }
 
+    /// Upstream commit(): up to 5 attempts; a stale `.git/index.lock` /
+    /// `HEAD.lock` (left by a killed git child — nobody holds it once it is
+    /// older than 10s) is cleared before each attempt, and a lock-contention
+    /// failure backs off 50ms*(attempt+1) and retries. Giving up is LOGGED —
+    /// a silent give-up once lost 17 hours of commits while the hive kept
+    /// reporting messages as routed.
     fn try_commit(&self, message: &str) -> Result<()> {
+        let mut last: Option<anyhow::Error> = None;
+        for attempt in 0..5u64 {
+            clear_stale_git_locks(&self.root);
+            match self.try_commit_once(message) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let locked = format!("{e:#}").to_lowercase().contains("lock");
+                    if !locked {
+                        log::warn!("[hive] commit gave up after {} attempts: {e:#}", attempt + 1);
+                        return Err(e);
+                    }
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1)));
+                }
+            }
+        }
+        log::warn!("[hive] commit gave up after 5 attempts");
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("commit gave up")))
+    }
+
+    fn try_commit_once(&self, message: &str) -> Result<()> {
         let repo = match git2::Repository::open(&self.root) {
             Ok(r) => r,
             Err(_) => git2::Repository::init(&self.root).context("git init")?,
@@ -3367,6 +3644,16 @@ mod tests {
             "codex floors timeout 0 to 1s - never emit it"
         );
         assert!(cfg.contains("hive-hook.exe"));
+        // The command is quoted (a spaced path must not split): TOML basic
+        // string `"\"<path>\""` — the value parses back to a quoted path.
+        // (Last match: the seeded user config.toml may carry its own.)
+        let line = cfg
+            .lines()
+            .filter(|l| l.starts_with("command = "))
+            .last()
+            .expect("command line");
+        let parsed: String = serde_json::from_str(line.trim_start_matches("command = ")).unwrap();
+        assert!(parsed.starts_with('"') && parsed.ends_with("hive-hook.exe\""), "{parsed}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4022,5 +4309,319 @@ mod hardening_tests {
         fs::create_dir_all(dst.join("a.txt")).unwrap();
         assert!(copy_dir(&src, &dst).is_err());
         fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// Behaviours ported from upstream fixes (crash trace, stale git locks, doc
+/// refresh, last-work clock, terminal handoff bounce, sandbox settings).
+#[cfg(test)]
+mod upstream_gap_tests {
+    use super::*;
+
+    fn tmp() -> (Hive, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oa-gap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (Hive::ensure(&dir.join("hive")).unwrap(), dir)
+    }
+
+    fn reg(hive: &Hive, id: &str, god: bool, provider: &str, dir: &Path) {
+        hive.register_agent(&RegistryEntry {
+            id: id.into(),
+            name: id.into(),
+            provider: provider.into(),
+            role: "x".into(),
+            cwd: dir.join(id).display().to_string(),
+            is_god: god,
+            status: "idle".into(),
+            created_at: Utc::now().to_rfc3339(),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    fn log_lines(hive: &Hive) -> Vec<Value> {
+        std::fs::read_to_string(hive.root.join("log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    #[test]
+    fn abnormal_exit_logs_structured_fields_and_dumps_the_tail_to_crashes() {
+        let (hive, dir) = tmp();
+        // A clean exit records NOTHING.
+        hive.record_agent_exit("a1", Some(0), None, "bye", "claude");
+        assert!(log_lines(&hive).iter().all(|e| e["kind"] != "agent-exit"));
+        assert!(!hive.root.join("crashes").exists());
+
+        // A signal death with exit code 0 is abnormal; the secret reaches the
+        // dump but NEVER log.jsonl.
+        hive.record_agent_exit(
+            "a/1",
+            Some(0),
+            Some("Illegal instruction"),
+            "panic! sk-ant-secretsecret1234567890",
+            "claude --x",
+        );
+        let entry = log_lines(&hive)
+            .into_iter()
+            .find(|e| e["kind"] == "agent-exit")
+            .unwrap();
+        assert_eq!(entry["agentId"], "a/1");
+        assert_eq!(entry["signal"], "Illegal instruction");
+        assert_eq!(entry["abnormal"], true);
+        let tail_path = PathBuf::from(entry["tailPath"].as_str().unwrap());
+        assert!(tail_path.starts_with(hive.root.join("crashes")));
+        assert!(tail_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("-a_1.log"));
+        let dump = std::fs::read_to_string(&tail_path).unwrap();
+        assert!(dump.contains("sk-ant-secretsecret1234567890") && dump.contains("command:  claude --x"));
+        assert!(!std::fs::read_to_string(hive.root.join("log.jsonl"))
+            .unwrap()
+            .contains("secretsecret"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&tail_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        // A non-zero code with no tail still logs (tailPath null).
+        hive.record_agent_exit("a2", Some(3), None, "", "");
+        assert!(log_lines(&hive)
+            .iter()
+            .any(|e| e["kind"] == "agent-exit" && e["tailPath"].is_null()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn crash_dir_keeps_only_the_newest_fifty() {
+        let dir = std::env::temp_dir().join(format!("oa-crashprune-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..120 {
+            std::fs::write(dir.join(format!("2026-01-01T00-00-{i:03}Z-a.log")), "x").unwrap();
+        }
+        std::fs::write(dir.join("keep.txt"), "not a log").unwrap();
+        prune_crash_logs(&dir, MAX_CRASH_LOGS);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".log"))
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 50);
+        assert!(left[0].contains("-070Z") && left[49].contains("-119Z"));
+        assert!(dir.join("keep.txt").exists());
+        prune_crash_logs(&dir.join("missing"), 5); // no-op, no panic
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stale_git_locks_are_cleared_but_fresh_ones_survive() {
+        let (hive, dir) = tmp();
+        let git = hive.root.join(".git");
+        let (index, head) = (git.join("index.lock"), git.join("HEAD.lock"));
+        std::fs::write(&index, "").unwrap();
+        std::fs::write(&head, "").unwrap();
+        // HEAD.lock is old (a killed git child), index.lock is fresh (held).
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let age = |p: &Path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(old)
+                .unwrap()
+        };
+        age(&head);
+        clear_stale_git_locks(&hive.root);
+        assert!(!head.exists(), "stale HEAD.lock removed");
+        assert!(index.exists(), "a fresh lock may be live");
+        age(&index);
+        clear_stale_git_locks(&hive.root);
+        assert!(!index.exists());
+        // A commit with a stale lock in the way now succeeds.
+        std::fs::write(&index, "").unwrap();
+        age(&index);
+        std::fs::write(hive.root.join("board.md"), "# changed\n").unwrap();
+        hive.try_commit("test commit")
+            .expect("stale lock must not block commits");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn refresh_generated_docs_replaces_stale_copies_only_when_asked() {
+        let (hive, dir) = tmp();
+        std::fs::write(hive.root.join("PROTOCOL.md"), "old protocol").unwrap();
+        std::fs::write(hive.root.join("COMMANDS.md"), "old commands").unwrap();
+        // ensure() (the runtime path) never rewrites an existing doc...
+        let again = Hive::ensure(&hive.root).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(hive.root.join("PROTOCOL.md")).unwrap(),
+            "old protocol"
+        );
+        // ...the explicit bootstrap refresh does.
+        again.refresh_generated_docs();
+        assert_eq!(
+            std::fs::read_to_string(hive.root.join("PROTOCOL.md")).unwrap(),
+            PROTOCOL_MD
+        );
+        assert!(std::fs::read_to_string(hive.root.join("COMMANDS.md"))
+            .unwrap()
+            .contains("# Claude Code commands"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn last_work_at_falls_back_to_the_cwds_own_mtime() {
+        let dir = std::env::temp_dir().join(format!("oa-work-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!dir.join(".git").exists());
+        let t = Hive::last_work_at(&dir.display().to_string())
+            .expect("non-git cwd still has a clock");
+        assert!(t > 0);
+        assert_eq!(Hive::last_work_at(""), None);
+        assert_eq!(
+            Hive::last_work_at(&dir.join("missing").display().to_string()),
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn terminal_handoff_bounces_to_god_when_nothing_can_receive_it() {
+        let (hive, dir) = tmp();
+        reg(&hive, "god", true, "claude", &dir);
+        reg(&hive, "kim", false, "kimi", &dir); // hookless: handoff, never an inbox
+        let msg = |subject: &str| {
+            let mut m = Message::new("god", "kim", "request", subject, "do it");
+            m.conversation = "c".into();
+            m
+        };
+
+        // No renderer sink (or no live window): bounced, NOT counted delivered.
+        let d = hive.send_routed(&msg("one")).unwrap();
+        assert!(d[0].bounced && d[0].handoff.is_none());
+        let god_inbox = hive.inbox("god").unwrap();
+        assert!(
+            god_inbox.iter().any(|m| m.subject.starts_with("[terminal handoff failed")
+                && m.subject.contains("\"kim\" uses kimi")),
+            "{god_inbox:?}"
+        );
+        assert!(log_lines(&hive)
+            .iter()
+            .any(|e| e["kind"] == "terminal-handoff" && e["delivered"] == false));
+
+        // With a sink that reaches a window the handoff is delivered.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let seen2 = seen.clone();
+        hive.set_emitter(move |ch, payload| {
+            assert_eq!(ch, "hive:terminalHandoff");
+            seen2.lock_safe().push(payload.clone());
+            true
+        });
+        let before = hive.inbox("god").unwrap().len();
+        let d = hive.send_routed(&msg("two")).unwrap();
+        assert!(!d[0].bounced && d[0].handoff.is_some());
+        assert_eq!(hive.inbox("god").unwrap().len(), before, "no second bounce");
+        let got = seen.lock_safe();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["subject"], "two");
+        assert_eq!(got[0]["to"], "kim");
+        drop(got);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claude_settings_enable_the_sandbox_for_the_hive_root() {
+        let (hive, dir) = tmp();
+        let root = hive.root.display().to_string();
+        let s = hive.hook_settings_with_dirs(
+            "\"shim\"",
+            &Default::default(),
+            &["D:/palace".to_string(), root.clone(), String::new()],
+        );
+        let plain = hive.hook_settings("\"shim\"", &Default::default());
+        if cfg!(windows) {
+            // native Windows: no sandbox block, no additionalDirectories mirror
+            for v in [&s, &plain] {
+                assert!(v.get("sandbox").is_none() && v.get("permissions").is_none());
+            }
+        } else {
+            assert_eq!(s["sandbox"]["enabled"], true);
+            assert_eq!(
+                s["sandbox"]["filesystem"]["allowWrite"],
+                serde_json::json!([root, "D:/palace"])
+            );
+            assert_eq!(
+                s["permissions"]["additionalDirectories"],
+                s["sandbox"]["filesystem"]["allowWrite"]
+            );
+            // The plain entry point covers the hive root on its own.
+            assert_eq!(
+                plain["sandbox"]["filesystem"]["allowWrite"],
+                serde_json::json!([root])
+            );
+        }
+        // The rest of the settings are platform-independent.
+        assert_eq!(s["theme"], "auto");
+        assert!(s["hooks"]["Stop"].is_array());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_sandbox_is_skipped_on_native_windows_only() {
+        let dirs = vec!["/hive".to_string(), "/palace".to_string()];
+        let mut win = serde_json::json!({ "theme": "auto" });
+        apply_sandbox(&mut win, &dirs, true);
+        assert_eq!(win, serde_json::json!({ "theme": "auto" }));
+        let mut other = serde_json::json!({ "theme": "auto" });
+        apply_sandbox(&mut other, &dirs, false);
+        assert_eq!(other["sandbox"]["enabled"], true);
+        assert_eq!(other["sandbox"]["filesystem"]["allowWrite"], serde_json::json!(dirs));
+        assert_eq!(other["permissions"]["additionalDirectories"], serde_json::json!(dirs));
+        assert_eq!(other["theme"], "auto");
+        // nothing writable -> nothing written, on any platform
+        let mut empty = serde_json::json!({});
+        apply_sandbox(&mut empty, &[], false);
+        assert_eq!(empty, serde_json::json!({}));
+    }
+
+    #[test]
+    fn fleet_snapshot_carries_hook_health() {
+        let (hive, dir) = tmp();
+        let read = |h: &Hive| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(h.root.join("fleet.json")).unwrap())
+                .unwrap()
+        };
+        hive.write_fleet_snapshot(&serde_json::json!({ "ts": 1, "agents": [] }))
+            .unwrap();
+        let fleet = read(&hive);
+        for k in ["path", "listening", "since", "lastError", "attempts", "orphans"] {
+            assert!(fleet["hooks"].get(k).is_some(), "hooks.{k} missing: {fleet}");
+        }
+        // A caller-supplied value wins.
+        hive.write_fleet_snapshot(&serde_json::json!({ "ts": 1, "agents": [], "hooks": { "x": 1 } }))
+            .unwrap();
+        assert_eq!(read(&hive)["hooks"], serde_json::json!({ "x": 1 }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reexpose_skips_non_codex_agents_and_codex_agents_without_a_private_home() {
+        let (hive, dir) = tmp();
+        reg(&hive, "w1", false, "claude", &dir);
+        reg(&hive, "w2", false, "codex", &dir); // no agents/w2/.codex yet
+        // Neither may create anything (least of all under the real ~/.codex).
+        hive.reexpose_codex_sessions();
+        assert!(!hive.agent_dir("w2").join(".codex").exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

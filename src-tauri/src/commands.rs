@@ -1,6 +1,7 @@
 //! Tauri commands — the IPC surface replacing Electron's ipcMain.handle.
 //! Frontend calls these via `invoke()`; async work emits events back.
 
+use crate::lock_ext::LockExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -200,26 +201,26 @@ fn stage_hook_bin(harness_home: &PathBuf) -> Option<PathBuf> {
 impl AppState {
     /// `ptyForAgent` (index.ts:1107) — the PTY id owning an agent id, if live.
     pub fn pty_for_agent(&self, agent_id: &str) -> Option<String> {
-        self.agent_to_pty.lock().unwrap().get(agent_id).cloned()
+        self.agent_to_pty.lock_safe().get(agent_id).cloned()
     }
 
     /// `ptyToAgent.get` (index.ts) — the agent id owning a PTY id, if known.
     pub fn agent_for_pty(&self, pty_id: &str) -> Option<String> {
-        self.pty_to_agent.lock().unwrap().get(pty_id).cloned()
+        self.pty_to_agent.lock_safe().get(pty_id).cloned()
     }
 
     /// Live AGENT ids — the value set of `pty_to_agent`. All "is this agent
     /// live" checks (roster, closing-time, breaker, worker registry) are in
     /// the agent namespace; `st.ptys` keys carry the `pty-` renderer prefix.
     pub fn live_agent_ids(&self) -> std::collections::HashSet<String> {
-        self.pty_to_agent.lock().unwrap().values().cloned().collect()
+        self.pty_to_agent.lock_safe().values().cloned().collect()
     }
 
     /// Resolve EITHER namespace to a PTY id — renderer IPC carries pty ids
     /// (`pty:kill`, `pty:write`), internal callers (worker reaps, voice kill)
     /// carry agent ids.
     pub fn resolve_pty_id(&self, id: &str) -> Option<String> {
-        if self.ptys.lock().unwrap().contains_key(id) {
+        if self.ptys.lock_safe().contains_key(id) {
             Some(id.to_string())
         } else {
             self.pty_for_agent(id)
@@ -229,21 +230,19 @@ impl AppState {
     /// Record the spawn-time pty<->agent mapping (upstream `ptyToAgent.set`).
     pub fn map_pty(&self, pty_id: &str, agent_id: &str) {
         self.pty_to_agent
-            .lock()
-            .unwrap()
+            .lock_safe()
             .insert(pty_id.to_string(), agent_id.to_string());
         self.agent_to_pty
-            .lock()
-            .unwrap()
+            .lock_safe()
             .insert(agent_id.to_string(), pty_id.to_string());
     }
 
     /// Drop the mapping for a dead/removed PTY; returns the agent id it
     /// owned (None for unmapped PTYs — installer rails and legacy spawns).
     pub fn unmap_pty(&self, pty_id: &str) -> Option<String> {
-        let agent = self.pty_to_agent.lock().unwrap().remove(pty_id);
+        let agent = self.pty_to_agent.lock_safe().remove(pty_id);
         if let Some(a) = &agent {
-            self.agent_to_pty.lock().unwrap().remove(a);
+            self.agent_to_pty.lock_safe().remove(a);
         }
         agent
     }
@@ -441,6 +440,11 @@ pub struct PtySpawnResult {
     /// silently fielding an agent that can't find its browser tools.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_shardx: Option<bool>,
+    /// The agent spawned but runs degraded — e.g. its proxy bridge never
+    /// bound, so it has no live status / cost / inbox wake. Human-readable
+    /// reason (upstream spawn result `degraded`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
 }
 
 impl PtySpawnResult {
@@ -456,6 +460,7 @@ impl PtySpawnResult {
             worktree_path: None,
             needs_key: None,
             needs_shardx: None,
+            degraded: None,
         }
     }
 }
@@ -496,6 +501,9 @@ pub(crate) struct SpawnPlan {
     /// paths (PENDING_INSTALLS relaunch, worker/voice/respawn) where nobody
     /// consumes the result's seedPrompt field.
     pub auto_type_seed: bool,
+    /// Label of the window that asked for this spawn — the only window its PTY
+    /// output is routed to (floors.rs). `None` = main (hive/god/voice spawns).
+    pub owner: Option<String>,
 }
 
 /// What spawn_inner produced — translated into the wire shape by
@@ -520,6 +528,12 @@ pub(crate) struct SpawnOutcome {
     pub needs_key: Option<String>,
     /// ShardX armed but its setup gates weren't met — PtySpawnResult.needsShardx.
     pub needs_shardx: bool,
+    /// Why the agent runs degraded (the proxy bridge could not bind, so it
+    /// spawned without hive events) — PtySpawnResult.degraded.
+    pub degraded: Option<String>,
+    /// Set when this outcome is the missing-CLI INSTALLER rail (the install
+    /// rung that ran), not an agent: analytics must not count it as a spawn.
+    pub install_rung: Option<&'static str>,
 }
 
 impl SpawnOutcome {
@@ -535,6 +549,7 @@ impl SpawnOutcome {
             worktree_path: self.worktree_path,
             needs_key: self.needs_key,
             needs_shardx: self.needs_shardx.then_some(true),
+            degraded: self.degraded,
         }
     }
 }
@@ -553,6 +568,36 @@ pub(crate) struct PendingInstall {
 /// ladder can never loop). Keyed by PTY id.
 pub(crate) static PENDING_INSTALLS: std::sync::LazyLock<Mutex<HashMap<String, PendingInstall>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Install PTYs whose relaunch is armed, keyed by PTY id -> (provider, rung):
+/// feeds the activation-funnel `agent_install_finished` event. The relaunch
+/// spawn removes its entry (and reports `agent_launched`/`install_failed`);
+/// an entry still present at teardown means the installer ended WITHOUT a
+/// relaunch, i.e. `install_failed`.
+static INSTALL_RUNGS: std::sync::LazyLock<Mutex<HashMap<String, (String, &'static str)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Map a spawn failure string to the closed `agent_spawn_failed.reason` enum
+/// (analytics.ts spawnFailReason). The raw message never leaves the machine —
+/// only the enum value does.
+fn spawn_fail_reason(error: &str) -> &'static str {
+    if error.starts_with("cwd does not exist") {
+        "cwd_missing"
+    } else if error.contains("already exists") {
+        "already_running"
+    } else {
+        "spawn_error"
+    }
+}
+
+/// One fixed-enum funnel event (allowlisted props only).
+fn track_funnel<R: tauri::Runtime>(app: &AppHandle<R>, event: &str, pairs: &[(&str, &str)]) {
+    let mut p = serde_json::Map::new();
+    for (k, v) in pairs {
+        p.insert((*k).into(), serde_json::json!(v));
+    }
+    crate::analytics::global().track(app, event, &p);
+}
 
 /// Quote one argv token so `tokenize_command` round-trips it losslessly —
 /// whitespace, empties and embedded quotes (`--settings {"a":1}`) all
@@ -704,6 +749,7 @@ pub(crate) fn translate_spawn_request(
             // Renderer-facing spawns hand the seed back as seedPrompt — the
             // verbatim useHive flow types it through the write chain.
             auto_type_seed: false,
+            owner: None,
         },
     ))
 }
@@ -714,19 +760,37 @@ pub(crate) fn translate_spawn_request(
 /// `{ok:false, error}` — the renderer's `res.ok` contract — rather than
 /// rejecting the command.
 #[tauri::command(async)]
-pub fn spawn_agent(app: AppHandle, args: PtySpawnRequest) -> PtySpawnResult {
-    spawn_agent_core(&app, args)
+pub fn spawn_agent(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    args: PtySpawnRequest,
+) -> PtySpawnResult {
+    crate::panic_guard::cmd_guard("spawn_agent", || {
+    // The invoking window owns the PTY: its output routes only back here.
+    spawn_agent_core_for(&app, args, window.label())
+    })
 }
 
-/// The command body, separated so tests can drive it through a mock runtime.
+/// The command body, separated so tests can drive it through a mock runtime
+/// (owned by `main`).
+#[cfg(test)]
 pub(crate) fn spawn_agent_core<R: tauri::Runtime>(
     app: &AppHandle<R>,
     req: PtySpawnRequest,
 ) -> PtySpawnResult {
-    let (args, plan) = match translate_spawn_request(&req) {
+    spawn_agent_core_for(app, req, crate::floors::MAIN_LABEL)
+}
+
+pub(crate) fn spawn_agent_core_for<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    req: PtySpawnRequest,
+    owner: &str,
+) -> PtySpawnResult {
+    let (args, mut plan) = match translate_spawn_request(&req) {
         Ok(t) => t,
         Err(e) => return PtySpawnResult::err(e),
     };
+    plan.owner = Some(owner.to_string());
     match spawn_inner(app.clone(), args, plan) {
         Ok(out) => out.into_result(),
         Err(e) => PtySpawnResult::err(e),
@@ -738,7 +802,12 @@ pub(crate) fn spawn_agent_core<R: tauri::Runtime>(
 /// (claude --resume <session_id>). This is the restart/restore-team path:
 /// the registry survives, only the PTY died.
 #[tauri::command(async)]
-pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String> {
+pub fn respawn_agent(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    agent_id: String,
+) -> Result<Spawned, String> {
+    crate::panic_guard::cmd_guard("respawn_agent", || {
     let st = state(&app);
     let entry = st
         .hive
@@ -798,11 +867,10 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
         cols: 120,
         rows: 30,
     };
-    // Claude resumes by session id; other providers start fresh (their resume
-    // flags differ — PORTING.md notes the preset fields for later).
-    let resume = (entry.provider == "claude")
-        .then(|| entry.session_id.clone())
-        .flatten();
+    // Every engine resumes by its recorded session id through its own preset
+    // mechanism (claude `--resume`, agy `--conversation`, Crush `--session`,
+    // `codex resume <id>`); spawn_inner starts fresh for an engine with none.
+    let resume = entry.session_id.clone().filter(|s| !s.is_empty());
     spawn_inner(
         app,
         args,
@@ -814,9 +882,11 @@ pub fn respawn_agent(app: AppHandle, agent_id: String) -> Result<Spawned, String
             // No renderer consumed this spawn's result — keep the server-side
             // seed typing the old single-shot path had.
             auto_type_seed: true,
+            owner: Some(window.label().to_string()),
         },
     )
     .map(|o| Spawned { id: o.pty_id })
+    })
 }
 
 pub(crate) fn spawn_inner<R: tauri::Runtime>(
@@ -829,12 +899,70 @@ pub(crate) fn spawn_inner<R: tauri::Runtime>(
     // proxy bridge or a half-registered PTY.
     // The bool: the agent had NO registry row before this call (a fresh hire).
     let mut claimed: Option<(String, String, bool)> = None;
+    // Activation funnel (v0.4.6): every spawn REQUEST counts once — the
+    // missing-CLI relaunch (no_auto_install) is the SAME attempt continuing.
+    let provider = args.provider.clone();
+    if !args.no_auto_install {
+        track_funnel(&app, "agent_spawn_attempted", &[("provider", &provider)]);
+    }
+    let relaunch_ctx = if args.no_auto_install {
+        plan.pty_id
+            .as_ref()
+            .and_then(|id| INSTALL_RUNGS.lock_safe().remove(id))
+    } else {
+        None
+    };
     let res = spawn_inner_impl(app.clone(), args, plan, &mut claimed);
+    match &res {
+        Ok(o) => match o.install_rung {
+            // The installer rail ran in the agent's slot. The manual rung only
+            // printed a hint: no agent will start.
+            Some("manual") => track_funnel(
+                &app,
+                "agent_spawn_failed",
+                &[("provider", &provider), ("reason", "cli_missing")],
+            ),
+            Some(rung) => {
+                INSTALL_RUNGS
+                    .lock_safe()
+                    .insert(o.pty_id.clone(), (provider.clone(), rung));
+                track_funnel(
+                    &app,
+                    "agent_install_started",
+                    &[("provider", &provider), ("rung", rung)],
+                );
+            }
+            None => {
+                track_funnel(&app, "agent_spawned", &[("provider", &provider)]);
+                if let Some((p, rung)) = &relaunch_ctx {
+                    track_funnel(
+                        &app,
+                        "agent_install_finished",
+                        &[("provider", p), ("rung", rung), ("outcome", "agent_launched")],
+                    );
+                }
+            }
+        },
+        Err(e) => {
+            track_funnel(
+                &app,
+                "agent_spawn_failed",
+                &[("provider", &provider), ("reason", spawn_fail_reason(e))],
+            );
+            if let Some((p, rung)) = &relaunch_ctx {
+                track_funnel(
+                    &app,
+                    "agent_install_finished",
+                    &[("provider", p), ("rung", rung), ("outcome", "install_failed")],
+                );
+            }
+        }
+    }
     if res.is_err() {
         if let Some((pty_id, agent_id, fresh)) = claimed {
             let st = state(&app);
             st.map_pty(&pty_id, &agent_id);
-            if let Some(mut h) = st.ptys.lock().unwrap().remove(&pty_id) {
+            if let Some(mut h) = st.ptys.lock_safe().remove(&pty_id) {
                 let _ = h.kill();
             }
             // Shared teardown: proxy bridge stop, worktree removal (guarded —
@@ -904,7 +1032,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             &uuid::Uuid::new_v4().simple().to_string()[..4]
         )
     });
-    if st.ptys.lock().unwrap().contains_key(&pty_id) {
+    // The window whose terminal this is — its output routes only there.
+    let owner = plan
+        .owner
+        .clone()
+        .unwrap_or_else(|| crate::floors::MAIN_LABEL.to_string());
+    if st.ptys.lock_safe().contains_key(&pty_id) {
         return Err(format!("pty already exists for id {pty_id}"));
     }
     // The registry/AGENT_ID namespace (upstream hive.id). A hive-less spawn
@@ -952,8 +1085,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                     // worktreePaths is keyed by PTY id upstream (opts.id) —
                     // teardown runs through the PTY namespace.
                     st.worktree_paths
-                        .lock()
-                        .unwrap()
+                        .lock_safe()
                         .insert(pty_id.clone(), (wt_path.clone(), PathBuf::from(&args.cwd)));
                     if let Err(e) = crate::git_ops::link_worktree_deps(
                         std::path::Path::new(&args.cwd),
@@ -982,8 +1114,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     let shardx_armed = shardx_capable && {
         let consented = st
             .config
-            .lock()
-            .unwrap()
+            .lock_safe()
             .mcp_defaults
             .get("shardx")
             .map(|m| m.enabled)
@@ -1057,7 +1188,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
 
     // Per-agent hive identity env (hive.ts:803) layered over the inherited env
     // minus parent-session markers (ptyEnv.ts).
-    let auto = st.config.lock().unwrap().auto_mode;
+    let auto = st.config.lock_safe().auto_mode;
     let mut agent_env = HashMap::from([
         ("AGENT_ID".to_string(), agent_id.clone()),
         ("AGENT_NAME".to_string(), args.name.clone()),
@@ -1066,6 +1197,27 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     ]);
     if auto {
         agent_env.insert("HIVE_AUTO_APPROVE".into(), "1".into());
+    } else if crate::spawn_ext::is_byok_engine(&args.provider) {
+        // pi's bundled extension only auto-approves when this is exactly "1";
+        // state the OFF posture explicitly (upstream sets '0', not unset).
+        agent_env.insert("HIVE_AUTO_APPROVE".into(), "0".into());
+    }
+    // Light/dark hint for TUIs that paint their own background (Crush and
+    // OpenCode assumed a dark terminal): the classic COLORFGBG "fg;bg"
+    // convention lipgloss/termenv fall back to when OSC 11 gets no answer.
+    // New agents pick up the current theme; running ones keep theirs.
+    let raw_cfg = st.config_store.raw_value();
+    {
+        let theme = raw_cfg
+            .get("terminalTheme")
+            .and_then(|v| v.as_str())
+            .unwrap_or("light");
+        agent_env.insert("COLORFGBG".into(), crate::spawn_ext::colorfgbg(theme).into());
+    }
+    // First-run prompt suppression per engine (Codex directory-trust gate,
+    // pi's version check / telemetry) — preset nonInteractiveEnv.
+    for (k, v) in crate::spawn_ext::non_interactive_env(&args.provider) {
+        agent_env.insert(k.into(), v.into());
     }
     if let Some(sock) = &st.sock_addr {
         agent_env.insert("HIVE_SOCK".into(), sock.clone());
@@ -1099,7 +1251,22 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // reached the agent as PROVIDER_KEY_OPENAI — a name nothing consumes.
     // Reads go through the persist-aware getter — keys a flaky CredMan dropped
     // are still found in the DPAPI file store.
-    for key in &st.config.lock().unwrap().secret_env_keys {
+    // Least privilege: for the BYOK engines a `--model <backend>/<id>` names the
+    // ONE backend whose key it needs, so only that PROVIDER_KEY_* is injected
+    // (an unknown/absent prefix falls back to every stored key, as upstream).
+    let byok_scope = if crate::spawn_ext::is_byok_engine(&args.provider) {
+        let toks = crate::misc::tokenize_command(&args.command);
+        crate::spawn_ext::byok_backend_for_model(&crate::spawn_ext::model_slug(
+            &toks,
+            args.model.as_deref(),
+        ))
+    } else {
+        None
+    };
+    for key in &st.config.lock_safe().secret_env_keys {
+        if !crate::spawn_ext::byok_key_allowed(key, byok_scope) {
+            continue;
+        }
         if let Some(v) = crate::misc::secret_get_persist(key, st.config_store.dir()) {
             match crate::misc::provider_env_names(key) {
                 Some(envs) => {
@@ -1125,10 +1292,36 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             let _ = crate::hive::copy_dir(&src, &agent_dir.join(".claude").join("skills"));
         }
     }
+    // Args every engine spawn appends AFTER the command's own argv (Codex hook
+    // trust + sandbox roots); resume args are computed later and go first.
+    let mut post_args: Vec<String> = Vec::new();
     if args.provider == "codex" {
         if let Some(bin) = &st.hook_bin {
             if let Ok(home) = st.hive.install_codex_hooks(&agent_dir, bin) {
                 agent_env.insert("CODEX_HOME".into(), home.display().to_string());
+                // Codex refuses to run hooks from a config dir without persisted
+                // "hook trust" (normally an interactive gate). hooks.json is
+                // hive-authored inside an isolated CODEX_HOME, so bypass the
+                // gate for this automated spawn — without it the hooks silently
+                // never fire.
+                post_args.push("--dangerously-bypass-hook-trust".into());
+                // Auto mode keeps codex's OS sandbox (`-s workspace-write`),
+                // which only covers cwd: the agent folder (inbox/.done,
+                // memory.md, outbox), the shared hive root and the shared
+                // MemPalace are added as extra writable roots. Harmless
+                // outside auto mode.
+                let mut dirs: Vec<String> = vec![
+                    agent_dir.display().to_string(),
+                    st.hive.root.display().to_string(),
+                ];
+                if let Some(p) = agent_env.get("MEMPALACE_PALACE_PATH").filter(|p| !p.is_empty()) {
+                    dirs.push(p.clone());
+                }
+                let mut seen = std::collections::HashSet::new();
+                for d in dirs.into_iter().filter(|d| seen.insert(d.clone())) {
+                    post_args.push("--add-dir".into());
+                    post_args.push(d);
+                }
             }
         }
         // Rollout-dir exposure: sessions/archived_sessions surface under the
@@ -1149,7 +1342,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         agent_env.insert("PYTHONIOENCODING".into(), "utf-8".into());
         if let Some(bin) = &st.hook_bin {
             let seed = {
-                let cfg = st.config.lock().unwrap();
+                let cfg = st.config.lock_safe();
                 let root = st.config_store.dir().to_path_buf();
                 let mut seed =
                     hermes_seed_plan(&cfg, &|k| crate::misc::secret_get_persist(k, &root));
@@ -1198,7 +1391,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         // URL lands here as OPENAI_BASE_URL so the agent hits DeepSeek/Ollama/
         // vLLM instead of api.openai.com (hermes reads it natively).
         let env_pair = {
-            let cfg = st.config.lock().unwrap();
+            let cfg = st.config.lock_safe();
             crate::misc::openai_base_url_env(&cfg, "hermes")
         };
         if let Some((k, v)) = env_pair {
@@ -1213,7 +1406,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // API keys already ride in via secret_env_keys above.
     if args.provider == "openclaw" {
         let (env_pair, base_url, model) = {
-            let cfg = st.config.lock().unwrap();
+            let cfg = st.config.lock_safe();
             (
                 crate::misc::openai_base_url_env(&cfg, "openclaw"),
                 cfg.provider_base_urls.get("openclaw").cloned(),
@@ -1274,6 +1467,24 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         if let Ok(home) = crate::bridges::install_opencode_plugin(&agent_dir) {
             agent_env.insert("OPENCODE_CONFIG_DIR".into(), home.display().to_string());
         }
+        // OpenCode's auto-approve + local provider live in one config-injection
+        // env var, built per spawn so `permission: allow` is GATED on floor
+        // autoMode, autoupdate is off, and a configured base URL registers the
+        // `local/<id>` model the user actually picked.
+        let base_url = st
+            .config
+            .lock_safe()
+            .provider_base_urls
+            .get("opencode")
+            .cloned();
+        let slug = crate::spawn_ext::model_slug(
+            &crate::misc::tokenize_command(&args.command),
+            args.model.as_deref(),
+        );
+        agent_env.insert(
+            "OPENCODE_CONFIG_CONTENT".into(),
+            crate::spawn_ext::opencode_config_content(auto, base_url.as_deref(), &slug),
+        );
     }
     // Proxy-tier bridges (qwen, crush): a loopback ProxyBridge tees the
     // agent's LLM traffic into the same hook payloads — Status/CostSample/
@@ -1281,12 +1492,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // user's REAL base URL — the provider's providerBaseUrls override first
     // (this is how a DeepSeek key + api.deepseek.com reach a BYOK CLI), then
     // the parent env, then OpenAI itself (upstream index.ts:2766).
+    let mut degraded: Option<String> = None;
     if args.provider == "qwen" || args.provider == "crush" {
         if let Some(sock) = &st.sock_addr {
             let upstream = st
                 .config
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .provider_base_urls
                 .get(args.provider.as_str())
                 .cloned()
@@ -1302,8 +1513,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             match bridge.clone().start() {
                 Ok(port) => {
                     st.proxy_bridges
-                        .lock()
-                        .unwrap()
+                        .lock_safe()
                         .insert(agent_id.clone(), bridge);
                     let loopback = format!("http://127.0.0.1:{port}");
                     if args.provider == "qwen" {
@@ -1311,7 +1521,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                     } else if let Ok((cfg, data)) =
                         crate::bridges::install_crush_config(&agent_dir, &loopback, true)
                     {
-                        agent_env.insert("CRUSH_GLOBAL_CONFIG".into(), cfg.display().to_string());
+                        // CRUSH_GLOBAL_CONFIG is the config DIRECTORY (Crush reads
+                        // <dir>/crush.json), not the file itself.
+                        agent_env.insert(
+                            "CRUSH_GLOBAL_CONFIG".into(),
+                            cfg.parent().unwrap_or(&agent_dir).display().to_string(),
+                        );
                         agent_env.insert("CRUSH_GLOBAL_DATA".into(), data.display().to_string());
                     }
                 }
@@ -1322,6 +1537,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                     let msg = format!(
                         "proxy bridge failed to bind — agent spawns without hive events: {e}"
                     );
+                    degraded = Some(format!(
+                        "{} is running without hive events: its proxy bridge did not bind. \
+                         Live status, cost and inbox wake will not work for this session. \
+                         Respawn the agent to try again.",
+                        args.name
+                    ));
                     let _ = st.hive.log(&serde_json::json!({
                         "kind": "proxy-degraded", "agentId": agent_id,
                         "name": args.name, "provider": args.provider,
@@ -1404,29 +1625,52 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // hiveAware (claude): per-session settings.json + --append-system-prompt.
     // Others: the same prompt rides in as the typed first turn — the uniform
     // 'type-into-tui' delivery, which also covers flag/positional providers.
+    // Harness home (parent of the hive root) — where the palace, the knowledge
+    // store and `<harness>/bin/` live.
+    let harness_dir = st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf();
+    // The agent-facing KG CLI is `node <harness>/bin/kg.cjs …`; there is no
+    // bundled Node runtime in this port, so use the hive's runtime dir when one
+    // was installed there, else `node` from PATH — and when neither exists say
+    // so in the prompt instead of handing the agent a command that cannot run.
+    let bundled_node = st
+        .hive
+        .root
+        .join("bin")
+        .join("runtime")
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    let node_cmd: Option<String> = if bundled_node.is_file() {
+        Some(bundled_node.display().to_string())
+    } else {
+        pty::resolve_program("node", &path).map(|_| "node".to_string())
+    };
+    let kg_enabled = crate::kg::knowledge_config(&harness_dir).0;
+    let kg_docs = crate::kg::status(&harness_dir)["docCount"].as_u64().unwrap_or(0);
+    // KG_ROOT / KG_CLI / KG_CORE (knowledge.ts env()): the CLI + core are
+    // written to <harness>/bin and the store root rides the agent env.
+    let mut kg_cli_path: Option<String> = None;
+    if kg_enabled {
+        match crate::spawn_ext::install_kg_cli(&harness_dir.join("bin")) {
+            Ok((cli, core)) => {
+                env.insert(
+                    "KG_ROOT".into(),
+                    crate::kg::kg_root(&harness_dir).display().to_string(),
+                );
+                env.insert("KG_CLI".into(), cli.display().to_string());
+                env.insert("KG_CORE".into(), core.display().to_string());
+                kg_cli_path = Some(cli.display().to_string());
+            }
+            Err(e) => log::warn!("[kg] could not write the kg CLI: {e}"),
+        }
+    }
     let prompt_opts = crate::hive::PromptOpts {
-        semantic_memory: crate::memory_palace::instance(&st.hive.root).available(),
-        knowledge_graph: crate::kg::status(&st.hive.root)["docs"]
-            .as_u64()
-            .unwrap_or(0)
-            > 0,
-        kg_cli_path: Some(
-            st.hive
-                .root
-                .join("bin")
-                .join("kg.cjs")
-                .display()
-                .to_string(),
-        ),
-        hive_node: st
-            .hive
-            .root
-            .join("bin")
-            .join("runtime")
-            .join(if cfg!(windows) { "node.exe" } else { "node" })
-            .display()
-            .to_string(),
-        orchestrator_may_spawn: true,
+        semantic_memory: crate::memory_palace::instance(&harness_dir).available(),
+        knowledge_graph: kg_docs > 0 && kg_cli_path.is_some() && node_cmd.is_some(),
+        kg_cli_path: kg_cli_path.clone(),
+        hive_node: node_cmd.clone().unwrap_or_else(|| "node".into()),
+        // The live intake setting (config.orchestratorMaySpawn) — not a
+        // hardcoded true: the god is only told it can drop spawn requests when
+        // the operator actually opted in.
+        orchestrator_may_spawn: st.config.lock_safe().orchestrator_may_spawn,
         runtime: Some(crate::hive::RuntimeInfo {
             version: env!("CARGO_PKG_VERSION").into(),
             packaged: !cfg!(debug_assertions),
@@ -1436,6 +1680,14 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         }),
     };
     let mut injected = st.hive.injected_prompt(&entry, &prompt_opts);
+    if kg_docs > 0 && kg_cli_path.is_some() && node_cmd.is_none() {
+        injected.push_str(
+            "\n\nEnterprise knowledge: a private Knowledge Graph exists for this organisation, \
+             but Node.js was not found on your PATH, so the `kg` CLI cannot run right now. \
+             Do not guess at company-specific facts — ask the human, or install Node.js and \
+             retry `node \"$KG_CLI\" search \"<query>\"`.",
+        );
+    }
     if shardx_armed {
         injected.push_str(&format!(
             "\n\nShardX browser (armed): your dedicated launcher profile is `{shardx_name}`{}\
@@ -1451,6 +1703,39 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     let mut command_line = args.command.clone();
     let mut seed = args.seed_prompt.clone();
 
+    // Claude-only spawn guardrails (spawnAgentCore): the auto-mode posture a
+    // main-only spawn never got from the renderer, the default/role model, the
+    // Remote Control session-name prefix and --max-turns. Explicit flags in the
+    // command always win (idempotent for GUI hires).
+    if is_claude {
+        let toks: Vec<String> = crate::misc::tokenize_command(&command_line)
+            .into_iter()
+            .skip(1)
+            .collect();
+        post_args.extend(crate::spawn_ext::claude_extra_args(
+            &crate::spawn_ext::ClaudeSpawnCtx {
+                tokens: &toks,
+                auto_mode: auto,
+                cfg: &raw_cfg,
+                is_god: args.is_god,
+                role: args.role.as_deref().unwrap_or(""),
+                capabilities: &args.capabilities,
+                explicit_model: args.model.as_deref(),
+                name: &args.name,
+                id: &agent_id,
+            },
+        ));
+        // Pre-accept Claude's bypass-mode warning + folder-trust dialog — an
+        // interactive prompt the PTY can't answer would exit the agent with
+        // code 1. Only when it is needed: floor auto mode (bypassPermissions).
+        // Best-effort, never blocks the spawn.
+        if auto {
+            if let Some(home) = crate::spawn_ext::claude_home() {
+                crate::spawn_ext::ensure_claude_permissions_accepted(&home, Some(&cwd));
+            }
+        }
+    }
+
     if is_claude {
         if let (Some(_sock), Some(bin)) = (&st.sock_addr, &st.hook_bin) {
             let shim_cmd = format!("\"{}\"", bin.display());
@@ -1459,8 +1744,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             // token never lands in settings.json plaintext.
             let mcp_defaults: std::collections::HashMap<String, bool> = st
                 .config
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .mcp_defaults
                 .iter()
                 .map(|(k, v)| (k.clone(), v.enabled))
@@ -1487,7 +1771,26 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             }
             // Secrets never touch disk: refs in the file, values in the env.
             env.extend(crate::mcp::externalize_mcp_secrets(&mut mcp_servers));
-            let settings = st.hive.hook_settings(&shim_cmd, &mcp_servers);
+            // Auto mode keeps Claude's OS sandbox, so the shared MemPalace
+            // (outside the hive root when relocated) and the agent folder must
+            // be writable roots (upstream extraWritableDirs). Env value first,
+            // else the harness-home palace dir.
+            let palace = agent_env
+                .get("MEMPALACE_PALACE_PATH")
+                .filter(|p| !p.is_empty())
+                .cloned()
+                .unwrap_or_else(|| {
+                    let home = st.hive.root.parent().unwrap_or(&st.hive.root);
+                    crate::memory_palace::instance(home)
+                        .palace_path()
+                        .display()
+                        .to_string()
+                });
+            let settings = st.hive.hook_settings_with_dirs(
+                &shim_cmd,
+                &mcp_servers,
+                &[agent_dir.display().to_string(), palace],
+            );
             let settings_path = agent_dir.join("settings.json");
             let _ = std::fs::write(
                 &settings_path,
@@ -1516,9 +1819,21 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     // spec, or a machine where no rung exists, falls through to the normal
     // spawn and dies on its own missing-binary error — same as upstream.
     if !args.no_auto_install && pty::resolve_program(&first_tok, &path).is_none() {
-        let npm_available = pty::resolve_program("npm", &path).is_some();
-        if let Some((script, relaunch)) =
-            crate::misc::install_script(&args.provider, &first_tok, npm_available)
+        // npm only counts when its Node is at/above the floor: absent or older
+        // routes into the install-Node-then-npm rung (founder rule: their Node
+        // newer than ours -> leave it alone; absent or older -> install the
+        // latest stable for them).
+        let npm_available = pty::resolve_program("npm", &path).is_some()
+            && match pty::resolve_program("node", &path) {
+                Some(pty::Resolved::Exe(p)) | Some(pty::Resolved::Script(p)) => {
+                    crate::misc::node_is_usable(
+                        crate::misc::detect_node_version(&p.display().to_string()).as_deref(),
+                    )
+                }
+                None => false,
+            };
+        if let Some((script, relaunch, install_rung_name)) =
+            crate::misc::install_script_with_rung(&args.provider, &first_tok, npm_available)
         {
             // Install rail: the PTY id stays this slot's key, but the
             // ptyToAgent mapping stays UNSET for it (upstream does the same —
@@ -1531,6 +1846,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 args.cols,
                 args.rows,
                 app.clone(),
+                &owner,
             )
             .map_err(err_str)?;
             // Arm auto restart-and-continue AFTER the PTY actually spawned
@@ -1544,7 +1860,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 retry.no_auto_install = true;
                 let mut retry_plan = plan.clone();
                 retry_plan.auto_type_seed = true;
-                PENDING_INSTALLS.lock().unwrap().insert(
+                PENDING_INSTALLS.lock_safe().insert(
                     pty_id.clone(),
                     PendingInstall {
                         args: retry,
@@ -1553,7 +1869,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 );
             }
             let spawn_gen = handle.spawn_gen;
-            st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
+            st.ptys.lock_safe().insert(pty_id.clone(), handle);
             st.hive.set_status(&agent_id, "idle").map_err(err_str)?;
             // A child that already exited ran its teardown before the insert.
             pty::reap_if_already_exited(&app, &pty_id, spawn_gen);
@@ -1566,6 +1882,8 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 worktree_path: None,
                 needs_key,
                 needs_shardx,
+                degraded,
+                install_rung: Some(install_rung_name),
             });
         }
     }
@@ -1583,9 +1901,53 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         Some(ResumeRequest::LastSession) => st.hive.last_session(&agent_id),
         None => None,
     };
+    let typed_sid = matches!(plan.resume, Some(ResumeRequest::Explicit(_)));
     let mut resume_not_found = false;
     let resume_session = match sid {
-        Some(sid) if is_claude => {
+        // Non-Claude engines resume through the preset's own mechanism
+        // (agy `--conversation`, Crush/pi `--session`, Codex `codex resume
+        // <id>`); an engine with none starts fresh, never a bogus `--resume`.
+        Some(sid) if !is_claude => {
+            let spec = crate::spawn_ext::resume_spec(&args.provider);
+            if spec.flag.is_none() && spec.sub.is_none() {
+                None
+            } else if spec.sub.is_some() {
+                // Codex indexes sessions in state_5.sqlite under its CODEX_HOME,
+                // so a fresh agent's empty home can't resume by id — point it at
+                // the agent home that OWNS the session (rollout + index).
+                match env.get("CODEX_HOME").cloned() {
+                    Some(my_home) => {
+                        let agents_root = std::path::Path::new(&my_home)
+                            .parent()
+                            .and_then(|p| p.parent())
+                            .map(PathBuf::from);
+                        match agents_root
+                            .and_then(|r| crate::spawn_ext::find_codex_home_for_session(&sid, &r))
+                        {
+                            Some(owner) => {
+                                if owner != std::path::Path::new(&my_home) {
+                                    env.insert("CODEX_HOME".into(), owner.display().to_string());
+                                }
+                                Some(sid)
+                            }
+                            None => {
+                                log::warn!(
+                                    "[resume] codex session \"{sid}\" not found in any agent CODEX_HOME - starting fresh"
+                                );
+                                resume_not_found = typed_sid;
+                                None
+                            }
+                        }
+                    }
+                    // No per-agent home (no hook shim): codex reads the user's
+                    // own ~/.codex, which resumes by id natively.
+                    None => Some(sid),
+                }
+            } else {
+                Some(sid)
+            }
+        }
+        Some(sid) => {
             if crate::usage::seed_session_transcript(&cwd, &sid) {
                 Some(sid)
             } else {
@@ -1610,20 +1972,52 @@ fn spawn_inner_impl<R: tauri::Runtime>(
     }
     let resumed = resume_session.is_some();
 
+    // Everything appended after the command's own argv: the per-engine resume
+    // args and the engine flags gathered above. Codex's `resume <id>` is a
+    // SUBCOMMAND: it goes (with the engine flags) right before the command's
+    // own first positional/prompt, since Codex reads `[OPTIONS] resume [ID]
+    // [PROMPT]`; flag-style resumes trail the command's argv.
+    let cmd_toks: Vec<String> = crate::misc::tokenize_command(&command_line)
+        .into_iter()
+        .skip(1)
+        .collect();
+    let (tail, resume_is_subcommand): (Vec<String>, bool) = {
+        let resume_av = resume_session
+            .as_deref()
+            .and_then(|sid| crate::spawn_ext::resume_args(&args.provider, sid, &cmd_toks))
+            .unwrap_or_default();
+        if crate::spawn_ext::resume_spec(&args.provider).sub.is_some() {
+            let sub = !resume_av.is_empty();
+            (resume_av.into_iter().chain(post_args.iter().cloned()).collect(), sub)
+        } else {
+            (post_args.iter().cloned().chain(resume_av).collect(), false)
+        }
+    };
+    // Codex remote control (macOS/Linux only — a no-op on Windows, where
+    // OpenAI's CLI refuses the daemon): start the daemon under this agent's
+    // isolated CODEX_HOME and put `--remote unix://…` ahead of `resume`.
+    // Best-effort; unix runtime behaviour is UNVERIFIED (see codex_remote.rs).
+    let tail = if args.provider == "codex" {
+        crate::codex_remote::apply_for_spawn(&first_tok, &path, &mut env, tail, &agent_id)
+    } else {
+        tail
+    };
+    // A subcommand resume is spliced into the command's argv ahead of its first
+    // positional (then there is nothing left to append); everything else trails.
+    let (cmd_args, tail) = if resume_is_subcommand {
+        (crate::spawn_ext::splice_before_positional(cmd_toks, &tail), Vec::new())
+    } else {
+        (cmd_toks, tail)
+    };
+
     let handle = match pty::resolve_program(&first_tok, &path) {
         Some(pty::Resolved::Exe(prog)) => {
-            let mut av: Vec<String> = crate::misc::tokenize_command(&command_line)
-                .into_iter()
-                .skip(1)
-                .collect();
+            let mut av: Vec<String> = cmd_args.clone();
             if is_claude {
                 av.push("--append-system-prompt".into());
                 av.push(injected.clone());
             }
-            if let Some(sid) = &resume_session {
-                av.push("--resume".into());
-                av.push(sid.clone());
-            }
+            av.extend(tail.iter().cloned());
             pty::spawn_argv(
                 &pty_id,
                 &prog,
@@ -1633,6 +2027,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 args.cols,
                 args.rows,
                 app.clone(),
+                &owner,
             )
         }
         Some(pty::Resolved::Script(prog)) => {
@@ -1646,20 +2041,12 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 let mut av: Vec<String> = script
                     .map(|s| vec![s.display().to_string()])
                     .unwrap_or_default();
-                av.extend(
-                    crate::misc::tokenize_command(&command_line)
-                        .into_iter()
-                        .skip(1)
-                        .map(String::from),
-                );
+                av.extend(cmd_args.iter().cloned());
                 if is_claude {
                     av.push("--append-system-prompt".into());
                     av.push(injected.clone());
                 }
-                if let Some(sid) = &resume_session {
-                    av.push("--resume".into());
-                    av.push(sid.clone());
-                }
+                av.extend(tail.iter().cloned());
                 pty::spawn_argv(
                     &pty_id,
                     &exe,
@@ -1669,6 +2056,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                     args.cols,
                     args.rows,
                     app.clone(),
+                    &owner,
                 )
             } else {
                 // Fallback when the shim can't be decoded: route through cmd.exe
@@ -1678,41 +2066,49 @@ fn spawn_inner_impl<R: tauri::Runtime>(
                 // at all — upstream truncates at it; collapsing is strictly less
                 // destructive.)
                 let mut parts = vec![prog.display().to_string()];
-                parts.extend(
-                    crate::misc::tokenize_command(&command_line)
-                        .into_iter()
-                        .skip(1)
-                        .map(String::from),
-                );
+                parts.extend(cmd_args.iter().cloned());
                 if is_claude {
                     parts.push("--append-system-prompt".into());
                     parts.push(pty::cmd_sanitize(&injected));
                 }
-                if let Some(sid) = &resume_session {
-                    parts.push("--resume".into());
-                    parts.push(sid.clone());
-                }
-                pty::spawn_cmd(&pty_id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
+                parts.extend(tail.iter().cloned());
+                pty::spawn_cmd(
+                    &pty_id,
+                    &parts,
+                    &cwd,
+                    &env,
+                    args.cols,
+                    args.rows,
+                    app.clone(),
+                    &owner,
+                )
             }
         }
         None => {
             let mut parts: Vec<String> = crate::misc::tokenize_command(&command_line)
                 .into_iter()
-                .map(String::from)
+                .take(1)
                 .collect();
+            parts.extend(cmd_args.iter().cloned());
             if is_claude {
                 parts.push("--append-system-prompt".into());
                 parts.push(pty::cmd_sanitize(&injected));
             }
-            if let Some(sid) = &resume_session {
-                parts.push("--resume".into());
-                parts.push(sid.clone());
-            }
-            pty::spawn_cmd(&pty_id, &parts, &cwd, &env, args.cols, args.rows, app.clone())
+            parts.extend(tail.iter().cloned());
+            pty::spawn_cmd(
+                &pty_id,
+                &parts,
+                &cwd,
+                &env,
+                args.cols,
+                args.rows,
+                app.clone(),
+                &owner,
+            )
         }
     }
     .map_err(err_str)?;
-    st.wake.lock().unwrap().note_spawn(
+    st.wake.lock_safe().note_spawn(
         &pty_id,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1720,7 +2116,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
             .unwrap_or(0),
     );
     let spawn_gen = handle.spawn_gen;
-    st.ptys.lock().unwrap().insert(pty_id.clone(), handle);
+    st.ptys.lock_safe().insert(pty_id.clone(), handle);
     // upstream ptyToAgent.set(opts.id, opts.hive.id) — every agent-keyed
     // lookup (hooks, breaker, watchdog, missions) resolves through this.
     st.map_pty(&pty_id, &agent_id);
@@ -1758,8 +2154,7 @@ fn spawn_inner_impl<R: tauri::Runtime>(
 
     let worktree_path = st
         .worktree_paths
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get(&pty_id)
         .map(|(p, _)| p.display().to_string());
     let _ = app.emit(
@@ -1775,6 +2170,8 @@ fn spawn_inner_impl<R: tauri::Runtime>(
         worktree_path,
         needs_key,
         needs_shardx,
+        degraded,
+        install_rung: None,
     })
 }
 
@@ -1806,7 +2203,9 @@ impl PtyOpResult {
 
 #[tauri::command(async)]
 pub fn pty_write(app: AppHandle, id: String, data: String) -> PtyOpResult {
+    crate::panic_guard::cmd_guard("pty_write", || {
     pty_write_core(&app, &id, &data)
+    })
 }
 
 /// `pty:write` (index.ts:3035) — upstream resolves `{ok:false,'no pty: id'}`
@@ -1819,7 +2218,7 @@ pub(crate) fn pty_write_core<R: tauri::Runtime>(
     let st = state(app);
     // Clone the writer out and release the map lock first: a blocking write
     // into a wedged agent must not stall every other PTY operation.
-    let writer = st.ptys.lock().unwrap().get(id).map(|h| h.writer());
+    let writer = st.ptys.lock_safe().get(id).map(|h| h.writer());
     match writer {
         Some(w) => match w.write(data) {
             Ok(()) => PtyOpResult::ok(),
@@ -1831,7 +2230,9 @@ pub(crate) fn pty_write_core<R: tauri::Runtime>(
 
 #[tauri::command(async)]
 pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> PtyOpResult {
+    crate::panic_guard::cmd_guard("pty_resize", || {
     pty_resize_core(&app, &id, cols, rows)
+    })
 }
 
 /// `pty:resize` (index.ts:3039) — same `{ok, error?}` envelope.
@@ -1842,7 +2243,7 @@ pub(crate) fn pty_resize_core<R: tauri::Runtime>(
     rows: u16,
 ) -> PtyOpResult {
     let st = state(app);
-    let ptys = st.ptys.lock().unwrap();
+    let ptys = st.ptys.lock_safe();
     match ptys.get(id) {
         Some(h) => match h.resize(cols, rows) {
             Ok(()) => PtyOpResult::ok(),
@@ -1854,7 +2255,9 @@ pub(crate) fn pty_resize_core<R: tauri::Runtime>(
 
 #[tauri::command(async)]
 pub fn kill_agent(app: AppHandle, id: String) -> PtyOpResult {
+    crate::panic_guard::cmd_guard("kill_agent", || {
     kill_agent_core(&app, &id)
+    })
 }
 
 /// `pty:kill` (index.ts:3047) — kill the process, then run the shared
@@ -1870,7 +2273,7 @@ pub(crate) fn kill_agent_core<R: tauri::Runtime>(app: &AppHandle<R>, id: &str) -
         teardown_pty_core(app, id, "gone");
         return PtyOpResult::err(format!("no pty: {id}"));
     };
-    if let Some(mut h) = st.ptys.lock().unwrap().remove(&pty_id) {
+    if let Some(mut h) = st.ptys.lock_safe().remove(&pty_id) {
         let _ = h.kill();
     }
     teardown_pty_core(app, &pty_id, "gone");
@@ -1889,23 +2292,40 @@ pub(crate) fn teardown_pty_core<R: tauri::Runtime>(app: &AppHandle<R>, pty_id: &
     // FIRST: the map drop below is exactly what makes the mapping unreadable
     // after teardown (same ordering hazard upstream documents).
     let agent_id = st.unmap_pty(pty_id).unwrap_or_else(|| pty_id.to_string());
+    // An install PTY that ends here never relaunched (the relaunch path returns
+    // before teardown and cleared its entry): the install failed.
+    if let Some((p, rung)) = INSTALL_RUNGS.lock_safe().remove(pty_id) {
+        track_funnel(
+            app,
+            "agent_install_finished",
+            &[("provider", &p), ("rung", rung), ("outcome", "install_failed")],
+        );
+    }
+    // Archive the agent — retained + flagged, never deleted; only agents with a
+    // live terminal are active, so broadcasts stop mailing a dead inbox. An
+    // unmapped PTY (install rail) resolves to its pty id, a registry miss that
+    // no-ops. Idempotent (setArchived early-returns on the same value); a
+    // respawn clears the flag again through ensure_agent.
+    if let Err(e) = crate::hive_admin::set_archived(&st.hive, &agent_id, true) {
+        log::warn!("[hive] setArchived failed: {e}");
+    }
     // Dead agents can't leak a tripped breaker level or a pending steer.
-    st.breaker.lock().unwrap().forget(&agent_id);
-    st.wake.lock().unwrap().forget(&agent_id, Some(pty_id));
+    st.breaker.lock_safe().forget(&agent_id);
+    st.wake.lock_safe().forget(&agent_id, Some(pty_id));
     st.telemetry.forget(&agent_id);
     // A dead worker's broker capability token dies with it
     // (integrationBroker.ts revoke-on-teardown).
     crate::integrations::BROKER.revoke(&agent_id);
     // Kill this agent's proxy-bridge sidecar (qwen/crush) — a dead PTY never
     // leaves an orphan loopback listener (teardownPty stopProxyBridge).
-    if let Some(bridge) = st.proxy_bridges.lock().unwrap().remove(&agent_id) {
+    if let Some(bridge) = st.proxy_bridges.lock_safe().remove(&agent_id) {
         bridge.stop();
     }
     // teardownPty step 2: worker/live tracking + the isolated-worktree gate
     // (workers: preserve unintegrated work + defer scratch GC; regular:
     // upstream's immediate force-remove). worktree_paths is pty-keyed,
     // live_workers agent-keyed — hence the two ids.
-    let was_worker = st.live_workers.lock().unwrap().contains_key(&agent_id);
+    let was_worker = st.live_workers.lock_safe().contains_key(&agent_id);
     crate::workers::finalize_teardown(&st, pty_id, &agent_id);
     if was_worker {
         // Mirrors teardownPty's hive:agentArchived broadcast — the dead
@@ -1925,12 +2345,14 @@ pub(crate) fn teardown_pty_core<R: tauri::Runtime>(app: &AppHandle<R>, pty_id: &
 /// <id>: entry}}` so the renderer can key by id and reach godId.
 #[tauri::command(async)]
 pub fn hive_registry(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hive_registry", || {
     let (god_id, agents) = state(&app).hive.read_registry_doc();
     let map: serde_json::Map<String, serde_json::Value> = agents
         .into_iter()
         .filter_map(|a| serde_json::to_value(&a).ok().map(|v| (a.id.clone(), v)))
         .collect();
     Ok(serde_json::json!({ "godId": god_id, "agents": map }))
+    })
 }
 
 /// hive:send — upstream's exact contract: `{ok, message}` where the partial
@@ -1943,50 +2365,70 @@ pub fn hive_send(
     partial: crate::hive::PartialMessage,
     from: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hive_send", || {
     let sender = from.unwrap_or_else(|| "system".into());
     let msg = state(&app)
         .hive
         .send_partial(&partial, &sender)
         .map_err(err_str)?;
+    // Count only what a PERSON sent (every renderer surface that dispatches on
+    // a human's behalf passes 'human'); agent-to-agent traffic would swamp the
+    // number. Counted AFTER the send so a rejected message is never counted.
+    if sender == "human" {
+        crate::analytics::global().message_sent(&app, "hive");
+    }
     Ok(serde_json::json!({ "ok": true, "message": msg }))
+    })
 }
 
 #[tauri::command(async)]
 pub fn hive_inbox(app: AppHandle, agent_id: String) -> Result<Vec<Message>, String> {
+    crate::panic_guard::cmd_guard("hive_inbox", || {
     state(&app).hive.inbox(&agent_id).map_err(err_str)
+    })
 }
 
 #[tauri::command(async)]
 pub fn hive_mark_done(app: AppHandle, agent_id: String, msg_id: String) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("hive_mark_done", || {
     state(&app)
         .hive
         .mark_done(&agent_id, &msg_id)
         .map_err(err_str)
+    })
 }
 
 #[tauri::command(async)]
 pub fn hive_board(app: AppHandle) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("hive_board", || {
     state(&app).hive.read_board().map_err(err_str)
+    })
 }
 
 #[tauri::command(async)]
 pub fn hive_tasks(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hive_tasks", || {
     state(&app).hive.read_tasks().map_err(err_str)
+    })
 }
 
 // ─── memory ─────────────────────────────────────────────────────────────────
 
 #[tauri::command(async)]
 pub fn read_memory(app: AppHandle, agent_id: String) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("read_memory", || {
     state(&app).hive.read_memory(&agent_id).map_err(err_str)
+    })
 }
 
 #[tauri::command(async)]
 pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("append_memory", || {
     state(&app)
         .hive
         .append_memory(&agent_id, &entry)
         .map_err(err_str)
+    })
 }
 
 // ─── config ─────────────────────────────────────────────────────────────────
@@ -1997,27 +2439,58 @@ pub fn append_memory(app: AppHandle, agent_id: String, entry: String) -> Result<
 /// raw file merge preserves unknown keys (officeTheme, terminalTheme, the
 /// onboarding fields the typed Config doesn't model).
 pub fn get_config(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("get_config", || {
     let st = state(&app);
-    let typed = serde_json::to_value(&*st.config.lock().unwrap()).map_err(|e| e.to_string())?;
+    let typed = serde_json::to_value(&*st.config.lock_safe()).map_err(|e| e.to_string())?;
     let mut merged = typed.as_object().cloned().unwrap_or_default();
     if let Some(raw) = st.config_store.raw_value().as_object() {
         for (k, v) in raw {
             merged.insert(k.clone(), v.clone());
         }
     }
+    // readConfig deep-fills DEFAULTS: every Claude agent defaults to
+    // `defaultModel` (config.ts — wins over the role tiers) and the god to
+    // `godModel`. Without these the renderer sees undefined and cannot mark
+    // the default in its pickers.
+    merged
+        .entry("defaultModel")
+        .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_MODEL));
+    merged
+        .entry("godModel")
+        .or_insert_with(|| serde_json::json!(crate::spawn_ext::DEFAULT_GOD_MODEL));
+    // normalizeStoredHomes: never hand a consumer a literal `~` path.
+    crate::misc::normalize_stored_homes(&mut merged);
+    // A fresh config has no list keys; the renderer indexes into them.
+    crate::misc::fill_list_defaults(&mut merged);
     Ok(serde_json::Value::Object(merged))
+    })
+}
+
+/// config:changed — tell EVERY window a setting was saved (upstream
+/// persistConfig → onConfigWritten → broadcast to all floors). Windows load the
+/// config once and hand it down as props; without this every view seeded from
+/// that copy keeps showing the start-up value until a restart. The payload is
+/// the config as `get_config` reads it (deep-filled, home-normalised), never
+/// the raw patch — a half-filled sub-object would read as undefined here and
+/// as a number from the next read.
+pub(crate) fn emit_config_changed(app: &AppHandle) {
+    if let Ok(view) = get_config(app.clone()) {
+        let _ = app.emit("config:changed", view);
+    }
 }
 
 #[tauri::command(async)]
 pub fn set_auto_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("set_auto_mode", || {
     let st = state(&app);
     {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         cfg.auto_mode = enabled;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    let _ = app.emit("config:changed", serde_json::json!({ "autoMode": enabled }));
+    emit_config_changed(&app);
     Ok(())
+    })
 }
 
 // ─── operator control (control.ts IPC equivalents) ──────────────────────────
@@ -2028,26 +2501,32 @@ pub fn control_pause(
     agent_id: String,
     on: bool,
 ) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_pause", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.pause(&agent_id, on);
     Ok(c.snapshot(&agent_id))
+    })
 }
 
 #[tauri::command(async)]
 pub fn control_resume(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_resume", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.resume(&agent_id);
     Ok(c.snapshot(&agent_id))
+    })
 }
 
 #[tauri::command(async)]
 pub fn control_halt(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_halt", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.halt(&agent_id);
     Ok(c.snapshot(&agent_id))
+    })
 }
 
 #[tauri::command(async)]
@@ -2056,10 +2535,18 @@ pub fn control_steer(
     agent_id: String,
     text: String,
 ) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_steer", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.steer(&agent_id, &text);
-    Ok(c.snapshot(&agent_id))
+    let snap = c.snapshot(&agent_id);
+    drop(c);
+    // A steer typed into the control strip is a human message — counted HERE,
+    // at the command seam, not inside control.steer() (closing time and the
+    // voice action layer call that directly, and neither is a person typing).
+    crate::analytics::global().message_sent(&app, "steer");
+    Ok(snap)
+    })
 }
 
 #[tauri::command(async)]
@@ -2069,10 +2556,12 @@ pub fn control_gate_tool(
     tool: String,
     on: bool,
 ) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_gate_tool", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.gate_tool(&agent_id, &tool, on);
     Ok(c.snapshot(&agent_id))
+    })
 }
 
 #[tauri::command(async)]
@@ -2081,22 +2570,28 @@ pub fn control_pause_delivery(
     agent_id: String,
     on: bool,
 ) -> Result<ControlSnapshot, String> {
+    crate::panic_guard::cmd_guard("control_pause_delivery", || {
     let st = state(&app);
-    let mut c = st.control.lock().unwrap();
+    let mut c = st.control.lock_safe();
     c.pause_auto_delivery(&agent_id, on);
     Ok(c.snapshot(&agent_id))
+    })
 }
 
 #[tauri::command(async)]
 pub fn control_snapshot(app: AppHandle, agent_id: String) -> Result<ControlSnapshot, String> {
-    Ok(state(&app).control.lock().unwrap().snapshot(&agent_id))
+    crate::panic_guard::cmd_guard("control_snapshot", || {
+    Ok(state(&app).control.lock_safe().snapshot(&agent_id))
+    })
 }
 
 // ─── missions (scheduler) ───────────────────────────────────────────────────
 
 #[tauri::command(async)]
 pub fn missions_list(app: AppHandle) -> Result<Vec<crate::missions::ScheduledMission>, String> {
-    Ok(state(&app).config.lock().unwrap().missions.clone())
+    crate::panic_guard::cmd_guard("missions_list", || {
+    Ok(state(&app).config.lock_safe().missions.clone())
+    })
 }
 
 #[tauri::command(async)]
@@ -2104,17 +2599,44 @@ pub fn missions_save(
     app: AppHandle,
     missions: Vec<crate::missions::ScheduledMission>,
 ) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("missions_save", || {
     let st = state(&app);
     {
-        let mut cfg = st.config.lock().unwrap();
-        cfg.missions = missions;
+        let mut cfg = st.config.lock_safe();
+        // lastFiredAt is scheduler-owned. The renderer loads missions once and
+        // later sends back a STALE array, so a wholesale write would clobber
+        // every lastFiredAt the scheduler stamped since. Merge by id and keep
+        // the newer one (almost always the persisted one).
+        cfg.missions = merge_missions_keep_fired(&cfg.missions, missions);
         st.config_store.save(&cfg).map_err(err_str)?;
     }
+    emit_config_changed(&app);
     // Upstream's clearMissionTimers+re-arm on write: wake the scheduler loop
     // so the new cadence applies now, not after the current sleep.
     st.mission_rearm.notify_waiters();
     let _ = app.emit("missions:updated", serde_json::json!({}));
     Ok(())
+    })
+}
+
+/// missions:save merge — incoming wins field-for-field, but `last_fired_at`
+/// is max(incoming, persisted) per id.
+fn merge_missions_keep_fired(
+    persisted: &[crate::missions::ScheduledMission],
+    incoming: Vec<crate::missions::ScheduledMission>,
+) -> Vec<crate::missions::ScheduledMission> {
+    incoming
+        .into_iter()
+        .map(|mut m| {
+            let prev = persisted
+                .iter()
+                .find(|p| p.id == m.id)
+                .map(|p| p.last_fired_at)
+                .unwrap_or(0);
+            m.last_fired_at = m.last_fired_at.max(prev);
+            m
+        })
+        .collect()
 }
 
 // ─── secrets (OS keychain → agent env) ──────────────────────────────────────
@@ -2131,6 +2653,7 @@ fn secret_get(app: &AppHandle, key: &str) -> Option<String> {
 /// injection. The value never touches config.json or log.jsonl.
 #[tauri::command(async)]
 pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("secret_set", || {
     let key = key.trim().to_string();
     if key.is_empty() || value.is_empty() {
         return Err("key and value required".into());
@@ -2139,35 +2662,49 @@ pub fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), Stri
     // in the encrypted file store instead of pretending to persist.
     let st = state(&app);
     crate::misc::secret_set_persist(&key, &value, st.config_store.dir())?;
-    let mut cfg = st.config.lock().unwrap();
-    if !cfg.secret_env_keys.contains(&key) {
-        cfg.secret_env_keys.push(key);
-        st.config_store.save(&cfg).map_err(err_str)?;
+    {
+        let mut cfg = st.config.lock_safe();
+        if !cfg.secret_env_keys.contains(&key) {
+            cfg.secret_env_keys.push(key);
+            st.config_store.save(&cfg).map_err(err_str)?;
+        }
     }
+    emit_config_changed(&app);
     Ok(())
+    })
 }
 
 /// Remove a secret — from the keychain AND the injection list.
 #[tauri::command(async)]
 pub fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("secret_delete", || {
     let st = state(&app);
     crate::misc::secret_delete_persist(&key, st.config_store.dir());
-    let mut cfg = st.config.lock().unwrap();
-    cfg.secret_env_keys.retain(|k| k != &key);
-    st.config_store.save(&cfg).map_err(err_str)
+    {
+        let mut cfg = st.config.lock_safe();
+        cfg.secret_env_keys.retain(|k| k != &key);
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    emit_config_changed(&app);
+    Ok(())
+    })
 }
 
 /// The injection-list key NAMES — values are never exposed to the frontend.
 #[tauri::command(async)]
 pub fn secrets_list(app: AppHandle) -> Result<Vec<String>, String> {
-    Ok(state(&app).config.lock().unwrap().secret_env_keys.clone())
+    crate::panic_guard::cmd_guard("secrets_list", || {
+    Ok(state(&app).config.lock_safe().secret_env_keys.clone())
+    })
 }
 
 // ─── webhooks (inbound HTTP → god's inbox) ──────────────────────────────────
 
 #[tauri::command(async)]
 pub fn webhooks_list(app: AppHandle) -> Result<Vec<crate::webhook::WebhookEndpoint>, String> {
-    Ok(state(&app).config.lock().unwrap().webhooks.clone())
+    crate::panic_guard::cmd_guard("webhooks_list", || {
+    Ok(state(&app).config.lock_safe().webhooks.clone())
+    })
 }
 
 /// Persist the endpoint list and hot-swap it on the running server — a
@@ -2178,15 +2715,18 @@ pub fn webhooks_save(
     app: AppHandle,
     webhooks: Vec<crate::webhook::WebhookEndpoint>,
 ) -> Result<u16, String> {
+    crate::panic_guard::cmd_guard("webhooks_save", || {
     let st = state(&app);
     {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         cfg.webhooks = webhooks.clone();
         st.config_store.save(&cfg).map_err(err_str)?;
     }
-    let port = st.config.lock().unwrap().webhook_port;
+    emit_config_changed(&app);
+    let port = st.config.lock_safe().webhook_port;
     ensure_webhook_server(&app, &webhooks, port);
     Ok(port)
+    })
 }
 
 /// Start the loopback server if endpoints exist and it isn't bound yet.
@@ -2229,18 +2769,22 @@ fn ensure_webhook_server(
 /// the ledger. Idempotent: already-decided entries are a no-op.
 #[tauri::command(async)]
 pub fn webhook_approve(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("webhook_approve", || {
     let st = state(&app);
     st.webhook
         .decide(&app, &st.hive, &token, "approved")
         .ok_or_else(|| "unknown or non-pending entry".to_string())
+    })
 }
 
 #[tauri::command(async)]
 pub fn webhook_reject(app: AppHandle, token: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("webhook_reject", || {
     let st = state(&app);
     st.webhook
         .decide(&app, &st.hive, &token, "rejected")
         .ok_or_else(|| "unknown or non-pending entry".to_string())
+    })
 }
 
 /// triggerHistory:decide — the operator's verdict on a held message.
@@ -2252,6 +2796,7 @@ pub fn trigger_history_decide(
     app: AppHandle,
     arg: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("trigger_history_decide", || {
     let st = state(&app);
     let id = arg.get("id").and_then(|v| v.as_str()).unwrap_or_default();
     let decision = match arg.get("decision").and_then(|v| v.as_str()) {
@@ -2266,13 +2811,16 @@ pub fn trigger_history_decide(
         .webhook
         .decide(&app, &st.hive, id, decision)
         .unwrap_or(serde_json::Value::Null))
+    })
 }
 
 /// Pending inbound rows — upstream's surface is the trigger ledger itself
 /// (entries still at decision:'pending').
 #[tauri::command(async)]
 pub fn webhook_pending(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("webhook_pending", || {
     Ok(state(&app).webhook.pending(&app))
+    })
 }
 
 // ─── hire deep-link queue (agent-office://hire?src=...) ─────────────────────
@@ -2294,6 +2842,7 @@ pub fn park_pending_hire(home: &std::path::Path, src: &str) {
 /// hire:drainPending — read + clear the queued deep-link source.
 #[tauri::command(async)]
 pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
+    crate::panic_guard::cmd_guard("hire_drain_pending", || {
     let st = state(&app);
     let home = st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf();
     let p = pending_hire_path(&home);
@@ -2305,6 +2854,7 @@ pub fn hire_drain_pending(app: AppHandle) -> Result<Option<String>, String> {
             .unwrap_or_default();
     let _ = std::fs::remove_file(&p);
     Ok(v.get("src").and_then(|s| s.as_str()).map(String::from))
+    })
 }
 
 // ─── config:update (generic patch — upstream's settings write path) ─────────
@@ -2321,18 +2871,46 @@ pub fn config_update(
     app: AppHandle,
     patch: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("config_update", || {
     let st = state(&app);
-    let patch_obj = patch.as_object().cloned().unwrap_or_default();
+    let mut patch_obj = patch.as_object().cloned().unwrap_or_default();
+    // Write boundary (writeConfig): expand `~` and de-dupe registeredRepos /
+    // recentHives / harnessHome before anything is persisted.
+    let current_recents: Vec<serde_json::Value> = st
+        .config_store
+        .raw_value()
+        .get("recentHives")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    crate::misc::normalize_config_patch(&mut patch_obj, &current_recents);
     // Goes through ConfigStore::update so patch keys the typed Config doesn't
     // model (onboardingComplete, godProvider, officeTheme…) persist — the old
     // save(&cfg) path re-read the PRE-patch file and silently dropped them,
     // which is why the wizard's Finish button could never complete.
+    let was_onboarded = st.config_store.raw_value().get("onboardingComplete")
+        == Some(&serde_json::json!(true));
     let (cfg, _raw) = st.config_store.update(&patch_obj)?;
-    *st.config.lock().unwrap() = cfg;
+    // Activation funnel: onboarding just finished (false -> true) — the top of
+    // the launch -> first-agent funnel. `provider` is the engine picked in the
+    // wizard (an unsafe value is dropped by the analytics value filter).
+    if !was_onboarded && patch_obj.get("onboardingComplete") == Some(&serde_json::json!(true)) {
+        let provider = _raw
+            .get("godProvider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude")
+            .to_string();
+        track_funnel(&app, "onboarding_completed", &[("provider", &provider)]);
+    }
+    *st.config.lock_safe() = cfg;
     // onConfigWritten → syncMissions re-arm (upstream re-arms on EVERY
     // config write, not just missions:save).
     st.mission_rearm.notify_waiters();
-    get_config(app)
+    // Every window refreshes (the caller gets the same view back below).
+    let view = get_config(app.clone())?;
+    let _ = app.emit("config:changed", &view);
+    Ok(view)
+    })
 }
 
 /// webhook:setConfig — secret + port + enable toggle; the port applies on
@@ -2344,13 +2922,14 @@ pub fn webhook_set_config(
     port: Option<u16>,
     enabled: Option<bool>,
 ) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("webhook_set_config", || {
     // Mirror a legacy setConfig/generateSecret edit onto the `legacy`
     // WebhookTrigger (upstream upsertLegacyWebhookTrigger): creates the row
     // only once a secret exists — an enabled endpoint without a secret would
     // be an open door, so a bare "enable" is deliberately a no-op.
     {
         let st = state(&app);
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         let prior = cfg.webhooks.iter().find(|e| e.id == "legacy").cloned();
         let next_secret = secret
             .clone()
@@ -2388,26 +2967,31 @@ pub fn webhook_set_config(
     }
     let st = state(&app);
     if let Some(p) = port {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         cfg.webhook_port = p;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
+    emit_config_changed(&app);
     // Hot-swap endpoints on the live server, same as webhooks_save — a
     // disable or secret rotation must not need an app restart.
     {
         let (eps, port) = {
-            let cfg = st.config.lock().unwrap();
+            let cfg = st.config.lock_safe();
             (cfg.webhooks.clone(), cfg.webhook_port)
         };
         ensure_webhook_server(&app, &eps, port);
     }
     Ok(true)
+    })
 }
 
-/// hire:openFile — pick a .json manifest then run the same validation the
-/// deep link uses (upstream: dialog → validate → prefill).
-#[tauri::command]
+/// hire:openFile (single file; kept for existing callers) — pick a .json
+/// manifest then run the same validation the deep link uses (upstream:
+/// dialog → validate → prefill). `async` so the blocking dialog never runs on
+/// the main thread.
+#[tauri::command(async)]
 pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hire_open_file", || {
     use tauri_plugin_dialog::DialogExt;
     let picked = app
         .dialog()
@@ -2427,6 +3011,45 @@ pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
     } else {
         Ok(serde_json::json!({ "ok": false, "errors": errors }))
     }
+    })
+}
+
+/// hire:openFiles — the multi-select import picker. Every selected file is
+/// validated independently; valid neighbours survive an invalid manifest.
+/// `{ok, manifests, errors}`; a cancelled picker is
+/// `{ok:false, manifests:[], errors:[], error:"cancelled"}` and a batch with no
+/// valid manifest carries `error: "no valid hire manifests selected"`.
+#[tauri::command(async)]
+pub fn hire_open_files(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hire_open_files", || {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Import hire manifests")
+        .add_filter("Hire manifest", &["json"])
+        .blocking_pick_files();
+    let paths: Vec<std::path::PathBuf> = picked
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| p.as_path().map(|p| p.to_path_buf()))
+        .collect();
+    if paths.is_empty() {
+        return Ok(serde_json::json!({
+            "ok": false, "manifests": [], "errors": [], "error": "cancelled",
+        }));
+    }
+    let (manifests, errors) = crate::hire::read_hire_manifest_files(&paths);
+    let mut out = serde_json::json!({
+        "ok": !manifests.is_empty(),
+        "manifests": manifests,
+        "errors": errors,
+    });
+    if manifests.is_empty() {
+        out["error"] = serde_json::json!("no valid hire manifests selected");
+    }
+    Ok(out)
+    })
 }
 
 // ─── app lifecycle (close gating + info) ────────────────────────────────────
@@ -2435,18 +3058,25 @@ pub fn hire_open_file(app: AppHandle) -> Result<serde_json::Value, String> {
 /// closing_time_start; frontend shows "Confirm close" → this).
 #[tauri::command(async)]
 pub fn app_confirm_close(app: AppHandle) -> Result<usize, String> {
+    crate::panic_guard::cmd_guard("app_confirm_close", || {
     closing_time_start(app)
+    })
 }
 
 /// app:cancelClose — abort the in-flight closing-time protocol.
 #[tauri::command(async)]
 pub fn app_cancel_close(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_cancel_close", || {
+    // A pending restart-and-install is withdrawn with the quit.
+    crate::cmd_update::note_quit_cancelled(&app);
     closing_time_cancel(app)
+    })
 }
 
 /// app:info — version + home path for the About surface.
 #[tauri::command(async)]
 pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("app_info", || {
     let st = state(&app);
     // Upstream 'app:info' (index.ts) — version + the two newest CHANGELOG
     // sections for the voice get_app_info tool. Our extra name/home/
@@ -2485,13 +3115,15 @@ pub fn app_info(app: AppHandle) -> Result<serde_json::Value, String> {
         "version": env!("CARGO_PKG_VERSION"),
         "changelog": top,
         "home": st.hive.root.parent().unwrap_or(&st.hive.root).display().to_string(),
-        "liveAgents": st.ptys.lock().unwrap().len(),
+        "liveAgents": st.ptys.lock_safe().len(),
     }))
+    })
 }
 
 /// skills:reveal — open a skill's directory in the OS file manager.
 #[tauri::command(async)]
 pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("skills_reveal", || {
     let st = state(&app);
     let cwds: Vec<String> = st.hive.registry().iter().map(|a| a.cwd.clone()).collect();
     let bundled = crate::skills::bundled_skills_dir();
@@ -2508,6 +3140,7 @@ pub fn skills_reveal(app: AppHandle, id: String) -> Result<bool, String> {
     #[cfg(not(windows))]
     std::process::Command::new("open").arg(&dir).spawn().ok();
     Ok(true)
+    })
 }
 
 // ─── memory reflector (condense oversized memory.md via headless claude) ────
@@ -2519,10 +3152,16 @@ pub fn reflect_now(
     app: AppHandle,
     agent_id: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("reflect_now", || {
     let st = state(&app);
-    let settings = crate::reflect::ReflectSettings {
-        enabled: true,
-        ..Default::default()
+    // The user's configured thresholds (same source as the periodic scan);
+    // only `enabled` is forced on — a manual run ignores the background toggle.
+    let settings = {
+        let cfg = st.config.lock_safe();
+        crate::reflect::ReflectSettings {
+            enabled: true,
+            ..crate::reflect::ReflectSettings::from_config(&cfg)
+        }
     };
     let hive_root = st.hive.root.clone();
     let path = crate::pty::user_shell_path();
@@ -2536,6 +3175,7 @@ pub fn reflect_now(
         )]);
     }
     Ok(crate::reflect::reflect_scan(&hive_root, &claude, &settings))
+    })
 }
 
 // ─── git pane (read surface; safe_resolve confinement on the caller path) ──
@@ -2544,6 +3184,7 @@ pub fn reflect_now(
 /// The `cwd` argument is the agent's workspace directory.
 #[tauri::command(async)]
 pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("git_snapshot", || {
     let _ = app;
     let p = std::path::Path::new(&cwd);
     if !crate::git_ops::is_repo(p) {
@@ -2556,6 +3197,7 @@ pub fn git_snapshot(app: AppHandle, cwd: String) -> Result<serde_json::Value, St
         "aheadBehind": crate::git_ops::ahead_behind(p),
         "unintegratedWork": crate::git_ops::worktree_has_unintegrated_work(p),
     }))
+    })
 }
 
 // ─── confined fs browser (fs_ops.safe_resolve policy) ───────────────────────
@@ -2568,13 +3210,16 @@ pub fn fs_list(
     root: String,
     rel: String,
 ) -> Result<Vec<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("fs_list", || {
     let _ = app;
     crate::fs_ops::list_dir(std::path::Path::new(&root), &rel)
         .ok_or_else(|| "path escapes the workspace".to_string())
+    })
 }
 
 #[tauri::command(async)]
 pub fn fs_read(app: AppHandle, root: String, rel: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("fs_read", || {
     let _ = app;
     match crate::fs_ops::read_file(std::path::Path::new(&root), &rel) {
         Some(crate::fs_ops::FsRead::Text(t)) => Ok(serde_json::json!({"kind": "text", "data": t})),
@@ -2584,24 +3229,28 @@ pub fn fs_read(app: AppHandle, root: String, rel: String) -> Result<serde_json::
         Some(crate::fs_ops::FsRead::TooLarge(n)) => Err(format!("file too large ({n} bytes)")),
         None => Err("path escapes the workspace or is unreadable".into()),
     }
+    })
 }
 
 // ─── persist store (kv + command history) ───────────────────────────────────
 
 #[tauri::command(async)]
 pub fn kv_get(app: AppHandle, key: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("kv_get", || {
     Ok(state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv(&key)
         .unwrap_or(serde_json::Value::Null))
+    })
 }
 
 #[tauri::command(async)]
 pub fn kv_set(app: AppHandle, key: String, value: serde_json::Value) -> Result<bool, String> {
-    state(&app).persist.lock().unwrap().set_kv(&key, &value);
+    crate::panic_guard::cmd_guard("kv_set", || {
+    state(&app).persist.lock_safe().set_kv(&key, &value);
     Ok(true)
+    })
 }
 
 /// Record one user-submitted prompt (db.ts addHistory).
@@ -2612,12 +3261,13 @@ pub fn command_history_add(
     cwd: Option<String>,
     text: String,
 ) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("command_history_add", || {
     state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .add_history(&agent_id, cwd.as_deref(), &text);
     Ok(true)
+    })
 }
 
 #[tauri::command(async)]
@@ -2626,11 +3276,12 @@ pub fn command_history_list(
     agent_id: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("command_history_list", || {
     Ok(state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .list_history(agent_id.as_deref(), limit.unwrap_or(100)))
+    })
 }
 
 #[tauri::command(async)]
@@ -2639,11 +3290,12 @@ pub fn command_history_search(
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("command_history_search", || {
     Ok(state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .search_history(&query, limit.unwrap_or(50)))
+    })
 }
 
 // ─── hire manifests (agent-office://hire deep link + file import) ──────────
@@ -2651,13 +3303,16 @@ pub fn command_history_search(
 /// Validate + return a hire manifest (prefill only — never auto-spawns).
 #[tauri::command(async)]
 pub fn hire_validate(raw: serde_json::Value) -> serde_json::Value {
+    crate::panic_guard::cmd_guard("hire_validate", || {
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
     serde_json::json!({ "ok": m.is_some(), "manifest": m, "errors": errors, "consentRequired": consent })
+    })
 }
 
 /// Import from an https URL — SSRF-gated (resolved addresses blocklisted).
 #[tauri::command(async)]
 pub fn hire_fetch(url: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hire_fetch", || {
     let raw = crate::hire::fetch_manifest(&url)?;
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
     if let Some(m) = m {
@@ -2665,11 +3320,13 @@ pub fn hire_fetch(url: String) -> Result<serde_json::Value, String> {
     } else {
         Err(format!("invalid hire manifest: {}", errors.join("; ")))
     }
+    })
 }
 
 /// Import from a local file — same byte cap + validator.
 #[tauri::command(async)]
 pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("hire_import_file", || {
     let raw = crate::hire::read_manifest_file(std::path::Path::new(&path))?;
     let (m, errors, consent) = crate::hire::validate_hire_manifest(&raw);
     if let Some(m) = m {
@@ -2677,6 +3334,7 @@ pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
     } else {
         Err(format!("invalid hire manifest: {}", errors.join("; ")))
     }
+    })
 }
 
 // ─── slack adapter (Events API → god inbox; reply rail) ─────────────────────
@@ -2685,6 +3343,7 @@ pub fn hire_import_file(path: String) -> Result<serde_json::Value, String> {
 /// store (SLACK_SIGNING_SECRET) — never from disk or args.
 #[tauri::command(async)]
 pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("slack_start", || {
     let st = state(&app);
     let secret = secret_get(&app, "SLACK_SIGNING_SECRET")
         .ok_or_else(|| "SLACK_SIGNING_SECRET not in credential store".to_string())?;
@@ -2778,8 +3437,12 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
             }
             // Immediate "queued" acknowledgement in the originating thread —
             // posted server-side with the bot token (renderer did this in
-            // upstream; the port's slack flow is all main-side).
-            if let Some(tok) = &bot_token {
+            // upstream; the port's slack flow is all main-side). This is an
+            // APP-initiated post, so it stays off unless the user opted in via
+            // Settings -> Slack (slackProactivePosting, default OFF). The
+            // done-reply round-trip and an agent's own direct /reply are not
+            // routed through here and always stay on.
+            if let Some(tok) = bot_token.as_ref().filter(|_| slack_proactive_posting(&app3)) {
                 let _ = crate::slack::post_slack_reply(
                     tok,
                     &channel,
@@ -2803,7 +3466,7 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
         .start(0, move || secret_get(&app4, "SLACK_BOT_TOKEN"), {
             let st2 = std::sync::Arc::clone(&st.directly_replied);
             move |thread_ts| {
-                st2.lock().unwrap().insert(thread_ts);
+                st2.lock_safe().insert(thread_ts);
             }
         }) {
         Ok(reply_port) => {
@@ -2819,39 +3482,107 @@ pub fn slack_start(app: AppHandle, port: u16, channel_id: Option<String>) -> Res
     // Public tunnel (upstream slack.ts openTunnel — Slack's servers need a
     // reachable Request URL). Non-fatal: the local handler is the security
     // boundary and stays up even if the tunnel can't be established.
-    if let Some((_, mut old)) = st.slack_tunnel.lock().unwrap().take() {
+    if let Some((_, mut old)) = st.slack_tunnel.lock_safe().take() {
         crate::misc::kill_process_tree(&mut old); // never orphan a previous tunnel
     }
     match crate::misc::start_tunnel(port) {
-        Ok((url, child)) => *st.slack_tunnel.lock().unwrap() = Some((url, child)),
+        Ok((url, child)) => *st.slack_tunnel.lock_safe() = Some((url, child)),
         Err(e) => log::warn!("[slack] tunnel unavailable: {e}"),
     }
     Ok(true)
+    })
 }
 
+/// config.slackProactivePosting - app/voice-INITIATED Slack posts (the queued
+/// ack, `slack_reply`). Default OFF ("stop posting into Slack by default").
+fn slack_proactive_posting(app: &AppHandle) -> bool {
+    state(app)
+        .config_store
+        .raw_value()
+        .get("slackProactivePosting")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Stop must survive a restart: boot re-arms from `slackEnabled`, so stopping
+/// without clearing it silently brought the server back on the next launch.
+/// Persist BEFORE tearing down - if the write fails the server is still up and
+/// the UI stays truthful (the other order leaves a dead server that still
+/// reads as Connected with the flag set). Only this command clears the flag;
+/// quit / change-home / reset call `slack_teardown` directly and must not.
 #[tauri::command(async)]
 pub fn slack_stop(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("slack_stop", || {
     let st = state(&app);
+    let mut patch = serde_json::Map::new();
+    patch.insert("slackEnabled".into(), serde_json::json!(false));
+    let cfg = st
+        .config_store
+        .patch_raw(&patch)
+        .map_err(|e| format!("could not persist slackEnabled:false: {e}"))?;
+    *st.config.lock_safe() = cfg;
+    slack_teardown(&app);
+    emit_config_changed(&app);
+    Ok(true)
+    })
+}
+
+/// Lifecycle teardown of the whole Slack adapter (listener, reply rail,
+/// tunnel, discovery file) - leaves `slackEnabled` alone.
+pub(crate) fn slack_teardown(app: &AppHandle) {
+    let st = state(app);
     st.slack.stop();
     st.slack_reply.stop();
-    if let Some((_, mut child)) = st.slack_tunnel.lock().unwrap().take() {
+    if let Some((_, mut child)) = st.slack_tunnel.lock_safe().take() {
         crate::misc::kill_process_tree(&mut child);
     }
     // The discovery file advertises a dead socket once the rail is down —
     // drop it so a stale helper doesn't talk to an unrelated listener.
-    let _ = std::fs::remove_file(crate::misc::harness_home(&app).join("slack-reply.json"));
-    Ok(true)
+    let _ = std::fs::remove_file(crate::misc::harness_home(app).join("slack-reply.json"));
+}
+
+/// Boot re-arm (upstream index.ts:5436): when the user left Slack enabled and
+/// the signing secret is still in the credential store, bring the listener
+/// back up with the saved port/channel. Best-effort and off the setup thread
+/// - slack_start waits (bounded) on the public tunnel. The tunnel URL is
+/// ephemeral, so the user re-pastes it from Settings as before.
+pub(crate) fn slack_autostart(app: &AppHandle) {
+    let st = state(app);
+    let raw = st.config_store.raw_value();
+    if raw.get("slackEnabled").and_then(|v| v.as_bool()) != Some(true)
+        || secret_get(app, "SLACK_SIGNING_SECRET").is_none()
+    {
+        return;
+    }
+    let port = raw
+        .get("slackPort")
+        .and_then(|v| v.as_u64())
+        .filter(|p| (1..=u16::MAX as u64).contains(p))
+        .unwrap_or(3847) as u16;
+    let channel = raw
+        .get("slackChannelId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let app2 = app.clone();
+    std::thread::spawn(move || match slack_start(app2, port, channel) {
+        Ok(_) => log::info!("[slack] re-armed from config (port {port})"),
+        Err(e) => log::warn!("[slack] auto-start failed: {e}"),
+    });
 }
 
 #[tauri::command(async)]
 pub fn slack_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("slack_status", || {
     let st = state(&app);
     Ok(serde_json::json!({
         "running": st.slack.is_running(),
-        "port": *st.slack.url_port.lock().unwrap(),
-        "replyPort": *st.slack_reply.port.lock().unwrap(),
-        "url": st.slack_tunnel.lock().unwrap().as_ref().map(|(u, _)| u.clone()),
+        "port": *st.slack.url_port.lock_safe(),
+        "replyPort": *st.slack_reply.port.lock_safe(),
+        "url": st.slack_tunnel.lock_safe().as_ref().map(|(u, _)| u.clone()),
     }))
+    })
 }
 
 /// Reply rail — agents post back into the Slack thread WITHOUT the bot
@@ -2864,10 +3595,18 @@ pub fn slack_reply(
     thread_ts: String,
     text: String,
 ) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("slack_reply", || {
+    // The ONLY app/voice-INITIATED proactive Slack post: OFF unless the user
+    // opted in via Settings -> Slack. The Slack-origin done-reply round-trip and
+    // an agent's own reply-rail post are not routed through here.
+    if !slack_proactive_posting(&app) {
+        return Err("app-initiated Slack posting disabled (enable in Settings -> Slack)".into());
+    }
     let token = secret_get(&app, "SLACK_BOT_TOKEN")
         .ok_or_else(|| "SLACK_BOT_TOKEN not in credential store".to_string())?;
     crate::slack::post_slack_reply(&token, &channel, &thread_ts, &text)?;
     Ok(true)
+    })
 }
 
 /// pollSlackDoneTasks (index.ts:1611) — watch the kanban for Slack-origin
@@ -2886,7 +3625,7 @@ static SLACK_DONE_BASELINE: std::sync::OnceLock<Mutex<Option<std::collections::H
 /// `slackDoneBaseline = null` (re-seeds on the poller's next tick).
 pub(crate) fn reset_slack_done_baseline() {
     if let Some(m) = SLACK_DONE_BASELINE.get() {
-        *m.lock().unwrap() = None;
+        *m.lock_safe() = None;
     }
 }
 
@@ -2914,7 +3653,7 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
     // `if (slackDoneBaseline === null) { baseline = …; return; }`.
     let baseline_cell = SLACK_DONE_BASELINE.get_or_init(|| Mutex::new(None));
     let baseline = {
-        let mut g = baseline_cell.lock().unwrap();
+        let mut g = baseline_cell.lock_safe();
         match g.as_ref() {
             Some(b) => b.clone(),
             None => {
@@ -2958,7 +3697,7 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
         }
         // FALLBACK-ONLY: an agent that already posted a direct reply gave the
         // human its substantive answer — don't double-post.
-        if st.directly_replied.lock().unwrap().contains(&thread_ts) {
+        if st.directly_replied.lock_safe().contains(&thread_ts) {
             notified.insert(id.to_string());
             persist(&notified);
             continue;
@@ -3005,7 +3744,9 @@ pub(crate) fn poll_slack_done_tasks(app: &AppHandle) {
 /// observer tracks worker ACKs and the verified COMPLETE.
 #[tauri::command(async)]
 pub fn closing_time_start(app: AppHandle) -> Result<usize, String> {
+    crate::panic_guard::cmd_guard("closing_time_start", || {
     closing_time_start_core(&app)
+    })
 }
 
 /// Runtime-generic core — the command wrapper is Wry-pinned but tests drive
@@ -3024,7 +3765,7 @@ pub(crate) fn closing_time_start_core<R: tauri::Runtime>(
     let n = st.closing.start(&st.hive, &mut scratch, &live)?;
     {
         let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
-        let mut control = st.control.lock().unwrap();
+        let mut control = st.control.lock_safe();
         for id in live.iter().chain(std::iter::once(&god_id)) {
             while let Some(note) = scratch.take_steer(id) {
                 control.steer(id, &note);
@@ -3038,6 +3779,7 @@ pub(crate) fn closing_time_start_core<R: tauri::Runtime>(
 
 #[tauri::command(async)]
 pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("closing_time_cancel", || {
     let st = state(&app);
     // cancel() mails god — do that against a scratch registry, then clear the
     // real queued steers under a short-lived lock.
@@ -3047,22 +3789,25 @@ pub fn closing_time_cancel(app: AppHandle) -> Result<bool, String> {
     if was_active {
         let god_id = st.hive.god_id().unwrap_or_else(|| "god".to_string());
         let live = st.live_agent_ids();
-        let mut control = st.control.lock().unwrap();
+        let mut control = st.control.lock_safe();
         for id in live.iter().chain(std::iter::once(&god_id)) {
             control.clear_steers(id);
         }
     }
     emit_closing(&app, "cancelled");
     Ok(true)
+    })
 }
 
 #[tauri::command(async)]
 pub fn closing_time_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("closing_time_status", || {
     let st = state(&app);
     let (acked, total) = st.closing.progress();
     Ok(serde_json::json!({
         "active": st.closing.is_active(), "acked": acked, "total": total
     }))
+    })
 }
 
 /// Emit the protocol state to the floor UI (upstream 'app:closingTime').
@@ -3077,7 +3822,7 @@ pub(crate) fn nudge_idle_god(st: &AppState) -> bool {
     let Some(pty_id) = st.pty_for_agent(&god_id) else {
         return false;
     };
-    let mut ptys = st.ptys.lock().unwrap();
+    let mut ptys = st.ptys.lock_safe();
     let Some(h) = ptys.get_mut(&pty_id) else {
         return false;
     };
@@ -3134,21 +3879,41 @@ pub(crate) fn write_fleet_snapshot(app: &AppHandle) {
 // ─── roster mirror (UI floor state on disk) ─────────────────────────────────
 
 #[tauri::command(async)]
-pub fn roster_read(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+pub fn roster_read(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    crate::panic_guard::cmd_guard("roster_read", || {
+    // The roster file is MAIN's mirror; a floor keeps its own roster in its
+    // namespaced localStorage and must never adopt (or later overwrite) this one.
+    if window.label() != crate::floors::MAIN_LABEL {
+        return Ok(None);
+    }
     Ok(state(&app).roster.read())
+    })
 }
 
 /// app:syncPort — the loopback sync-IPC port (sync_api.rs); the shim needs
 /// it before its first sendSync-equivalent call.
 #[tauri::command(async)]
 pub fn sync_port(app: AppHandle) -> Result<u16, String> {
+    crate::panic_guard::cmd_guard("sync_port", || {
     Ok(state(&app)
         .sync_port
         .load(std::sync::atomic::Ordering::Relaxed))
+    })
 }
 
 #[tauri::command(async)]
-pub fn roster_write(app: AppHandle, snap: serde_json::Value) -> Result<bool, String> {
+pub fn roster_write(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    snap: serde_json::Value,
+) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("roster_write", || {
+    if window.label() != crate::floors::MAIN_LABEL {
+        return Ok(false); // floors never write main's roster mirror
+    }
     // A declined empty-first-write is not an error for the caller — the file
     // was protected, which is the outcome the renderer wants either way.
     match state(&app).roster.write(&snap) {
@@ -3156,18 +3921,22 @@ pub fn roster_write(app: AppHandle, snap: serde_json::Value) -> Result<bool, Str
         Err(e) if e.starts_with("skipped:") => Ok(false),
         Err(e) => Err(e),
     }
+    })
 }
 
 #[tauri::command(async)]
 pub fn roster_archive(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("roster_archive", || {
     state(&app).roster.archive();
     Ok(true)
+    })
 }
 
 /// Lifetime spend folded from cost-ledger.jsonl — the reset-safe number
 /// (telemetry's cumulative-since-boot counter understates post-restart).
 #[tauri::command(async)]
 pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("cost_lifetime", || {
     let st = state(&app);
     let agents = st.hive.lifetime_usd().unwrap_or_default();
     let floor_total: f64 = agents.values().sum();
@@ -3175,6 +3944,7 @@ pub fn cost_lifetime(app: AppHandle) -> Result<serde_json::Value, String> {
         "agents": agents,
         "floor_total": floor_total,
     }))
+    })
 }
 
 // ─── task ledger writes (patchTaskInLedger semantics) ───────────────────────
@@ -3185,7 +3955,9 @@ pub fn task_update(
     id: String,
     patch: serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("task_update", || {
     state(&app).hive.update_task(&id, &patch).map_err(err_str)
+    })
 }
 
 /// The ASK ME answer flow: sets the last open humanQA entry's `a`, unblocks
@@ -3197,16 +3969,20 @@ pub fn task_answer(
     id: String,
     answer: String,
 ) -> Result<serde_json::Value, String> {
+    crate::panic_guard::cmd_guard("task_answer", || {
     state(&app).hive.task_answer(&id, &answer).map_err(err_str)
+    })
 }
 
 // ─── skills (local discovery + catalog + hardened install) ─────────────────
 
 #[tauri::command(async)]
 pub fn skills_local(cwds: Vec<String>) -> Result<Vec<crate::skills::LocalSkill>, String> {
+    crate::panic_guard::cmd_guard("skills_local", || {
     // Bundled skills staged next to the running exe (app resources/skills/).
     let bundled = crate::skills::bundled_skills_dir();
     Ok(crate::skills::list_local_skills(&cwds, bundled.as_deref()))
+    })
 }
 
 #[tauri::command(async)]
@@ -3214,24 +3990,30 @@ pub fn skills_catalog(
     app: AppHandle,
     force: Option<bool>,
 ) -> Result<crate::skills::CatalogResult, String> {
+    crate::panic_guard::cmd_guard("skills_catalog", || {
     let cache = state(&app).hive.root.join("skills-catalog.json");
     Ok(crate::skills::load_catalog(&cache, force.unwrap_or(false)))
+    })
 }
 
 #[tauri::command(async)]
 /// Upstream returns {ok, path?} | {ok:false, error} — the renderer's res.ok
 /// check fails on a bare Ok(String), so wrap instead of Result<>.
 pub fn skills_install(url: String, name: String) -> Value {
+    crate::panic_guard::cmd_guard("skills_install", || {
     match crate::skills::install_skill(&url, &name) {
         Ok(path) => serde_json::json!({ "ok": true, "path": path }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 /// Offline catalog — the skill pack shipped in resources/skills. No network.
 #[tauri::command(async)]
 pub fn skills_bundled() -> Vec<crate::skills::BundledSkill> {
+    crate::panic_guard::cmd_guard("skills_bundled", || {
     crate::skills::list_bundled_skills()
+    })
 }
 
 // ── ShardX browser ops ──────────────────────────────────────────────────────
@@ -3245,7 +4027,9 @@ const SHARDX_TOKEN_KEY: &str = "SHARDX_TOKEN";
 /// Status of the whole ShardX chain — the UI gates the toggle on these.
 #[tauri::command(async)]
 pub fn shardx_status(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_status", || {
     shardx_status_inner(&app)
+    })
 }
 
 fn shardx_status_inner<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
@@ -3302,8 +4086,10 @@ fn shardx_count_path(http: &ureq::Agent, api: &str, auth: &str, path: &str) -> O
 /// Store the launcher's Bearer token in the OS keychain — never config.json.
 #[tauri::command(async)]
 pub fn shardx_set_token(app: AppHandle, token: String) -> Result<(), String> {
+    crate::panic_guard::cmd_guard("shardx_set_token", || {
     let dir = state(&app).config_store.dir().to_path_buf();
     shardx_set_token_inner(&token, &dir)
+    })
 }
 
 fn shardx_set_token_inner(token: &str, store_dir: &std::path::Path) -> Result<(), String> {
@@ -3542,12 +4328,14 @@ fn vendor_shardx_mcp(dest: &std::path::Path) -> Result<(), String> {
 
 #[tauri::command(async)]
 pub fn shardx_setup(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_setup", || {
     let st = state(&app);
     let dest = st.hive.root.join("mcp-servers").join("shardx");
     match vendor_shardx_mcp(&dest) {
         Ok(()) => serde_json::json!({ "ok": true, "path": dest.display().to_string() }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 /// Pull the OS-appropriate launcher asset from the latest GitHub release into
@@ -3556,6 +4344,7 @@ pub fn shardx_setup(app: AppHandle) -> Value {
 /// fetch of the engine is theirs too).
 #[tauri::command(async)]
 pub fn shardx_download_launcher() -> Value {
+    crate::panic_guard::cmd_guard("shardx_download_launcher", || {
     let dest_dir = dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_default();
@@ -3566,6 +4355,7 @@ pub fn shardx_download_launcher() -> Value {
         Ok(p) => serde_json::json!({ "ok": true, "path": p }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 /// The fetch itself, with the release-API URL and destination dir injected —
@@ -3714,6 +4504,7 @@ fn shardx_token_from_settings(path: &std::path::Path) -> Result<String, String> 
 /// scripts). Read-only; the store path stays shardx_set_token / auto_token.
 #[tauri::command(async)]
 pub fn shardx_token_preview(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_token_preview", || {
     let _ = app;
     match shardx_launcher_settings_path() {
         Some(p) => match shardx_token_from_settings(&p) {
@@ -3722,6 +4513,7 @@ pub fn shardx_token_preview(app: AppHandle) -> Value {
         },
         None => serde_json::json!({ "ok": false, "error": "launcher settings.json not found" }),
     }
+    })
 }
 
 /// `<config>/shardx-launcher/fingerprints` — the launcher's library dir.
@@ -4152,11 +4944,12 @@ fn shardx_bootstrap_impl(
 /// second trip into Settings just to arm it.
 #[tauri::command(async)]
 pub fn shardx_bootstrap(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_bootstrap", || {
     let st = state(&app);
     let root = st.hive.root.clone();
     let out = shardx_bootstrap_inner(&root, true);
     if out["ok"].as_bool() == Some(true) {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         let entry = cfg.mcp_defaults.entry("shardx".into()).or_default();
         if !entry.enabled {
             entry.enabled = true;
@@ -4164,6 +4957,7 @@ pub fn shardx_bootstrap(app: AppHandle) -> Value {
         }
     }
     out
+    })
 }
 
 // ── Per-agent ShardX profiles ───────────────────────────────────────────────
@@ -4316,6 +5110,7 @@ fn shardx_api(store_dir: &std::path::Path) -> Option<(String, String, ureq::Agen
 /// a user sees instead of opening the launcher GUI.
 #[tauri::command(async)]
 pub fn shardx_profiles(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_profiles", || {
     let st = state(&app);
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
@@ -4366,12 +5161,14 @@ pub fn shardx_profiles(app: AppHandle) -> Value {
         })
         .collect();
     serde_json::json!({ "ok": true, "profiles": profiles })
+    })
 }
 
 /// Stored proxies for the renderer's per-profile dropdown. Credentials are
 /// never returned by the launcher, so all we echo is id/name/kind/endpoint.
 #[tauri::command(async)]
 pub fn shardx_proxies(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_proxies", || {
     let st = state(&app);
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
@@ -4387,6 +5184,7 @@ pub fn shardx_proxies(app: AppHandle) -> Value {
         },
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
     }
+    })
 }
 
 /// Bind a stored proxy to a profile ("" unbinds) — PATCH /profiles/{id}.
@@ -4398,6 +5196,7 @@ pub fn shardx_set_profile_proxy(
     profile_id: String,
     proxy_id: String,
 ) -> Value {
+    crate::panic_guard::cmd_guard("shardx_set_profile_proxy", || {
     let st = state(&app);
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
@@ -4406,6 +5205,7 @@ pub fn shardx_set_profile_proxy(
         Ok(()) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 /// PATCH /profiles/{id} with the proxy binding — `""` unbinds. Extracted so
@@ -4431,6 +5231,7 @@ fn shardx_patch_profile_proxy(
 /// launcher's engine, not an LLM.
 #[tauri::command(async)]
 pub fn shardx_automations(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_automations", || {
     let st = state(&app);
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
@@ -4446,26 +5247,31 @@ pub fn shardx_automations(app: AppHandle) -> Value {
         },
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
     }
+    })
 }
 
 /// POST /automation/projects/{id}/run — 400 means "already running" or "no
 /// enabled steps", which the launcher spells out in its error body.
 #[tauri::command(async)]
 pub fn shardx_run_automation(app: AppHandle, project_id: String) -> Value {
+    crate::panic_guard::cmd_guard("shardx_run_automation", || {
     let st = state(&app);
     match shardx_automation_call(&st, &project_id, "run") {
         Ok(v) => v,
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 #[tauri::command(async)]
 pub fn shardx_stop_automation(app: AppHandle, project_id: String) -> Value {
+    crate::panic_guard::cmd_guard("shardx_stop_automation", || {
     let st = state(&app);
     match shardx_automation_call(&st, &project_id, "stop") {
         Ok(v) => v,
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 /// POST {api}/automation/projects/{id}/{action} with the launcher's error
@@ -4501,6 +5307,7 @@ fn shardx_automation_call_at(
 /// run-log row share this list.
 #[tauri::command(async)]
 pub fn shardx_automation_runs(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_automation_runs", || {
     let st = state(&app);
     let Some((api, auth, http)) = shardx_api(st.config_store.dir()) else {
         return serde_json::json!({ "ok": false, "error": "launcher not running or no token" });
@@ -4516,6 +5323,7 @@ pub fn shardx_automation_runs(app: AppHandle) -> Value {
         },
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
     }
+    })
 }
 
 /// Scheduler entry point for `kind: "shardx"` missions — `body` carries the
@@ -4556,6 +5364,7 @@ fn shardx_owner_map(
 /// profiles and anything another hive created are left alone.
 #[tauri::command(async)]
 pub fn shardx_cleanup(app: AppHandle) -> Value {
+    crate::panic_guard::cmd_guard("shardx_cleanup", || {
     let st = state(&app);
     let port = shardx_launcher_secret()
         .map(|(_, p)| p)
@@ -4620,6 +5429,7 @@ pub fn shardx_cleanup(app: AppHandle) -> Value {
         "removed": removed,
         "kept": profiles.len() - removed - failed,
         "failed": failed,
+    })
     })
 }
 
@@ -4770,18 +5580,22 @@ fn shardx_workspace_note(
 /// Install one bundled skill into ~/.claude/skills — same {ok,error} envelope.
 #[tauri::command(async)]
 pub fn skills_install_bundled(dir_name: String) -> Value {
+    crate::panic_guard::cmd_guard("skills_install_bundled", || {
     match crate::skills::install_bundled_skill(&dir_name) {
         Ok(p) => serde_json::json!({ "ok": true, "path": p }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 #[tauri::command(async)]
 pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Value {
+    crate::panic_guard::cmd_guard("skills_uninstall", || {
     match crate::skills::uninstall_skill(&path, &cwds) {
         Ok(()) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     }
+    })
 }
 
 // ─── trigger ledger (inbound webhook history + verdicts) ────────────────────
@@ -4790,21 +5604,27 @@ pub fn skills_uninstall(path: String, cwds: Vec<String>) -> Value {
 pub fn triggers_list(
     app: AppHandle,
 ) -> Result<Vec<crate::trigger_history::TriggerHistoryEntry>, String> {
+    crate::panic_guard::cmd_guard("triggers_list", || {
     Ok(state(&app).trigger_history.list())
+    })
 }
 
 #[tauri::command(async)]
 pub fn triggers_clear(app: AppHandle, source: Option<String>) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("triggers_clear", || {
     state(&app).trigger_history.clear(source.as_deref());
     Ok(true)
+    })
 }
 
 // ─── breaker (the beat's data seam + level read) ────────────────────────────
 
 #[tauri::command(async)]
 pub fn breaker_level(app: AppHandle, agent_id: String) -> Result<String, String> {
-    let lvl = state(&app).breaker.lock().unwrap().level_for(&agent_id);
+    crate::panic_guard::cmd_guard("breaker_level", || {
+    let lvl = state(&app).breaker.lock_safe().level_for(&agent_id);
     Ok(format!("{lvl:?}").to_lowercase())
+    })
 }
 
 fn err_str(e: anyhow::Error) -> String {
@@ -4980,6 +5800,8 @@ mod tests {
             worktree_path: Some("C:/w/.worktrees/a".into()),
             needs_key: None,
             needs_shardx: false,
+            degraded: None,
+            install_rung: None,
         }
         .into_result();
         let v = serde_json::to_value(&ok).unwrap();
@@ -5002,10 +5824,29 @@ mod tests {
             worktree_path: None,
             needs_key: Some("hermes".into()),
             needs_shardx: false,
+            degraded: None,
+            install_rung: None,
         }
         .into_result();
         let v = serde_json::to_value(&authless).unwrap();
         assert_eq!(v["needsKey"], "hermes");
+        assert!(v.get("degraded").is_none());
+        // a degraded (proxy-less) spawn tells the renderer why
+        let degraded = SpawnOutcome {
+            pty_id: "pty-d".into(),
+            cwd: "C:/w".into(),
+            seed_prompt: None,
+            resumed: false,
+            resume_not_found: false,
+            worktree_path: None,
+            needs_key: None,
+            needs_shardx: false,
+            degraded: Some("no hive events".into()),
+            install_rung: None,
+        }
+        .into_result();
+        let v = serde_json::to_value(&degraded).unwrap();
+        assert_eq!(v["degraded"], "no hive events");
         // needsShardx rides the same wire surface — absent when false.
         assert!(v.get("needsShardx").is_none());
         let unmet = SpawnOutcome {
@@ -5017,6 +5858,8 @@ mod tests {
             worktree_path: None,
             needs_key: None,
             needs_shardx: true,
+            degraded: None,
+            install_rung: None,
         }
         .into_result();
         let v = serde_json::to_value(&unmet).unwrap();
@@ -5063,8 +5906,8 @@ mod tests {
         assert_eq!(res.id.as_deref(), Some("pty-ta"));
         let st = state(&handle);
         // PTY namespace: keyed under the renderer's pty id, NOT the agent id.
-        assert!(st.ptys.lock().unwrap().contains_key("pty-ta"));
-        assert!(!st.ptys.lock().unwrap().contains_key("ta"));
+        assert!(st.ptys.lock_safe().contains_key("pty-ta"));
+        assert!(!st.ptys.lock_safe().contains_key("ta"));
         // Agent namespace: registry row + the pty↔agent mapping.
         assert!(st.hive.registry().iter().any(|a| a.id == "ta"));
         assert_eq!(st.pty_for_agent("ta").as_deref(), Some("pty-ta"));
@@ -5084,7 +5927,7 @@ mod tests {
         // Kill by AGENT id (voice/breaker path) resolves the mapped pty.
         let k = kill_agent_core(&handle, "ta");
         assert!(k.ok);
-        assert!(st.ptys.lock().unwrap().is_empty());
+        assert!(st.ptys.lock_safe().is_empty());
         assert!(st.pty_for_agent("ta").is_none());
         assert!(st.agent_for_pty("pty-ta").is_none());
         assert!(st
@@ -5125,7 +5968,7 @@ mod tests {
         assert!(!res.ok);
         assert!(res.error.unwrap().contains("could not be resumed"));
         // Nothing spawned — the pty map stays empty.
-        assert!(state(&handle).ptys.lock().unwrap().is_empty());
+        assert!(state(&handle).ptys.lock_safe().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -5152,14 +5995,14 @@ mod tests {
             );
             assert!(res.ok, "spawn {id} failed: {:?}", res.error);
         }
-        assert_eq!(st.ptys.lock().unwrap().len(), 3);
+        assert_eq!(st.ptys.lock_safe().len(), 3);
 
         for id in ["g", "w1", "w2"] {
             let k = kill_agent_core(&handle, id);
             assert!(k.ok, "kill {id} failed: {:?}", k.error);
         }
 
-        assert!(st.ptys.lock().unwrap().is_empty(), "ptys map must drain");
+        assert!(st.ptys.lock_safe().is_empty(), "ptys map must drain");
         for id in ["g", "w1", "w2"] {
             assert!(st.pty_for_agent(id).is_none(), "{id} still has a pty");
             assert!(st.agent_for_pty(&format!("pty-{id}")).is_none());
@@ -5230,9 +6073,9 @@ mod tests {
             })),
         );
         assert!(!res.ok, "a missing cwd must fail the spawn");
-        assert!(st.ptys.lock().unwrap().is_empty());
-        assert!(st.pty_to_agent.lock().unwrap().is_empty());
-        assert!(st.worktree_paths.lock().unwrap().is_empty());
+        assert!(st.ptys.lock_safe().is_empty());
+        assert!(st.pty_to_agent.lock_safe().is_empty());
+        assert!(st.worktree_paths.lock_safe().is_empty());
         let row = st.hive.registry().into_iter().find(|a| a.id == "f1");
         assert_ne!(
             row.map(|a| a.status).as_deref(),
@@ -5664,8 +6507,7 @@ mod tests {
                     .find(|l| l.to_lowercase().starts_with("authorization"))
                     .unwrap_or("")
                     .to_string();
-                h.lock()
-                    .unwrap()
+                h.lock_safe()
                     .push((method, path.clone(), auth, body.to_string()));
                 // {BASE} in a served body self-references the stub's own
                 // loopback URL — lets fixtures embed absolute URLs (release
@@ -5732,7 +6574,7 @@ mod tests {
             None
         );
         // The Bearer header actually went out on the wire.
-        let hits = srv.hits.lock().unwrap();
+        let hits = srv.hits.lock_safe();
         assert!(hits.iter().all(|(_, _, auth, _)| auth.contains("Bearer t")));
     }
 
@@ -5750,7 +6592,7 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert_eq!(v["already"], 2);
         // One request: the emptiness probe. The zip route was never touched.
-        let hits = srv.hits.lock().unwrap();
+        let hits = srv.hits.lock_safe();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].1, "/fingerprints");
         let _ = std::fs::remove_dir_all(&lib);
@@ -5969,7 +6811,7 @@ mod tests {
         let http = shardx_http(5);
         shardx_patch_profile_proxy(&http, &srv.base, "Bearer t", "p1", "px-9").unwrap();
         shardx_patch_profile_proxy(&http, &srv.base, "Bearer t", "p1", "").unwrap();
-        let hits = srv.hits.lock().unwrap();
+        let hits = srv.hits.lock_safe();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, "PATCH");
         assert_eq!(hits[0].1, "/profiles/p1");
@@ -5992,7 +6834,7 @@ mod tests {
         let http = shardx_http(5);
         shardx_automation_call_at(&http, &srv.base, "Bearer t", "proj-9", "run").unwrap();
         shardx_automation_call_at(&http, &srv.base, "Bearer t", "proj-9", "stop").unwrap();
-        let hits = srv.hits.lock().unwrap();
+        let hits = srv.hits.lock_safe();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, "POST");
         assert_eq!(hits[0].1, "/automation/projects/proj-9/run");
@@ -6036,7 +6878,7 @@ mod tests {
         // stalls this test for 12s+ would flip it idle) — pin the clock
         // explicitly instead of racing real time.
         let clock = {
-            let ptys = st.ptys.lock().unwrap();
+            let ptys = st.ptys.lock_safe();
             ptys.get("pty-god").expect("god pty").last_output_at.clone()
         };
         let set_clock = |ago_ms: u64| {
@@ -6053,7 +6895,7 @@ mod tests {
         assert!(!nudge_idle_god(&st));
         // Idle again but PTY gone → nothing to write to.
         st.hive.set_status("god", "idle").unwrap();
-        let pty = { st.ptys.lock().unwrap().remove("pty-god") };
+        let pty = { st.ptys.lock_safe().remove("pty-god") };
         st.unmap_pty("pty-god");
         assert!(!nudge_idle_god(&st));
         if let Some(mut h) = pty {
@@ -6145,9 +6987,9 @@ mod tests {
         let st = state(&handle);
         // The install rail spawned a PTY in the slot AND armed the relaunch —
         // the two halves of "installs on first run".
-        assert!(st.ptys.lock().unwrap().contains_key("pty-hermes"));
+        assert!(st.ptys.lock_safe().contains_key("pty-hermes"));
         assert!(
-            PENDING_INSTALLS.lock().unwrap().contains_key("pty-hermes"),
+            PENDING_INSTALLS.lock_safe().contains_key("pty-hermes"),
             "install PTY must be armed for relaunch"
         );
         eprintln!("[live] install PTY spawned + relaunch armed — waiting for the installer");
@@ -6157,7 +6999,7 @@ mod tests {
         // child is parked on that read) — replying on a count basis keeps
         // writing into a pipe nobody drains and can stall the test.
         let answer_dsr = |st: &tauri::State<'_, AppState>| {
-            let mut ptys = st.ptys.lock().unwrap();
+            let mut ptys = st.ptys.lock_safe();
             if let Some(h) = ptys.get_mut("pty-hermes") {
                 if h.tail().trim_end().ends_with("\u{1b}[6n") {
                     let _ = h.write("\u{1b}[24;80R");
@@ -6170,7 +7012,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40 * 60);
         loop {
             answer_dsr(&st);
-            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-hermes");
+            let armed = PENDING_INSTALLS.lock_safe().contains_key("pty-hermes");
             let resolved = crate::pty::resolve_program("hermes", &path_env).is_some();
             if !armed && resolved {
                 break;
@@ -6178,8 +7020,7 @@ mod tests {
             if std::time::Instant::now() > deadline {
                 let tail = st
                     .ptys
-                    .lock()
-                    .unwrap()
+                    .lock_safe()
                     .get("pty-hermes")
                     .map(|h| h.tail())
                     .unwrap_or_default();
@@ -6194,8 +7035,7 @@ mod tests {
             answer_dsr(&st);
             let done = st
                 .ptys
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .get("pty-hermes")
                 .map(|h| h.command.contains("hermes"))
                 .unwrap_or(false);
@@ -6206,8 +7046,7 @@ mod tests {
         }
         let cmd = st
             .ptys
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get("pty-hermes")
             .map(|h| h.command.clone())
             .unwrap_or_default();
@@ -6225,8 +7064,7 @@ mod tests {
         {
             let tail = st
                 .ptys
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .get("pty-hermes")
                 .map(|h| h.tail())
                 .unwrap_or_default();
@@ -6237,7 +7075,7 @@ mod tests {
         // prints the reply and exits; no TUI readline in the way. The key
         // comes from the harness .env the install just laid down (the same
         // .env the per-agent bridge copies — DEEPSEEK_API_KEY is set there).
-        let pty = { st.ptys.lock().unwrap().remove("pty-hermes") };
+        let pty = { st.ptys.lock_safe().remove("pty-hermes") };
         if let Some(mut h) = pty {
             let _ = h.kill();
         }
@@ -6300,14 +7138,14 @@ mod tests {
         );
         assert!(res.ok, "spawn failed: {:?}", res.error);
         let st = state(&handle);
-        assert!(st.ptys.lock().unwrap().contains_key("pty-openclaw"));
+        assert!(st.ptys.lock_safe().contains_key("pty-openclaw"));
         assert!(
-            PENDING_INSTALLS.lock().unwrap().contains_key("pty-openclaw"),
+            PENDING_INSTALLS.lock_safe().contains_key("pty-openclaw"),
             "install PTY must be armed for relaunch"
         );
         eprintln!("[live] openclaw install PTY spawned + relaunch armed");
         let answer_dsr = |st: &tauri::State<'_, AppState>| {
-            let mut ptys = st.ptys.lock().unwrap();
+            let mut ptys = st.ptys.lock_safe();
             if let Some(h) = ptys.get_mut("pty-openclaw") {
                 if h.tail().trim_end().ends_with("\u{1b}[6n") {
                     let _ = h.write("\u{1b}[24;80R");
@@ -6318,7 +7156,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
         loop {
             answer_dsr(&st);
-            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-openclaw");
+            let armed = PENDING_INSTALLS.lock_safe().contains_key("pty-openclaw");
             let resolved =
                 crate::pty::resolve_program("openclaw", &crate::pty::user_shell_path()).is_some();
             if !armed && resolved {
@@ -6327,8 +7165,7 @@ mod tests {
             if std::time::Instant::now() > deadline {
                 let tail = st
                     .ptys
-                    .lock()
-                    .unwrap()
+                    .lock_safe()
                     .get("pty-openclaw")
                     .map(|h| h.tail())
                     .unwrap_or_default();
@@ -6341,8 +7178,7 @@ mod tests {
             answer_dsr(&st);
             let done = st
                 .ptys
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .get("pty-openclaw")
                 .map(|h| h.command.contains("openclaw"))
                 .unwrap_or(false);
@@ -6353,14 +7189,13 @@ mod tests {
         }
         let cmd = st
             .ptys
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get("pty-openclaw")
             .map(|h| h.command.clone())
             .unwrap_or_default();
         assert!(cmd.contains("openclaw"), "relaunch should run openclaw: {cmd:?}");
         eprintln!("[live] openclaw installed + relaunched: {cmd}");
-        let pty = { st.ptys.lock().unwrap().remove("pty-openclaw") };
+        let pty = { st.ptys.lock_safe().remove("pty-openclaw") };
         if let Some(mut h) = pty {
             let _ = h.kill();
         }
@@ -6406,15 +7241,16 @@ mod tests {
             80,
             24,
             handle.clone(),
+            "main",
         )
         .unwrap();
-        st.ptys.lock().unwrap().insert("pty-probe".into(), h);
+        st.ptys.lock_safe().insert("pty-probe".into(), h);
         let mut answered = 0usize;
         for i in 0..50 {
             // ConPTY emits CSI 6 n at session start and the child BLOCKS on
             // the reply — the real app's xterm answers it; here we must.
             {
-                let mut ptys = st.ptys.lock().unwrap();
+                let mut ptys = st.ptys.lock_safe();
                 if let Some(h) = ptys.get_mut("pty-probe") {
                     let cur = h.tail().matches("\u{1b}[6n").count();
                     for _ in answered..cur {
@@ -6424,15 +7260,14 @@ mod tests {
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
-            if !st.ptys.lock().unwrap().contains_key("pty-probe") {
+            if !st.ptys.lock_safe().contains_key("pty-probe") {
                 eprintln!("[probe] exit detected after {}ms", i * 200);
                 return;
             }
         }
         let tail = st
             .ptys
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get("pty-probe")
             .map(|h| h.tail())
             .unwrap_or_default();
@@ -6459,6 +7294,7 @@ mod tests {
             80,
             24,
             handle.clone(),
+            "main",
         )
         .unwrap();
         let spawn_gen = h.spawn_gen;
@@ -6473,8 +7309,7 @@ mod tests {
             }
             answered = cur;
             if crate::pty::EARLY_EXITS
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .get("pty-late")
                 .is_some_and(|(g, _)| *g == spawn_gen)
             {
@@ -6485,12 +7320,12 @@ mod tests {
         }
         assert!(exited, "waiter never reported the exit");
         // Now do what spawn_inner does — too late.
-        st.ptys.lock().unwrap().insert("pty-late".into(), h);
+        st.ptys.lock_safe().insert("pty-late".into(), h);
         st.map_pty("pty-late", "late-agent");
         crate::pty::reap_if_already_exited(&handle, "pty-late", spawn_gen);
-        assert!(!st.ptys.lock().unwrap().contains_key("pty-late"), "dead handle left behind");
+        assert!(!st.ptys.lock_safe().contains_key("pty-late"), "dead handle left behind");
         assert!(st.pty_for_agent("late-agent").is_none(), "stale agent mapping left behind");
-        assert!(crate::pty::EARLY_EXITS.lock().unwrap().get("pty-late").is_none());
+        assert!(crate::pty::EARLY_EXITS.lock_safe().get("pty-late").is_none());
     }
 
     /// A FRESH hire whose spawn fails after registration leaves no registry
@@ -6563,16 +7398,16 @@ mod tests {
         let st = state(&handle);
         let env: std::collections::HashMap<String, String> = Default::default();
         let h = crate::pty::spawn(
-            "pty-alive", "cmd", &home.display().to_string(), &env, 80, 24, handle.clone(),
+            "pty-alive", "cmd", &home.display().to_string(), &env, 80, 24, handle.clone(), "main",
         )
         .unwrap();
         let g = h.spawn_gen;
-        st.ptys.lock().unwrap().insert("pty-alive".into(), h);
+        st.ptys.lock_safe().insert("pty-alive".into(), h);
         st.map_pty("pty-alive", "alive-agent");
         crate::pty::reap_if_already_exited(&handle, "pty-alive", g);
-        assert!(st.ptys.lock().unwrap().contains_key("pty-alive"));
+        assert!(st.ptys.lock_safe().contains_key("pty-alive"));
         assert_eq!(st.pty_for_agent("alive-agent").as_deref(), Some("pty-alive"));
-        let h = st.ptys.lock().unwrap().remove("pty-alive");
+        let h = st.ptys.lock_safe().remove("pty-alive");
         if let Some(mut h) = h {
             let _ = h.kill();
         }
@@ -6602,8 +7437,7 @@ mod tests {
         plan.pty_id = Some("pty-x".into());
         plan.auto_type_seed = true;
         PENDING_INSTALLS
-            .lock()
-            .unwrap()
+            .lock_safe()
             .insert("pty-x".into(), PendingInstall { args, plan });
 
         // A PTY that exits 0 immediately — "the installer just finished".
@@ -6617,9 +7451,10 @@ mod tests {
             80,
             24,
             handle.clone(),
+            "main",
         )
         .unwrap();
-        st.ptys.lock().unwrap().insert("pty-x".into(), h);
+        st.ptys.lock_safe().insert("pty-x".into(), h);
 
         // The waiter thread consumes the arm and re-spawns the agent's real
         // command into the same slot. ConPTY's startup CSI 6 n blocks the
@@ -6630,7 +7465,7 @@ mod tests {
         let mut answered = 0usize;
         loop {
             {
-                let mut ptys = st.ptys.lock().unwrap();
+                let mut ptys = st.ptys.lock_safe();
                 if let Some(h) = ptys.get_mut("pty-x") {
                     let cur = h.tail().matches("\u{1b}[6n").count();
                     if cur < answered {
@@ -6642,9 +7477,9 @@ mod tests {
                     answered = cur;
                 }
             }
-            let armed = PENDING_INSTALLS.lock().unwrap().contains_key("pty-x");
+            let armed = PENDING_INSTALLS.lock_safe().contains_key("pty-x");
             let (present, relaunched) = {
-                let ptys = st.ptys.lock().unwrap();
+                let ptys = st.ptys.lock_safe();
                 let cur = ptys.get("pty-x").map(|h| h.command.contains("more")).unwrap_or(false);
                 (ptys.contains_key("pty-x"), cur)
             };
@@ -6657,7 +7492,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        let pty = { st.ptys.lock().unwrap().remove("pty-x") };
+        let pty = { st.ptys.lock_safe().remove("pty-x") };
         if let Some(mut h) = pty {
             let _ = h.kill();
         }

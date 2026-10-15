@@ -11,6 +11,8 @@
 //! can reach the local port. The local handler is the security boundary and
 //! stays identical; deploy behind any tunnel that forwards to `port`.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::{HashSet, VecDeque};
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -182,15 +184,15 @@ impl SlackServer {
     }
 
     pub fn is_running(&self) -> bool {
-        self.handle.lock().unwrap().is_some()
+        self.handle.lock_safe().is_some()
     }
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.lock().unwrap().take() {
+        if let Some(h) = self.handle.lock_safe().take() {
             let _ = h.join();
         }
-        *self.url_port.lock().unwrap() = None;
+        *self.url_port.lock_safe() = None;
     }
 
     /// Bind + serve. `on_message` receives the verified inbound (text,
@@ -230,39 +232,42 @@ impl SlackServer {
             let channel_id = Arc::new(channel_id);
             let inflight = Arc::new(AtomicUsize::new(0));
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
-                else {
-                    continue;
-                };
-                // One worker per connection: a peer that stalls mid-body can
-                // only tie up its own thread, never the accept loop. The cap
-                // bounds how many such threads an unauthenticated peer buys.
-                if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
-                    inflight.fetch_sub(1, Ordering::SeqCst);
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
-                    continue;
-                }
-                let (state, on_message, secret, channel_id, inflight) = (
-                    state.clone(),
-                    on_message.clone(),
-                    secret.clone(),
-                    channel_id.clone(),
-                    inflight.clone(),
-                );
-                std::thread::spawn(move || {
-                    handle_events_request(
-                        req,
-                        &secret,
-                        channel_id.as_deref(),
-                        &state,
-                        on_message.as_ref(),
+                panic_guard::guarded("slack-events-accept", || {
+                    let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
+                    else {
+                        return;
+                    };
+                    // One worker per connection: a peer that stalls mid-body can
+                    // only tie up its own thread, never the accept loop. The cap
+                    // bounds how many such threads an unauthenticated peer buys.
+                    if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                        let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
+                        return;
+                    }
+                    let (state, on_message, secret, channel_id, inflight) = (
+                        state.clone(),
+                        on_message.clone(),
+                        secret.clone(),
+                        channel_id.clone(),
+                        inflight.clone(),
                     );
-                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    std::thread::spawn(move || {
+                        // Releases the slot even if the handler panics.
+                        let _inflight = panic_guard::CountGuard::new(inflight);
+                        handle_events_request(
+                            req,
+                            &secret,
+                            channel_id.as_deref(),
+                            &state,
+                            on_message.as_ref(),
+                        );
+                    });
                 });
             }
         });
-        *self.handle.lock().unwrap() = Some(handle);
-        *self.url_port.lock().unwrap() = Some(port);
+        *self.handle.lock_safe() = Some(handle);
+        *self.url_port.lock_safe() = Some(port);
         Ok(())
     }
 }
@@ -343,7 +348,7 @@ fn handle_events_request<F>(
     if payload["type"].as_str() == Some("event_callback") {
         let ev = &payload["event"];
         let dispatch = {
-            let mut st = state.lock().unwrap();
+            let mut st = state.lock_safe();
             if st.bot_user_id.is_none() {
                 if let Some(u) = payload["authorizations"]
                     .as_array()
@@ -452,15 +457,15 @@ impl SlackReplyServer {
     }
 
     pub fn is_running(&self) -> bool {
-        self.handle.lock().unwrap().is_some()
+        self.handle.lock_safe().is_some()
     }
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.lock().unwrap().take() {
+        if let Some(h) = self.handle.lock_safe().take() {
             let _ = h.join();
         }
-        *self.port.lock().unwrap() = None;
+        *self.port.lock_safe() = None;
     }
 
     /// Bind a loopback port (0 ⇒ OS-assigned) and serve. `bot_token` is read
@@ -495,31 +500,34 @@ impl SlackReplyServer {
         let inflight = Arc::new(AtomicUsize::new(0));
         let handle = std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
-                else {
-                    continue;
-                };
-                // Per-connection worker (a slow body or a slow Slack POST must
-                // not stall every other agent's reply), capped.
-                if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
-                    inflight.fetch_sub(1, Ordering::SeqCst);
-                    let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
-                    continue;
-                }
-                let (session_token, bot_token, on_replied, inflight) = (
-                    session_token.clone(),
-                    bot_token.clone(),
-                    on_replied.clone(),
-                    inflight.clone(),
-                );
-                std::thread::spawn(move || {
-                    handle_reply_request(req, &session_token, &*bot_token, &*on_replied);
-                    inflight.fetch_sub(1, Ordering::SeqCst);
+                panic_guard::guarded("slack-reply-accept", || {
+                    let Ok(Some(req)) = server.recv_timeout(std::time::Duration::from_millis(400))
+                    else {
+                        return;
+                    };
+                    // Per-connection worker (a slow body or a slow Slack POST must
+                    // not stall every other agent's reply), capped.
+                    if inflight.fetch_add(1, Ordering::SeqCst) >= MAX_INFLIGHT {
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                        let _ = req.respond(tiny_http::Response::from_string("").with_status_code(503));
+                        return;
+                    }
+                    let (session_token, bot_token, on_replied, inflight) = (
+                        session_token.clone(),
+                        bot_token.clone(),
+                        on_replied.clone(),
+                        inflight.clone(),
+                    );
+                    std::thread::spawn(move || {
+                        // Releases the slot even if the handler panics.
+                        let _inflight = panic_guard::CountGuard::new(inflight);
+                        handle_reply_request(req, &session_token, &*bot_token, &*on_replied);
+                    });
                 });
             }
         });
-        *self.handle.lock().unwrap() = Some(handle);
-        *self.port.lock().unwrap() = Some(port);
+        *self.handle.lock_safe() = Some(handle);
+        *self.port.lock_safe() = Some(port);
         Ok(port)
     }
 }
@@ -642,6 +650,18 @@ fn sanitize_filename(name: Option<&str>, tag: &str) -> String {
     format!("{tag}-{safe}")
 }
 
+/// Per-phase + overall timeouts for the attachment download.
+fn download_agent() -> ureq::Agent {
+    use std::time::Duration;
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(12)))
+        .timeout_recv_response(Some(Duration::from_secs(12)))
+        .timeout_recv_body(Some(Duration::from_secs(60)))
+        .timeout_global(Some(Duration::from_secs(90)))
+        .build()
+        .into()
+}
+
 /// Download a Slack file_share attachment into `dest_dir` using the bot
 /// token (Authorization header only — never logged). Returns the local
 /// {path,name,mimetype} or None on any failure; a partial list is still
@@ -655,11 +675,28 @@ pub fn download_slack_file(
     if !url.starts_with("https://") {
         return None;
     }
+    download_slack_file_with(&download_agent(), url, file, bot_token, dest_dir)
+}
+
+/// The download proper, over an injectable agent (tests use short timeouts).
+fn download_slack_file_with(
+    agent: &ureq::Agent,
+    url: &str,
+    file: &Value,
+    bot_token: &str,
+    dest_dir: &std::path::Path,
+) -> Option<Value> {
     let tag = format!("{}", uuid::Uuid::new_v4().simple())[..8].to_string();
     let filename = sanitize_filename(file["name"].as_str(), &tag);
     let dest = dest_dir.join(&filename);
     std::fs::create_dir_all(dest_dir).ok()?;
-    let resp = ureq::get(url)
+    // ureq 3 has NO default timeout: a peer that accepts the connection and
+    // never answers would hang this download forever — and the caller awaits it
+    // AFTER the webhook already 200-acked Slack, so the inbound message would be
+    // silently dropped. Bound connect / response / body (upstream 12s socket
+    // timeout) so a stall costs only the attachment, never the message.
+    let resp = agent
+        .get(url)
         .header("authorization", &format!("Bearer {bot_token}"))
         .call()
         .ok()?;
@@ -757,6 +794,36 @@ pub fn is_terminal_slack_error(err: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn download_gives_up_on_a_stalled_peer_instead_of_hanging() {
+        // A peer that accepts the connection and never answers: the download
+        // must time out (dropping only the attachment), not wait forever.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let hold = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            drop(s);
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_millis(500)))
+            .build()
+            .into();
+        let dir = std::env::temp_dir().join(format!("oa-slackdl-{}", uuid::Uuid::new_v4()));
+        let t0 = std::time::Instant::now();
+        let got = download_slack_file_with(
+            &agent,
+            &format!("http://127.0.0.1:{port}/f"),
+            &json!({"name": "a.txt"}),
+            "tok",
+            &dir,
+        );
+        assert!(got.is_none());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(3), "must not hang");
+        let _ = hold.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn ev(channel: &str, ts: &str, ty: &str, text: &str) -> Value {

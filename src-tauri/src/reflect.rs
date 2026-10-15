@@ -10,6 +10,7 @@
 //! → REBUILD → VERIFY-DON'T-TRUST (every check must hold) → ATOMIC SWAP.
 //! A failed verify leaves the original untouched.
 
+use crate::lock_ext::LockExt;
 use std::fs;
 use std::path::Path;
 
@@ -74,6 +75,11 @@ pub struct ReflectSettings {
 
 impl Default for ReflectSettings {
     fn default() -> Self {
+        // Conservative fallback thresholds for callers/tests with no config.
+        // Both the periodic scan and the manual `reflect_now` command use
+        // `from_config` (upstream's config.ts defaults: on, 30-min scan,
+        // condense past 50% of the budget OR >50 sections above a 16KB floor,
+        // newest 12 sections kept).
         Self {
             enabled: false,
             interval_ms: 30 * 60_000,
@@ -82,6 +88,25 @@ impl Default for ReflectSettings {
             recent_keep: 4,
             min_bytes: 48 * 1024,
         }
+    }
+}
+
+impl ReflectSettings {
+    /// The live tunables from config.json (`reflect*` keys) — read each tick.
+    pub fn from_config(c: &crate::config::Config) -> Self {
+        Self {
+            enabled: c.reflect_enabled,
+            interval_ms: c.reflect_interval_ms,
+            byte_trigger_pct: c.reflect_byte_trigger_pct,
+            section_trigger: c.reflect_section_trigger,
+            recent_keep: c.reflect_recent_keep,
+            min_bytes: c.reflect_min_bytes,
+        }
+    }
+
+    /// The scan cadence: configured interval, floored at 60s (upstream start()).
+    pub fn scan_every_ms(&self) -> u64 {
+        self.interval_ms.max(60_000)
     }
 }
 
@@ -416,9 +441,63 @@ fn should_condense(bytes: u64, mem: &Path, s: &ReflectSettings) -> bool {
         .unwrap_or(false)
 }
 
+/// Serializes condense passes (the periodic scan vs a manual reflect_now): two
+/// passes on one memory.md must never interleave their backup→swap.
+static CONDENSE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Append one event line to `<hive>/log.jsonl` (same shape as `Hive::log`) —
+/// the reflector only knows the hive root.
+fn log_event(hive_root: &Path, event: Value) {
+    use std::io::Write;
+    let mut v = json!({ "ts": chrono::Utc::now().timestamp_millis() });
+    if let (Some(a), Some(b)) = (v.as_object_mut(), event.as_object()) {
+        a.extend(b.clone());
+    }
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(hive_root.join("log.jsonl"))
+    {
+        let _ = f.write_all(format!("{v}\n").as_bytes());
+    }
+}
+
 /// Condense ONE agent's memory.md — the full pipeline. Returns a result map
-/// mirroring upstream's ReflectResult.
+/// mirroring upstream's ReflectResult. A rewrite logs `condense`; any abort
+/// past the trigger gate logs `condense-abort` (a failed pass loses nothing).
 pub fn condense_one(
+    hive_root: &Path,
+    id: &str,
+    command: &str,
+    s: &ReflectSettings,
+    manual: bool,
+) -> Value {
+    let _guard = CONDENSE_LOCK.lock_safe();
+    let r = condense_inner(hive_root, id, command, s, manual);
+    let reason = r["reason"].as_str().unwrap_or("");
+    if r["condensed"] == json!(true) {
+        log_event(
+            hive_root,
+            json!({
+                "kind": "condense", "agentId": id,
+                "oldBytes": r["oldBytes"], "newBytes": r["newBytes"],
+                "evicted": r["evicted"], "kept": r["kept"], "hoisted": r["hoisted"],
+                "backup": r["backup"],
+            }),
+        );
+    } else if !matches!(reason, "no-memory" | "below-threshold" | "nothing-to-evict") {
+        let mut ev = json!({ "kind": "condense-abort", "agentId": id, "reason": reason });
+        for k in ["detail", "oldBytes", "newBytes"] {
+            if !r[k].is_null() {
+                ev[k] = r[k].clone();
+            }
+        }
+        log_event(hive_root, ev);
+    }
+    r
+}
+
+fn condense_inner(
     hive_root: &Path,
     id: &str,
     command: &str,
@@ -534,6 +613,35 @@ mod tests {
         let q = parse_memory(&structured);
         assert!(q.pinned.is_some() && q.condensed.is_some());
         assert_eq!(q.recent.len(), 1);
+    }
+
+    #[test]
+    fn settings_follow_config_and_trigger_aborts_are_not_logged() {
+        let cfg = crate::config::Config::default();
+        let s = ReflectSettings::from_config(&cfg);
+        assert!(s.enabled);
+        assert_eq!(
+            (s.byte_trigger_pct, s.section_trigger, s.recent_keep, s.min_bytes),
+            (50, 50, 12, 16_384)
+        );
+        assert_eq!(s.scan_every_ms(), 1_800_000);
+        let fast = ReflectSettings { interval_ms: 5, ..s };
+        assert_eq!(fast.scan_every_ms(), 60_000, "floored at a minute");
+
+        // A file below the trigger / with nothing to evict is a quiet skip —
+        // only real aborts and rewrites reach log.jsonl.
+        let root = std::env::temp_dir().join(format!("oa-reflect-{}", uuid::Uuid::new_v4()));
+        let agent = root.join("agents").join("w1");
+        fs::create_dir_all(&agent).unwrap();
+        fs::write(agent.join("memory.md"), LEGACY).unwrap();
+        let r = condense_one(&root, "w1", "claude", &s, false);
+        assert_eq!(r["reason"], "below-threshold");
+        let r = condense_one(&root, "w1", "claude", &s, true); // manual: 3 sections < keep 12
+        assert_eq!(r["reason"], "nothing-to-evict");
+        let r = condense_one(&root, "ghost", "claude", &s, true);
+        assert_eq!(r["reason"], "no-memory");
+        assert!(!root.join("log.jsonl").exists());
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

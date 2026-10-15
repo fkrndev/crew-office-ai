@@ -280,6 +280,30 @@ pub fn set_archived(hive: &Hive, id: &str, archived: bool) -> Result<Value> {
     Ok(json!({ "ok": true }))
 }
 
+impl Hive {
+    /// Startup migration (upstream archiveOrphanedAgents, #57/#58): archive
+    /// every `archived:false` entry with no live PTY — stale carry-overs from a
+    /// session that quit/crashed without archiving. Run at boot BEFORE the
+    /// renderer respawns anything; a respawn goes through ensure_agent, which
+    /// clears the flag again. God and the assistant are never archived.
+    /// Returns the ids archived.
+    pub fn archive_orphaned_agents(
+        &self,
+        live_agent_ids: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        let mut done = Vec::new();
+        for a in self.registry() {
+            if a.archived || a.is_god || a.is_assistant || live_agent_ids.contains(&a.id) {
+                continue;
+            }
+            if set_archived(self, &a.id, true).is_ok() {
+                done.push(a.id);
+            }
+        }
+        done
+    }
+}
+
 /// Put an agent on hold / take it off — upstream's setAgentHold: the human
 /// claimed a 1:1, so auto-delivery and god's dispatch skip them.
 pub fn set_hold(hive: &Hive, id: &str, hold: bool) -> Result<Value> {
@@ -293,8 +317,36 @@ pub fn set_hold(hive: &Hive, id: &str, hold: bool) -> Result<Value> {
     patch.insert("onHold".into(), json!(hold));
     patch.insert("lastSeen".into(), json!(now_ms()));
     patch_registry_entry(hive, id, &patch)?;
+    patch_fleet_hold(hive, id, hold);
     let _ = hive.log(&json!({ "kind": "agent-hold", "agent": id, "onHold": hold }));
     Ok(json!({ "ok": true, "onHold": hold }))
+}
+
+/// Patch fleet.json's row for `id` in the same operation as the registry
+/// write (upstream setAgentHold): god's roster is injected from that file on
+/// its next prompt, and waiting up to 8s for the periodic snapshot means one
+/// more dispatch can still land on someone the human has just claimed. The
+/// fleet is a cache — a missing/unparseable file or absent row is ignored.
+fn patch_fleet_hold(hive: &Hive, id: &str, hold: bool) {
+    let path = hive.root.join("fleet.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut fleet) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let Some(row) = fleet
+        .get_mut("agents")
+        .and_then(|a| a.as_array_mut())
+        .and_then(|a| a.iter_mut().find(|r| r.get("id").and_then(|v| v.as_str()) == Some(id)))
+        .and_then(|r| r.as_object_mut())
+    else {
+        return;
+    };
+    row.insert("onHold".into(), json!(hold));
+    if let Ok(out) = serde_json::to_string_pretty(&fleet) {
+        let _ = atomic_write(&path, out.as_bytes());
+    }
 }
 
 // ─── read surface ───────────────────────────────────────────────────────────
@@ -713,6 +765,47 @@ mod tests {
                 .on_hold
         );
         assert!(set_hold(&hive, "ghost", true).is_err());
+    }
+
+    #[test]
+    fn hold_toggle_patches_fleet_json_immediately() {
+        let (_r, hive) = tmp_hive("hold-fleet");
+        hive.register_agent(&entry("w-h", "Hal")).unwrap();
+        hive.write_fleet_snapshot(&json!({
+            "ts": 1,
+            "agents": [{ "id": "w-h", "onHold": false }, { "id": "w-other", "onHold": false }]
+        }))
+        .unwrap();
+        set_hold(&hive, "w-h", true).unwrap();
+        let fleet: Value =
+            serde_json::from_str(&fs::read_to_string(hive.root.join("fleet.json")).unwrap()).unwrap();
+        assert_eq!(fleet["agents"][0]["onHold"], json!(true));
+        assert_eq!(fleet["agents"][1]["onHold"], json!(false));
+        // The hook-health field rides along on every fleet write.
+        assert!(fleet.get("hooks").is_some());
+        // No fleet file (or no row) is not an error.
+        let (_r2, bare) = tmp_hive("hold-nofleet");
+        bare.register_agent(&entry("w-h", "Hal")).unwrap();
+        set_hold(&bare, "w-h", true).unwrap();
+    }
+
+    #[test]
+    fn archive_orphans_skips_god_assistant_and_live() {
+        let (_r, hive) = tmp_hive("orphans");
+        let mut god = entry("god-1", "Michael");
+        god.is_god = true;
+        let mut asst = entry("asst-1", "Dwight");
+        asst.is_assistant = true;
+        for e in [god, asst, entry("live-1", "Jim"), entry("dead-1", "Pam")] {
+            hive.register_agent(&e).unwrap();
+        }
+        let live: std::collections::HashSet<String> = ["live-1".to_string()].into();
+        assert_eq!(hive.archive_orphaned_agents(&live), vec!["dead-1".to_string()]);
+        let by = |id: &str| hive.registry().into_iter().find(|a| a.id == id).unwrap();
+        assert!(by("dead-1").archived);
+        assert!(!by("god-1").archived && !by("asst-1").archived && !by("live-1").archived);
+        // Idempotent.
+        assert!(hive.archive_orphaned_agents(&live).is_empty());
     }
 
     #[test]

@@ -14,6 +14,8 @@
 //!
 //! Bodies/keys are never logged; the capture is parsed in-memory and dropped.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -104,12 +106,14 @@ impl ProxyBridge {
             if self.stopped.load(Ordering::SeqCst) != 0 {
                 return; // teardownPty → drop the listener
             }
-            let req = match server.recv_timeout(Duration::from_millis(500)) {
-                Ok(Some(r)) => r,
-                _ => continue,
-            };
-            let me = self.clone();
-            std::thread::spawn(move || me.handle(req));
+            panic_guard::guarded("proxy-accept", || {
+                let req = match server.recv_timeout(Duration::from_millis(500)) {
+                    Ok(Some(r)) => r,
+                    _ => return,
+                };
+                let me = self.clone();
+                std::thread::spawn(move || me.handle(req));
+            });
         });
         Ok(port)
     }
@@ -268,7 +272,7 @@ impl ProxyBridge {
         );
         let _ = req.respond(resp);
         if want_parse {
-            let bytes = captured.lock().unwrap().clone();
+            let bytes = captured.lock_safe().clone();
             if !bytes.is_empty() {
                 if let Ok(s) = String::from_utf8(bytes) {
                     self.parse_and_emit(&s, is_sse);
@@ -499,7 +503,7 @@ struct TeeShared {
 impl Read for TeeShared {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        let mut out = self.out.lock().unwrap();
+        let mut out = self.out.lock_safe();
         if out.len() < CAPTURE_CAP {
             let room = CAPTURE_CAP - out.len();
             out.extend_from_slice(&buf[..n.min(room)]);

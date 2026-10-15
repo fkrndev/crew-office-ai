@@ -13,6 +13,8 @@
 //! State is a process singleton (upstream was a module-level `new MemoryManager`);
 //! `instance(home)` re-creates it if the harness home ever moves.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -185,6 +187,16 @@ pub fn settings(harness_home: &Path) -> MemorySettings {
     MemorySettings { enabled, model }
 }
 
+/// Clears `MemInner::mining` on drop — including when a mine pass panics, so
+/// one panicking pass cannot leave the palace "busy" for the rest of the run.
+struct MiningGuard<'a>(&'a MemoryPalace);
+
+impl Drop for MiningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.inner.lock_safe().mining = false;
+    }
+}
+
 struct MemInner {
     /// Tri-state: None = not yet resolved.
     bin_cache: Option<Option<PathBuf>>,
@@ -211,7 +223,7 @@ static INSTANCE: Mutex<Option<Arc<MemoryPalace>>> = Mutex::new(None);
 /// (upstream changeHome relaunches the app instead — same end state).
 pub fn instance(home: &Path) -> Arc<MemoryPalace> {
     let home = home.to_path_buf();
-    let mut g = INSTANCE.lock().unwrap();
+    let mut g = INSTANCE.lock_safe();
     if g.as_ref().is_some_and(|m| m.home == home) {
         return g.as_ref().unwrap().clone();
     }
@@ -289,7 +301,7 @@ impl MemoryPalace {
 
     /// Resolve + cache the CLI path.
     pub fn bin(&self) -> Option<PathBuf> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         if let Some(cached) = &inner.bin_cache {
             return cached.clone();
         }
@@ -300,7 +312,7 @@ impl MemoryPalace {
 
     /// Force re-resolution (e.g. after the user installs mempalace).
     pub fn reset_bin_cache(&self) {
-        self.inner.lock().unwrap().bin_cache = None;
+        self.inner.lock_safe().bin_cache = None;
     }
 
     pub fn available(&self) -> bool {
@@ -322,7 +334,7 @@ impl MemoryPalace {
     /// memory.status() shape + the port's per-agent last-mine stamps.
     pub fn status(&self) -> Value {
         let palace = self.palace_path();
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock_safe();
         let last_mined: serde_json::Map<String, Value> = inner
             .last_mined
             .iter()
@@ -387,7 +399,7 @@ impl MemoryPalace {
             return;
         }
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_safe();
             if inner.started {
                 return;
             }
@@ -399,9 +411,9 @@ impl MemoryPalace {
             if me.stop.load(Ordering::Relaxed) {
                 return;
             }
-            me.mine_pass();
+            panic_guard::guarded("memory-palace-mine-pass", || me.mine_pass());
             // Self-scheduling with a variable gap (quarantine backoff).
-            let delay = me.inner.lock().unwrap().mine_delay_ms;
+            let delay = me.inner.lock_safe().mine_delay_ms;
             let deadline = Instant::now() + Duration::from_millis(delay);
             while Instant::now() < deadline {
                 if me.stop.load(Ordering::Relaxed) {
@@ -452,12 +464,13 @@ impl MemoryPalace {
             return;
         };
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_safe();
             if inner.mining {
                 return; // a previous pass is still running — let it finish
             }
             inner.mining = true;
         }
+        let mining_guard = MiningGuard(self);
         let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
         for agent_dir in dirs {
             let Some(id) = agent_dir
@@ -469,10 +482,10 @@ impl MemoryPalace {
             };
             let _ = self.mine_agent_if_changed(&agent_dir, &id);
         }
-        self.inner.lock().unwrap().mining = false;
+        drop(mining_guard);
         // Whether this pass left another quarantined copy decides the next gap.
         let quarantined = self.reap_palace();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         inner.mine_delay_ms = next_mine_delay_ms(
             inner.mine_delay_ms,
             MINE_INTERVAL_MS,
@@ -486,16 +499,17 @@ impl MemoryPalace {
     /// the caller (this runs on the mine_now thread).
     fn mine_one(&self, id: &str) {
         let agent_dir = self.home.join("hive").join("agents").join(id);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         if inner.mining {
             return;
         }
         inner.mining = true;
         drop(inner);
+        let mining_guard = MiningGuard(self);
         self.mine_agent_if_changed(&agent_dir, id);
-        self.inner.lock().unwrap().mining = false;
+        drop(mining_guard);
         let quarantined = self.reap_palace();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         inner.mine_delay_ms = next_mine_delay_ms(
             inner.mine_delay_ms,
             MINE_INTERVAL_MS,
@@ -517,13 +531,13 @@ impl MemoryPalace {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock_safe();
             if inner.last_mined.get(id) == Some(&mtime) {
                 return false; // unchanged — skip the model load
             }
         }
         let ok = self.mine_agent(agent_dir, id);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         if ok {
             inner.last_mined.insert(id.to_string(), mtime);
         } else {
@@ -576,7 +590,7 @@ impl MemoryPalace {
                 newest = newest.max(ts);
             }
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         let fresh = inner.last_quarantine_ts > 0 && newest > inner.last_quarantine_ts;
         if newest > inner.last_quarantine_ts {
             inner.last_quarantine_ts = newest;

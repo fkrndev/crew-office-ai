@@ -76,6 +76,42 @@ pub fn valid_repo(repo: &str) -> Option<String> {
     (ok_half(o) && ok_half(n)).then(|| format!("{o}/{n}"))
 }
 
+/// `owner/repo` out of a git remote URL: https/http (optionally with
+/// credentials), `git@github.com:owner/repo(.git)` and `ssh://git@github.com/…`.
+/// Only github.com — the API base this adapter speaks. None for anything else.
+pub fn parse_github_remote(url: &str) -> Option<String> {
+    let u = url.trim();
+    let rest = if let Some(r) = u.strip_prefix("git@github.com:") {
+        r.to_string()
+    } else {
+        let after = ["https://", "http://", "ssh://", "git://"]
+            .iter()
+            .find_map(|p| u.strip_prefix(p))?;
+        // drop `user[:pass]@`, then require the host to be exactly github.com
+        let after = after.rsplit_once('@').map_or(after, |(_, h)| h);
+        let (host, path) = after.split_once('/')?;
+        if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com") {
+            return None;
+        }
+        path.to_string()
+    };
+    valid_repo(rest.trim_end_matches('/'))
+}
+
+/// The `owner/repo` a local FOLDER's git remote points at: `origin` first,
+/// else the first remote that parses as a GitHub URL. The renderer hands the
+/// Command Center's issues/CI panels a project folder, not `owner/repo`.
+pub fn repo_from_folder(folder: &std::path::Path) -> Option<String> {
+    let repo = git2::Repository::discover(folder).ok()?;
+    let remotes = repo.remotes().ok()?;
+    let mut names: Vec<String> = remotes.iter().flatten().flatten().map(String::from).collect();
+    names.sort_by_key(|n| n != "origin"); // stable: origin first
+    names.iter().find_map(|n| {
+        let r = repo.find_remote(n).ok()?;
+        r.url().ok().and_then(parse_github_remote)
+    })
+}
+
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
@@ -234,5 +270,43 @@ mod tests {
         ] {
             assert!(valid_repo(bad).is_none(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn github_remote_urls_parse_to_owner_repo() {
+        for (url, want) in [
+            ("https://github.com/octo/cat.git", Some("octo/cat")),
+            ("https://github.com/octo/cat", Some("octo/cat")),
+            ("https://github.com/octo/cat/", Some("octo/cat")),
+            ("https://user:tok@github.com/octo/cat.git", Some("octo/cat")),
+            ("git@github.com:octo/cat.git", Some("octo/cat")),
+            ("ssh://git@github.com/octo/cat.git", Some("octo/cat")),
+            ("https://gitlab.com/octo/cat.git", None),
+            ("https://github.com.evil.io/octo/cat.git", None),
+            ("https://evil.io/github.com/octo/cat.git", None),
+            ("git@gitlab.com:octo/cat.git", None),
+            ("https://github.com/octo", None),
+            ("C:/work/repo", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_github_remote(url).as_deref(), want, "{url}");
+        }
+    }
+
+    #[test]
+    fn repo_from_folder_reads_origin_then_other_remotes() {
+        let d = std::env::temp_dir().join(format!("oa-ghrepo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        let repo = git2::Repository::init(&d).unwrap();
+        assert_eq!(repo_from_folder(&d), None, "no remotes");
+        repo.remote("upstream", "https://github.com/up/stream.git").unwrap();
+        repo.remote("mirror", "https://gitlab.com/x/y.git").unwrap();
+        assert_eq!(repo_from_folder(&d).as_deref(), Some("up/stream"));
+        repo.remote("origin", "git@github.com:me/mine.git").unwrap();
+        // origin wins, and a subfolder resolves through discover()
+        assert_eq!(repo_from_folder(&d.join("sub")).as_deref(), Some("me/mine"));
+        assert_eq!(repo_from_folder(&d.join("missing")), None);
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

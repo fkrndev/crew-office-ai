@@ -7,6 +7,7 @@
 //! disk plaintext. The `enabled` flag and `model` live in the persist kv
 //! (`freeflow_enabled`, `freeflow_model`).
 
+use crate::lock_ext::LockExt;
 use base64::Engine;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -29,8 +30,7 @@ fn groq_key() -> Option<String> {
 fn freeflow_enabled(app: &AppHandle) -> bool {
     state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv(KV_ENABLED)
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
@@ -39,8 +39,7 @@ fn freeflow_enabled(app: &AppHandle) -> bool {
 fn freeflow_model(app: &AppHandle) -> String {
     state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv(KV_MODEL)
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .filter(|m| !m.is_empty())
@@ -51,13 +50,13 @@ fn freeflow_model(app: &AppHandle) -> String {
 /// fields; an emptied key deletes the credential (upstream: `|| undefined`).
 #[tauri::command(async)]
 pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("freeflow_set_config", || {
     let st = state(&app);
     let p = &patch;
 
     if let Some(enabled) = p.get("enabled").and_then(|v| v.as_bool()) {
         st.persist
-            .lock()
-            .unwrap()
+            .lock_safe()
             .set_kv(KV_ENABLED, &json!(enabled));
     }
     let api_key = p
@@ -77,7 +76,7 @@ pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String
     }
     if let Some(model) = p.get("model").and_then(|v| v.as_str()) {
         let model = model.trim();
-        st.persist.lock().unwrap().set_kv(
+        st.persist.lock_safe().set_kv(
             KV_MODEL,
             &json!(if model.is_empty() {
                 DEFAULT_GROQ_MODEL
@@ -87,6 +86,7 @@ pub fn freeflow_set_config(app: AppHandle, patch: Value) -> Result<Value, String
         );
     }
     Ok(json!({ "ok": true }))
+    })
 }
 
 /// freeflow:transcribe — one captured clip (base64) via Groq. Gated on the
@@ -100,6 +100,7 @@ pub fn freeflow_transcribe(
     filename: Option<String>,
     language: Option<String>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("freeflow_transcribe", || {
     if !freeflow_enabled(&app) {
         return Ok(json!({ "ok": false, "error": "Free Flow is disabled" }));
     }
@@ -122,15 +123,18 @@ pub fn freeflow_transcribe(
         crate::analytics::global().track_feature(&app, "voice_dictation");
     }
     Ok(serde_json::to_value(out).unwrap_or_else(|_| json!({ "ok": false, "error": "serialize" })))
+    })
 }
 
 /// Settings-gate probe — presence of the key + flag, never the key itself.
 #[tauri::command(async)]
 pub fn freeflow_status(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("freeflow_status", || {
     Ok(json!({
         "ok": true,
         "enabled": freeflow_enabled(&app),
         "has_key": groq_key().is_some(),
         "model": freeflow_model(&app),
     }))
+    })
 }

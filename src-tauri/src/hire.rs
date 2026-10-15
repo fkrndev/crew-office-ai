@@ -483,6 +483,33 @@ pub fn is_allowed_manifest_url(u: &str) -> bool {
 
 /* ── transport (main-side hire.ts) ───────────────────────────────────────── */
 
+/// An IPv6 literal that embeds an IPv4 destination - v4-mapped
+/// `::ffff:a.b.c.d`, the deprecated v4-compatible `::a.b.c.d` (and `::1`),
+/// NAT64 `64:ff9b::/96`, or 6to4 `2002::/16` - yields that v4 so the v4
+/// classifier gates it (upstream embeddedV4). All of these ROUTE to a v4
+/// target, and the hex-group spelling is exactly what slipped past a textual
+/// v6 check.
+fn embedded_v4(v6: &std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let g = v6.segments();
+    let v4 = |hi: u16, lo: u16| {
+        std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8)
+    };
+    let top5_zero = g[..5].iter().all(|s| *s == 0);
+    if top5_zero && g[5] == 0xffff {
+        return Some(v4(g[6], g[7])); // v4-mapped
+    }
+    if top5_zero && g[5] == 0 && (g[6] != 0 || g[7] != 0) {
+        return Some(v4(g[6], g[7])); // v4-compatible (and ::1)
+    }
+    if g[0] == 0x0064 && g[1] == 0xff9b && g[2..6].iter().all(|s| *s == 0) {
+        return Some(v4(g[6], g[7])); // NAT64 64:ff9b::/96
+    }
+    if g[0] == 0x2002 {
+        return Some(v4(g[1], g[2])); // 6to4 2002::/16
+    }
+    None
+}
+
 /// Address ranges a remote manifest may NEVER resolve to — loopback,
 /// RFC1918, link-local incl. 169.254.169.254 (cloud metadata), CGNAT, ULA,
 /// multicast/reserved. Checked on the RESOLVED address: an https URL can
@@ -502,7 +529,7 @@ fn ip_blocked(ip: &std::net::IpAddr) -> bool {
                 || o[0] >= 224
         }
         std::net::IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = embedded_v4(v6) {
                 return ip_blocked(&std::net::IpAddr::V4(v4));
             }
             let seg = v6.segments();
@@ -628,9 +655,92 @@ pub fn read_manifest_file(path: &std::path::Path) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("manifest is not JSON: {e}"))
 }
 
+/// readHireManifestFiles - validate every selected manifest independently so
+/// one bad file never costs the valid neighbours picked with it. Errors name
+/// the file by BASENAME (never its full local path - that would leak the user's
+/// directory structure into logs/screenshots). Returns (manifests, errors).
+pub fn read_hire_manifest_files(paths: &[std::path::PathBuf]) -> (Vec<Value>, Vec<String>) {
+    let mut manifests = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "manifest".into());
+        let outcome = read_manifest_file(path).and_then(|raw| {
+            let (m, errs, _consent) = validate_hire_manifest(&raw);
+            m.ok_or_else(|| errs.join("; "))
+        });
+        match outcome {
+            Ok(m) => manifests.push(m),
+            Err(e) => errors.push(format!(
+                "{name}: {}",
+                e.replace(&path.display().to_string(), &name)
+            )),
+        }
+    }
+    (manifests, errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssrf_guard_blocks_v6_forms_that_embed_a_private_v4() {
+        let blocked = |s: &str| ip_blocked(&s.parse::<std::net::IpAddr>().unwrap());
+        // v4-mapped (dotted + hex), v4-compatible, ::1
+        assert!(blocked("::ffff:127.0.0.1"));
+        assert!(blocked("::ffff:7f00:1"));
+        assert!(blocked("::127.0.0.1"));
+        assert!(blocked("::7f00:1"));
+        assert!(blocked("::1"));
+        assert!(blocked("::10.0.0.5"));
+        // NAT64 64:ff9b::/96 wrapping loopback / RFC1918 / metadata
+        assert!(blocked("64:ff9b::7f00:1"));
+        assert!(blocked("64:ff9b::a00:5"));
+        assert!(blocked("64:ff9b::a9fe:a9fe"));
+        // 6to4 2002::/16 wrapping 127.0.0.1 / 10.0.0.1 / 169.254.169.254
+        assert!(blocked("2002:7f00:1::"));
+        assert!(blocked("2002:a00:1::1"));
+        assert!(blocked("2002:a9fe:a9fe::"));
+        // ...but the same wrappers around PUBLIC v4 addresses stay reachable
+        assert!(!blocked("::ffff:8.8.8.8"));
+        assert!(!blocked("::808:808"));
+        assert!(!blocked("64:ff9b::808:808"));
+        assert!(!blocked("2002:808:808::"));
+        assert!(!blocked("2606:4700:4700::1111"));
+    }
+
+    #[test]
+    fn batch_import_keeps_valid_neighbours_and_names_files_by_basename() {
+        let d = std::env::temp_dir().join(format!("oa-hirebatch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        let ok = d.join("good.json");
+        std::fs::write(
+            &ok,
+            r#"{"spec":"agent-office/hire@1","name":"Docs Writer","provider":"claude"}"#,
+        )
+        .unwrap();
+        let bad_spec = d.join("bad-spec.json");
+        std::fs::write(&bad_spec, r#"{"spec":"nope","name":"X"}"#).unwrap();
+        let not_json = d.join("broken.json");
+        std::fs::write(&not_json, "{ nope").unwrap();
+        let missing = d.join("gone.json");
+        let (manifests, errors) =
+            read_hire_manifest_files(&[bad_spec, ok, not_json, missing]);
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0]["name"], "Docs Writer");
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors[0].starts_with("bad-spec.json: "), "{errors:?}");
+        assert!(errors[1].starts_with("broken.json: "), "{errors:?}");
+        assert!(errors[2].starts_with("gone.json: "), "{errors:?}");
+        // no full local paths leak
+        let dir = d.display().to_string();
+        assert!(errors.iter().all(|e| !e.contains(&dir)), "{errors:?}");
+        assert_eq!(read_hire_manifest_files(&[]), (vec![], vec![]));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn valid_manifest_rounds_out_fields() {

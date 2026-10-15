@@ -18,6 +18,7 @@
 //! config save would drop the key, so an explicit `"enabled": false` is the
 //! only durable off-switch for now.
 
+use crate::lock_ext::LockExt;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
@@ -582,7 +583,7 @@ pub struct IngestOutcome {
 
 /// Ingest one artifact into the store at `kg_root`.
 pub fn ingest(kg_root: &Path, input: &IngestInput) -> Result<IngestOutcome, String> {
-    let _guard = KG_LOCK.lock().unwrap();
+    let _guard = KG_LOCK.lock_safe();
     let docs_dir = kg_root.join("docs");
     fs::create_dir_all(&docs_dir).map_err(|e| format!("create docs dir: {e}"))?;
 
@@ -816,7 +817,7 @@ pub fn get_doc(kg_root: &Path, doc_id: &str) -> Option<(KgMeta, String)> {
 
 /// Delete one artifact's folder and drop its lines from the index.
 pub fn remove_doc(kg_root: &Path, doc_id: &str) -> bool {
-    let _guard = KG_LOCK.lock().unwrap();
+    let _guard = KG_LOCK.lock_safe();
     if !is_valid_doc_id(doc_id) {
         return false;
     }

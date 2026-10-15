@@ -102,6 +102,25 @@ impl ControlRegistry {
         self.ensure(id).auto_delivery_paused = on;
     }
 
+    /// Boot restore (upstream replaceAutoDeliveryPauses): make `ids` EXACTLY
+    /// the set of agents whose auto-delivery is paused — everything else
+    /// (including entries the registry already tracks) is un-paused. Pending
+    /// messages stay durable; only the operator's explicit resume re-enables
+    /// delivery.
+    pub fn replace_auto_delivery_pauses<I, S>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let paused: HashSet<String> = ids.into_iter().map(|s| s.as_ref().to_string()).collect();
+        for (id, c) in self.map.iter_mut() {
+            c.auto_delivery_paused = paused.contains(id);
+        }
+        for id in paused {
+            self.ensure(&id).auto_delivery_paused = true;
+        }
+    }
+
     /// Beat-side read (parity with upstream's public API — the snapshot
     /// covers the same flag for UI consumers).
     #[allow(dead_code)]
@@ -207,6 +226,19 @@ mod tests {
         assert!(!r.should_halt("a1"));
         assert!(r.tool_decision("a1", "Bash").is_some()); // gate survives resume
         assert_eq!(r.tool_decision("a1", "Edit"), None); // pause cleared
+    }
+
+    #[test]
+    fn replace_auto_delivery_pauses_is_exact() {
+        let mut r = ControlRegistry::default();
+        r.pause_auto_delivery("old", true);
+        r.pause_auto_delivery("keep", true);
+        r.replace_auto_delivery_pauses(["keep", "new"]);
+        assert!(!r.snapshot("old").auto_delivery_paused, "not in the saved list -> un-paused");
+        assert!(r.snapshot("keep").auto_delivery_paused);
+        assert!(r.snapshot("new").auto_delivery_paused, "agents the registry never saw are tracked");
+        r.replace_auto_delivery_pauses(Vec::<String>::new());
+        assert!(!r.snapshot("keep").auto_delivery_paused && !r.snapshot("new").auto_delivery_paused);
     }
 
     #[test]

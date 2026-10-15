@@ -26,6 +26,7 @@
 //!   3. The user's opt-in (`analytics_opt_out` persist kv, Settings → Privacy;
 //!      default ON, i.e. opt-out — flipped live via analytics_set_opt_in).
 
+use crate::lock_ext::LockExt;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -186,11 +187,10 @@ impl Analytics {
 
     /// The opt-out flag (persist kv). Absent = enabled — upstream's
     /// `telemetryEnabled` defaults ON, i.e. analytics is opt-OUT by default.
-    pub fn opted_out(&self, app: &AppHandle) -> bool {
+    pub fn opted_out<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> bool {
         state(app)
             .persist
-            .lock()
-            .unwrap()
+            .lock_safe()
             .get_kv(KV_OPT_OUT)
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
@@ -198,9 +198,9 @@ impl Analytics {
 
     /// The anonymous install id — a random UUID minted on first use and held in
     /// the persist kv. Never derived from the machine.
-    fn distinct_id(&self, app: &AppHandle) -> String {
+    fn distinct_id<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> String {
         let st = state(app);
-        let persist = st.persist.lock().unwrap();
+        let persist = st.persist.lock_safe();
         if let Some(id) = persist
             .get_kv(KV_DISTINCT_ID)
             .and_then(|v| v.as_str().map(|s| s.to_string()))
@@ -214,7 +214,7 @@ impl Analytics {
     }
 
     /// True only when a send may actually happen right now.
-    fn enabled(&self, app: &AppHandle) -> bool {
+    fn enabled<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> bool {
         !self.posthog_key.is_empty()
             && !dnt_set()
             && !self.opted_out(app)
@@ -224,7 +224,7 @@ impl Analytics {
     /// Capture one allowlisted event. Silently drops anything not in EVENTS,
     /// any prop key not allowlisted for the event, and any non-string prop.
     /// Fire-and-forget: the POST rides a spawned thread and never throws.
-    pub fn track(&self, app: &AppHandle, event: &str, props: &Map<String, Value>) {
+    pub fn track<R: tauri::Runtime>(&self, app: &AppHandle<R>, event: &str, props: &Map<String, Value>) {
         if !self.enabled(app) {
             return;
         }
@@ -270,7 +270,7 @@ impl Analytics {
     /// One human-sent message. NOT deduped — unlike track_feature this IS a
     /// usage meter, and the count is the whole point. Re-checks the enum at
     /// runtime because surfaces can originate in the renderer.
-    pub fn message_sent(&self, app: &AppHandle, surface: &str) {
+    pub fn message_sent<R: tauri::Runtime>(&self, app: &AppHandle<R>, surface: &str) {
         if !MESSAGE_SURFACES.contains(&surface) {
             return;
         }
@@ -280,12 +280,12 @@ impl Analytics {
     }
 
     /// feature_used with per-session dedup (adoption signal, not a usage meter).
-    pub fn track_feature(&self, app: &AppHandle, feature: &str) {
+    pub fn track_feature<R: tauri::Runtime>(&self, app: &AppHandle<R>, feature: &str) {
         if !FEATURES.contains(&feature) {
             return;
         }
         {
-            let mut seen = self.features_seen.lock().unwrap();
+            let mut seen = self.features_seen.lock_safe();
             if !seen.insert(feature.to_string()) {
                 return;
             }
@@ -328,8 +328,7 @@ impl Analytics {
     pub fn set_opt_in(&self, app: &AppHandle, on: bool) {
         state(app)
             .persist
-            .lock()
-            .unwrap()
+            .lock_safe()
             .set_kv(KV_OPT_OUT, &json!(!on));
     }
 
@@ -344,7 +343,7 @@ impl Analytics {
         }
         let st = state(app);
         let (id_exists, previous_version) = {
-            let persist = st.persist.lock().unwrap();
+            let persist = st.persist.lock_safe();
             (
                 persist
                     .get_kv(KV_DISTINCT_ID)
@@ -364,8 +363,7 @@ impl Analytics {
         let transition = update_transition(previous_version.as_deref(), app_version, first_run);
         if previous_version.as_deref() != Some(app_version) {
             st.persist
-                .lock()
-                .unwrap()
+                .lock_safe()
                 .set_kv(KV_LAST_VERSION, &json!(app_version));
         }
 

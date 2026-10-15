@@ -7,6 +7,7 @@
 //! every command call below polls it, and `poll(&st.hive, Some(&app))` can be
 //! hooked into the lib.rs router_tick loop for continuous watching.
 
+use crate::lock_ext::LockExt;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -20,8 +21,7 @@ const KV_SESSION_LIVE: &str = "realtime_session_live";
 fn read_live_flag(app: &AppHandle) -> bool {
     state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv(KV_SESSION_LIVE)
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
@@ -51,13 +51,16 @@ fn openai_key(app: &AppHandle) -> Option<String> {
 /// realtime:hasKey — boolean presence only; gates the voice toggle.
 #[tauri::command(async)]
 pub fn realtime_has_key(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("realtime_has_key", || {
     Ok(openai_key(&app).is_some())
+    })
 }
 
 /// realtime:mintToken — GA client_secrets shape first, legacy sessions
 /// fallback on 404; both response shapes normalized to {value, expires_at}.
 #[tauri::command(async)]
 pub fn realtime_mint_token(app: AppHandle, model: Option<String>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("realtime_mint_token", || {
     let model = model
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| REALTIME_MODEL.into());
@@ -125,24 +128,25 @@ pub fn realtime_mint_token(app: AppHandle, model: Option<String>) -> Result<Valu
             }))
         }
     }
+    })
 }
 
 /// realtime:setSessionLive — emit vs queue for detected completions.
 #[tauri::command(async)]
 pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("realtime_set_session_live", || {
     state(&app)
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .set_kv(KV_SESSION_LIVE, &json!(live));
-    WATCHER.lock().unwrap().set_session_live(live);
+    WATCHER.lock_safe().set_session_live(live);
     // Upstream toggles BOTH watchers on the same flag — the floor delta
     // watcher re-primes off a fresh snapshot either way.
     crate::realtime::FLOOR_WATCHER
-        .lock()
-        .unwrap()
+        .lock_safe()
         .set_session_live(live);
     Ok(json!({ "ok": true }))
+    })
 }
 
 /// Track a voice dispatch so the watcher can detect its completion (upstream
@@ -151,26 +155,30 @@ pub fn realtime_set_session_live(app: AppHandle, live: bool) -> Result<Value, St
 /// `dispatch` is upstream's PendingDispatch minus kind (forced "dispatch").
 #[tauri::command(async)]
 pub fn realtime_track_dispatch(_app: AppHandle, dispatch: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("realtime_track_dispatch", || {
     let mut rec: PendingDispatch =
         serde_json::from_value(dispatch).map_err(|e| format!("bad dispatch record: {e}"))?;
     rec.kind = crate::realtime::PendingKind::Dispatch;
     if rec.correlation_id.is_empty() {
         return Err("correlationId required".into());
     }
-    WATCHER.lock().unwrap().track(rec);
+    WATCHER.lock_safe().track(rec);
     Ok(json!({ "ok": true }))
+    })
 }
 
 /// realtime:drainCompletions — poll once, then return + clear the queue of
 /// completions that landed while no session was live (upstream warm-start).
 #[tauri::command(async)]
 pub fn realtime_drain_completions(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("realtime_drain_completions", || {
     let st = state(&app);
-    let mut w = WATCHER.lock().unwrap();
+    let mut w = WATCHER.lock_safe();
     w.set_session_live(read_live_flag(&app));
     w.poll(&st.hive, Some(&app));
     let out = w.drain();
     Ok(serde_json::to_value(&out).unwrap_or_else(|_| json!([])))
+    })
 }
 
 /// realtime:waitFor — the `wait_for(taskId)` tool path. Resolves with the
@@ -183,6 +191,7 @@ pub async fn realtime_wait_for(
     task_id_or_agent: String,
     timeout_ms: Option<u64>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard_async("realtime_wait_for", async move {
     let subject = task_id_or_agent.trim().to_string();
     if subject.is_empty() {
         return Ok(json!({ "timedOut": true, "taskId": "" }));
@@ -195,7 +204,7 @@ pub async fn realtime_wait_for(
     loop {
         let found: Option<RealtimeCompletion> = {
             let st = state(&app);
-            let mut w = WATCHER.lock().unwrap();
+            let mut w = WATCHER.lock_safe();
             w.set_session_live(read_live_flag(&app));
             // Register an untracked subject so detection (and a later drain
             // after a timeout) still sees it — upstream's syntheticPending.
@@ -213,6 +222,7 @@ pub async fn realtime_wait_for(
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    }).await
 }
 
 /// The voice-tool catalog — which realtimeActions.ts verbs are backed by
@@ -222,6 +232,7 @@ pub async fn realtime_wait_for(
 /// spine, the renderer enqueue path) are listed but flagged unavailable.
 #[tauri::command(async)]
 pub fn realtime_actions_status(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("realtime_actions_status", || {
     let tools = json!([
         // ── soft writes (upstream executed these immediately) ──────────────
         { "name": "ping_agent", "verb": "ping", "tier": "soft", "available": true,
@@ -297,7 +308,7 @@ pub fn realtime_actions_status(app: AppHandle) -> Result<Value, String> {
           "backing": null,
           "description": "Drops the pending destructive action (same session-bound spine)." }
     ]);
-    let w = WATCHER.lock().unwrap();
+    let w = WATCHER.lock_safe();
     Ok(json!({
         "ok": true,
         "voice_actor": crate::realtime::VOICE_ACTOR,
@@ -305,4 +316,5 @@ pub fn realtime_actions_status(app: AppHandle) -> Result<Value, String> {
         "pending_dispatches": w.pending_count(),
         "tools": tools,
     }))
+    })
 }

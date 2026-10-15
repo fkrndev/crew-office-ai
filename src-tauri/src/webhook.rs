@@ -22,6 +22,8 @@
 //! Deviation: loopback only (upstream additionally tunnels via tunnelmole) —
 //! an operator can point ngrok/cloudflared at the port for public ingress.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,7 +151,7 @@ impl WebhookServer {
     /// setEndpoints) — a removed id stops resolving on the very next request.
     /// Returns the count of enabled endpoints now served.
     pub fn set_endpoints(&self, list: &[WebhookEndpoint]) -> usize {
-        let mut map = self.endpoints.lock().unwrap();
+        let mut map = self.endpoints.lock_safe();
         map.clear();
         for e in list {
             if e.id.is_empty() || e.secret.is_empty() || !e.enabled {
@@ -164,20 +166,20 @@ impl WebhookServer {
             };
             map.insert(e.id.clone(), (e.clone(), compiled));
         }
-        let mut win = self.windows.lock().unwrap();
+        let mut win = self.windows.lock_safe();
         win.retain(|k, _| k.is_empty() || k == UNKNOWN_BUCKET || k == GET_BUCKET || map.contains_key(k));
         map.len()
     }
 
     /// Ids currently served — for the settings surface (parity with upstream).
     pub fn endpoint_ids(&self) -> Vec<String> {
-        self.endpoints.lock().unwrap().keys().cloned().collect()
+        self.endpoints.lock_safe().keys().cloned().collect()
     }
 
     /// The held-token map, lazily loaded from the durable kv store
     /// (upstream heldTokens()).
     fn held_tokens(&self, app: &tauri::AppHandle) -> HashMap<String, String> {
-        let mut guard = self.held.lock().unwrap();
+        let mut guard = self.held.lock_safe();
         if let Some(m) = guard.as_ref() {
             return m.clone();
         }
@@ -185,8 +187,7 @@ impl WebhookServer {
             .try_state::<crate::commands::AppState>()
             .and_then(|st| {
                 st.persist
-                    .lock()
-                    .unwrap()
+                    .lock_safe()
                     .get_kv(HELD_TOKENS_KV_KEY)
                     .and_then(|v| v.as_object().cloned())
             })
@@ -200,14 +201,14 @@ impl WebhookServer {
     }
 
     fn held_set(&self, app: &tauri::AppHandle, hash: &str, entry_id: &str) {
-        let mut guard = self.held.lock().unwrap();
+        let mut guard = self.held.lock_safe();
         let m = guard.get_or_insert_with(HashMap::new);
         m.insert(hash.to_string(), entry_id.to_string());
         self.persist_held_locked(&m, app);
     }
 
     fn held_remove(&self, app: &tauri::AppHandle, hash: &str) {
-        let mut guard = self.held.lock().unwrap();
+        let mut guard = self.held.lock_safe();
         if let Some(m) = guard.as_mut() {
             m.remove(hash);
             self.persist_held_locked(m, app);
@@ -217,7 +218,7 @@ impl WebhookServer {
     fn persist_held_locked(&self, map: &HashMap<String, String>, app: &tauri::AppHandle) {
         if let Some(st) = app.try_state::<crate::commands::AppState>() {
             let v = json!(map);
-            st.persist.lock().unwrap().set_kv(HELD_TOKENS_KV_KEY, &v);
+            st.persist.lock_safe().set_kv(HELD_TOKENS_KV_KEY, &v);
         }
     }
 
@@ -236,7 +237,7 @@ impl WebhookServer {
             hist.list().into_iter().map(|e| e.id).collect();
         let mut changed = false;
         {
-            let mut guard = self.held.lock().unwrap();
+            let mut guard = self.held.lock_safe();
             if let Some(m) = guard.as_mut() {
                 m.retain(|_, id| {
                     let keep = live.contains(id);
@@ -262,7 +263,7 @@ impl WebhookServer {
     }
 
     fn rate_ok(&self, bucket: &str, limit: u32) -> bool {
-        let mut win = self.windows.lock().unwrap();
+        let mut win = self.windows.lock_safe();
         let e = win.entry(bucket.to_string()).or_insert((Instant::now(), 0));
         if e.0.elapsed() >= RATE_WINDOW {
             *e = (Instant::now(), 0);
@@ -287,25 +288,27 @@ impl WebhookServer {
             if self.stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let mut req = match server.recv_timeout(Duration::from_millis(500)) {
-                Ok(Some(r)) => r,
-                Ok(None) => continue,
-                Err(_) => continue,
-            };
-            let me = Arc::clone(&self);
-            let app2 = app.clone();
-            let h2 = hive.clone();
-            std::thread::spawn(move || {
-                let (status, body) = me.handle(&mut req, &app2, &h2);
-                let _ = req.respond(
-                    tiny_http::Response::from_string(body.to_string())
-                        .with_status_code(status)
-                        .with_header(
-                            "Content-Type: application/json"
-                                .parse::<tiny_http::Header>()
-                                .unwrap(),
-                        ),
-                );
+            panic_guard::guarded("webhook-accept", || {
+                let mut req = match server.recv_timeout(Duration::from_millis(500)) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return,
+                    Err(_) => return,
+                };
+                let me = Arc::clone(&self);
+                let app2 = app.clone();
+                let h2 = hive.clone();
+                std::thread::spawn(move || {
+                    let (status, body) = me.handle(&mut req, &app2, &h2);
+                    let _ = req.respond(
+                        tiny_http::Response::from_string(body.to_string())
+                            .with_status_code(status)
+                            .with_header(
+                                "Content-Type: application/json"
+                                    .parse::<tiny_http::Header>()
+                                    .unwrap(),
+                            ),
+                    );
+                });
             });
         }
     }
@@ -363,7 +366,7 @@ impl WebhookServer {
 
         // Resolve endpoint (unknown → decoy compare, same work as wrong secret).
         let (ep, real) = {
-            let map = self.endpoints.lock().unwrap();
+            let map = self.endpoints.lock_safe();
             match id.as_deref().and_then(|i| map.get(i)) {
                 Some((e, _)) => (e.clone(), true),
                 None => (
@@ -474,7 +477,7 @@ impl WebhookServer {
         // The endpoint's own schema decides what a valid body is. An
         // unparseable schema accepts everything (upstream parseSchema).
         {
-            let map = self.endpoints.lock().unwrap();
+            let map = self.endpoints.lock_safe();
             if let Some((_, Some(vv))) = map.get(&endpoint_id) {
                 if !vv.is_valid(&v) {
                     return (

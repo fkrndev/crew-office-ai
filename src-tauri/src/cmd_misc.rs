@@ -9,6 +9,7 @@
 //! throughout; handlers that upstream shaped as `{ok, ...}` objects keep that
 //! shape inside an Ok.
 
+use crate::lock_ext::LockExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -36,6 +37,7 @@ const MAX_BINARY_READ: u64 = 2 * 1024 * 1024;
 /// mailto for the contact links and drops the settings schemes).
 #[tauri::command(async)]
 pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_open_external", || {
     let url = url.trim().to_string();
     let lower = url.to_lowercase();
     // Upstream allowlist (index.ts app:openExternal): Settings panes or
@@ -52,21 +54,26 @@ pub fn app_open_external(app: AppHandle, url: String) -> Result<bool, String> {
         os_open(&url).map_err(|e2| format!("{e}; fallback failed: {e2}"))?;
     }
     Ok(true)
+    })
 }
 
 /// app:copyToClipboard.
 #[tauri::command(async)]
 pub fn app_clipboard_write(app: AppHandle, text: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_clipboard_write", || {
     app.clipboard()
         .write_text(text)
         .map_err(|e| e.to_string())?;
     Ok(true)
+    })
 }
 
 /// app:readClipboard — upstream swallows read errors to ''; keep that.
 #[tauri::command(async)]
 pub fn app_clipboard_read(app: AppHandle) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("app_clipboard_read", || {
     Ok(app.clipboard().read_text().unwrap_or_default())
+    })
 }
 
 /// Persist a pasted image to the OS clipboard — the paste-flow companion of
@@ -74,6 +81,7 @@ pub fn app_clipboard_read(app: AppHandle) -> Result<String, String> {
 /// `data:` URL) and the OS clipboard gets the decoded image.
 #[tauri::command(async)]
 pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("clipboard_save_image", || {
     let s = base64.trim();
     // Strip a `data:image/png;base64,` prefix if the caller sent a data URL.
     let s = match s.find("base64,") {
@@ -88,6 +96,7 @@ pub fn clipboard_save_image(app: AppHandle, base64: String) -> Result<bool, Stri
         .write_image(&img)
         .map_err(|e| e.to_string())?;
     Ok(true)
+    })
 }
 
 /// Decoded-size cap for a pasted image (the renderer sends whole screenshots).
@@ -172,12 +181,41 @@ fn save_pasted_image(dir: &Path, base64: &str) -> Result<PathBuf, String> {
 /// it by path. Returns `{ok: true, path}` (absolute).
 #[tauri::command(async)]
 pub fn clipboard_image_to_file(app: AppHandle, base64: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("clipboard_image_to_file", || {
     let dir = harness_home(&app).join("pasted-images");
     let path = save_pasted_image(&dir, &base64)?;
     Ok(json!({ "ok": true, "path": path.to_string_lossy() }))
+    })
 }
 
 // ─── app lifecycle / desktop integration ────────────────────────────────────
+
+/// The per-hive namespace id the Codex data exposure uses: the first 12 hex
+/// chars of sha1(hive root path).
+fn codex_hive_id(hive_root: &Path) -> String {
+    use sha1::{Digest, Sha1};
+    let h = format!("{:x}", Sha1::digest(hive_root.display().to_string().as_bytes()));
+    h[..12.min(h.len())].to_string()
+}
+
+/// Remove this hive's exposed Codex data — `<codex>/{sessions,
+/// archived_sessions}/agent-office/<hive-id>` — and drop the now-empty
+/// `agent-office` parents. Returns the directories removed. `user_codex` is
+/// injectable (tests never touch the real ~/.codex).
+pub(crate) fn remove_exposed_codex_data(user_codex: &Path, hive_root: &Path) -> Vec<PathBuf> {
+    let id = codex_hive_id(hive_root);
+    let mut gone = Vec::new();
+    for kind in ["sessions", "archived_sessions"] {
+        let ns = user_codex.join(kind).join("agent-office");
+        let dir = ns.join(&id);
+        if dir.exists() && std::fs::remove_dir_all(&dir).is_ok() {
+            gone.push(dir);
+        }
+        // Tidy: remove the namespace dir only when nothing else lives in it.
+        let _ = std::fs::remove_dir(&ns);
+    }
+    gone
+}
 
 /// app:resetAll — stop everything, then wipe the harness-owned state under
 /// the configured home: `hive/`, `roster.json` (archived first, never
@@ -190,6 +228,7 @@ pub fn clipboard_image_to_file(app: AppHandle, base64: String) -> Result<Value, 
 /// intentionally never resolves).
 #[tauri::command(async)]
 pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("app_reset_all", || {
     let st = state(&app);
     let home = harness_home(&app);
     if is_filesystem_root(&home) {
@@ -206,7 +245,7 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     // 2. Close every live PTY (wholesale shutdown, not per-agent lifecycle —
     //    no status/archival fanfare).
     let killed = {
-        let mut ptys = st.ptys.lock().unwrap();
+        let mut ptys = st.ptys.lock_safe();
         let drained: Vec<crate::pty::PtyHandle> = ptys.drain().map(|(_, h)| h).collect();
         let n = drained.len();
         drop(ptys);
@@ -217,8 +256,8 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     };
     // The wholesale drain bypasses teardownPty — reset the pty↔agent maps
     // directly so a stale mapping can't outlive the reset.
-    st.pty_to_agent.lock().unwrap().clear();
-    st.agent_to_pty.lock().unwrap().clear();
+    st.pty_to_agent.lock_safe().clear();
+    st.agent_to_pty.lock_safe().clear();
 
     // 3. The roster retires into roster-backups/ — never deleted outright.
     st.roster.archive();
@@ -226,7 +265,7 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     // 3b. Close the persist connection before deleting harness.db — on
     //     Windows the SQLite file stays locked while the connection holds
     //     it, so this must happen before the wipe below.
-    st.persist.lock().unwrap().close();
+    st.persist.lock_safe().close();
 
     // 4. Remove the harness-owned files. Each step is independent and
     //    reported, not fatal — a half-reset that reports is better than an
@@ -238,6 +277,16 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
         match std::fs::remove_dir_all(&hive_dir) {
             Ok(()) => removed.push(hive_dir.display().to_string()),
             Err(e) => errors.push(format!("{}: {e}", hive_dir.display())),
+        }
+    }
+    // Codex rollouts the hive exposed under the user's own scan roots
+    // (~/.codex/{sessions,archived_sessions}/agent-office/<hive-id>/…): they
+    // belong to the agents just wiped. Only THIS hive's namespace goes — other
+    // hives' data under the same roots stays. The boot step re-exposes what
+    // a fresh hive creates.
+    if let Some(user_codex) = dirs::home_dir().map(|h| h.join(".codex")) {
+        for p in remove_exposed_codex_data(&user_codex, &st.hive.root) {
+            removed.push(p.display().to_string());
         }
     }
     for name in [
@@ -277,6 +326,7 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
     }
     drop(st);
     app.restart(); // diverges — the renderer's await never resolves
+    })
 }
 
 /// app:setLoginItem — Windows autostart via the Run key. Non-Windows has no
@@ -284,6 +334,7 @@ pub fn app_reset_all(app: AppHandle) -> Result<Value, String> {
 /// setLoginItemSettings, which was the macOS path).
 #[tauri::command(async)]
 pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_set_login_item", || {
     let _ = app;
     #[cfg(windows)]
     {
@@ -307,6 +358,7 @@ pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String>
         let _ = enabled;
         Err("not supported".into())
     }
+    })
 }
 
 /// app:setNotifications — persist the desktop-notification toggle. The slimmed
@@ -314,15 +366,18 @@ pub fn app_set_login_item(app: AppHandle, enabled: bool) -> Result<bool, String>
 /// hooks layer when a native-notification path lands).
 #[tauri::command(async)]
 pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_set_notifications", || {
     // Upstream writeConfig({notifications}) — the toggle lives in typed
     // config so get_config round-trips it for the Settings UI.
     let st = state(&app);
     {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         cfg.notifications = enabled;
         st.config_store.save(&cfg).map_err(err_str)?;
     }
+    crate::commands::emit_config_changed(&app);
     Ok(true)
+    })
 }
 
 /// app:forceQuit — the "force quit" buttons (closing time taking too long, a
@@ -330,24 +385,28 @@ pub fn app_set_notifications(app: AppHandle, enabled: bool) -> Result<bool, Stri
 /// the process; skips the graceful closing-time protocol by design.
 #[tauri::command(async)]
 pub fn app_force_quit(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("app_force_quit", || {
     let st = state(&app);
     let handles: Vec<crate::pty::PtyHandle> = st
         .ptys
-        .lock()
-        .map(|mut m| m.drain().map(|(_, h)| h).collect())
-        .unwrap_or_default();
+        .lock_safe()
+        .drain()
+        .map(|(_, h)| h)
+        .collect();
     for mut h in handles {
         let _ = h.kill();
     }
-    st.pty_to_agent.lock().unwrap().clear();
-    st.agent_to_pty.lock().unwrap().clear();
+    st.pty_to_agent.lock_safe().clear();
+    st.agent_to_pty.lock_safe().clear();
     app.exit(0);
     Ok(true)
+    })
 }
 
 /// terminal:openAtFolder — spawn a system terminal at a folder.
 #[tauri::command(async)]
 pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("terminal_open_at_folder", || {
     let _ = app;
     let p = expand_tilde(&path);
     if p.is_empty() {
@@ -403,32 +462,66 @@ pub fn terminal_open_at_folder(app: AppHandle, path: String) -> Result<bool, Str
         }
     }
     Ok(true)
+    })
 }
 
-/// tools:status — probe each agent-engine binary on PATH. Presence is a PATH
-/// resolution, never a spawn (upstream's argument verbatim: several of these
-/// boot a TUI when invoked bare).
+/// The binaries `tools_status` probes: the prerequisites, then one per agent
+/// engine (the presets' `defaultCommand` binaries - kimi, copilot and
+/// cursor-agent were missing). Keyed by binary name, which is how
+/// `normalizeToolsProbe` joins them to the toolCatalog rows.
+const PROBED_BINS: [&str; 17] = [
+    "git", "uv", "node", "claude", "codex", "gemini", "grok", "kimi", "agy", "hermes", "pi",
+    "opencode", "qwen", "crush", "openclaw", "copilot", "cursor-agent",
+];
+
+/// One bare probe row `{id, found, path}`.
+fn probe_row(id: &str, path: Option<String>) -> Value {
+    json!({ "id": id, "found": path.is_some(), "path": path })
+}
+
+/// tools:status - probe every external tool the setup catalog lists. Presence
+/// is a PATH resolution, never a spawn (upstream's argument verbatim: several
+/// of these boot a TUI when invoked bare). Rows stay BARE (`{id: <bin>, found,
+/// path}`) - the shape `normalizeToolsProbe` joins to the catalog - plus a
+/// `mempalace` row whose presence/`detail` come from the memory subsystem's
+/// own status (authoritative: it knows whether the palace is initialised).
 #[tauri::command(async)]
 pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
-    let _ = app;
-    const PROVIDERS: [&str; 11] = [
-        "claude", "codex", "gemini", "grok", "agy", "hermes", "pi", "opencode", "qwen", "crush",
-        "openclaw",
-    ];
+    crate::panic_guard::cmd_guard("tools_status", || {
     let path_env = crate::pty::user_shell_path();
-    Ok(PROVIDERS
+    let mut rows: Vec<Value> = PROBED_BINS
         .iter()
         .map(|id| {
-            let resolved = crate::pty::resolve_program(id, &path_env);
-            let path = match resolved {
+            let path = match crate::pty::resolve_program(id, &path_env) {
                 Some(crate::pty::Resolved::Exe(p)) | Some(crate::pty::Resolved::Script(p)) => {
-                    Value::String(p.display().to_string())
+                    Some(p.display().to_string())
                 }
-                None => Value::Null,
+                None => None,
             };
-            json!({ "id": id, "found": path.is_string(), "path": path })
+            probe_row(id, path)
         })
-        .collect())
+        .collect();
+    // MemPalace: re-resolve (it may have been installed after boot), then
+    // report availability + whether the palace has been built yet.
+    let palace = crate::memory_palace::instance(&harness_home(&app));
+    palace.reset_bin_cache();
+    let mem = palace.status();
+    let available = mem["available"].as_bool() == Some(true);
+    let mut row = probe_row(
+        "mempalace",
+        available.then(|| mem["bin"].as_str().map(String::from)).flatten(),
+    );
+    row["found"] = json!(available);
+    if available {
+        row["detail"] = json!(if mem["initialized"].as_bool() == Some(true) {
+            "palace initialised"
+        } else {
+            "installed - palace not built yet"
+        });
+    }
+    rows.push(row);
+    Ok(rows)
+    })
 }
 
 // ─── fs helpers ─────────────────────────────────────────────────────────────
@@ -438,6 +531,7 @@ pub fn tools_status(app: AppHandle) -> Result<Vec<Value>, String> {
 /// the renderer doesn't know the home dir.
 #[tauri::command(async)]
 pub fn fs_stat_abs(app: AppHandle, path: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("fs_stat_abs", || {
     let _ = app;
     if path.len() > 4096 || path.contains('\0') {
         return Ok(json!({ "exists": false, "isFile": false, "path": "" }));
@@ -450,6 +544,7 @@ pub fn fs_stat_abs(app: AppHandle, path: String) -> Result<Value, String> {
         Ok(m) => Ok(json!({ "exists": true, "isFile": m.is_file(), "path": abs })),
         Err(_) => Ok(json!({ "exists": false, "isFile": false, "path": abs })),
     }
+    })
 }
 
 /// Folders the user picked through `dialog_choose_folder` this session —
@@ -472,12 +567,12 @@ fn known_workspace_roots(st: &crate::commands::AppState) -> Vec<PathBuf> {
         }
         raw.push(cwd);
     }
-    for (wt, orig) in st.worktree_paths.lock().unwrap().values() {
+    for (wt, orig) in st.worktree_paths.lock_safe().values() {
         raw.push(wt.clone());
         raw.push(orig.clone());
     }
     raw.push(st.hive.root.parent().unwrap_or(&st.hive.root).to_path_buf());
-    raw.extend(PICKED_FOLDERS.lock().unwrap().iter().cloned());
+    raw.extend(PICKED_FOLDERS.lock_safe().iter().cloned());
     raw.into_iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect()
@@ -499,6 +594,7 @@ fn root_in_workspaces(root: &Path, known: &[PathBuf]) -> bool {
 /// general file-exfiltration read.
 #[tauri::command(async)]
 pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("fs_read_binary", || {
     let _ = app;
     if path.is_empty() || path.len() > 4096 || path.contains('\0') {
         return Err("bad request".into());
@@ -529,6 +625,7 @@ pub fn fs_read_binary(app: AppHandle, path: String) -> Result<Value, String> {
         "path": abs,
         "size": bytes.len(),
     }))
+    })
 }
 
 /// fs:writeFile — confined write through fs_ops::safe_resolve (the one
@@ -540,6 +637,7 @@ pub fn fs_write_file(
     rel: String,
     content: String,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("fs_write_file", || {
     // The root comes from the renderer, so it is only trusted when it IS a
     // known workspace — otherwise "confined" would mean "confined to
     // whatever the caller says".
@@ -554,6 +652,7 @@ pub fn fs_write_file(
     }
     std::fs::write(&abs, content).map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true, "path": abs.display().to_string() }))
+    })
 }
 
 /// fs:revealPath — reveal in the OS file browser. A FILE is only ever
@@ -563,6 +662,7 @@ pub fn fs_write_file(
 /// exploit).
 #[tauri::command(async)]
 pub fn fs_reveal_path(app: AppHandle, path: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("fs_reveal_path", || {
     let _ = app;
     if path.is_empty() || path.len() > 4096 || path.contains('\0') {
         return Err("bad request".into());
@@ -599,6 +699,7 @@ pub fn fs_reveal_path(app: AppHandle, path: String) -> Result<bool, String> {
         os_open(&abs)?;
     }
     Ok(true)
+    })
 }
 
 // ─── dialogs ────────────────────────────────────────────────────────────────
@@ -606,6 +707,7 @@ pub fn fs_reveal_path(app: AppHandle, path: String) -> Result<bool, String> {
 /// dialog:chooseFolder — single-directory picker; upstream {ok,path} shape.
 #[tauri::command]
 pub fn dialog_choose_folder(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("dialog_choose_folder", || {
     match app
         .dialog()
         .file()
@@ -616,7 +718,7 @@ pub fn dialog_choose_folder(app: AppHandle) -> Result<Value, String> {
             let picked = fp.to_string();
             // A user-picked folder is a legitimate fs_write_file root.
             if let Ok(real) = std::fs::canonicalize(&picked) {
-                let mut roots = PICKED_FOLDERS.lock().unwrap();
+                let mut roots = PICKED_FOLDERS.lock_safe();
                 if !roots.contains(&real) {
                     roots.push(real);
                 }
@@ -625,12 +727,14 @@ pub fn dialog_choose_folder(app: AppHandle) -> Result<Value, String> {
         }
         None => Ok(json!({ "ok": false, "error": "cancelled" })),
     }
+    })
 }
 
 /// dialog:attachFiles — multi-select file picker (Images group + All Files);
 /// upstream {ok, files:[{path,name}]} shape.
 #[tauri::command]
 pub fn dialog_attach_files(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("dialog_attach_files", || {
     match app
         .dialog()
         .file()
@@ -660,18 +764,23 @@ pub fn dialog_attach_files(app: AppHandle) -> Result<Value, String> {
         }
         None => Ok(json!({ "ok": false, "error": "cancelled" })),
     }
+    })
 }
 
 // ─── catalogs + hero payload ────────────────────────────────────────────────
 
-/// models:catalog — the agent model presets. Upstream fetched a remote
-/// catalog with a baked-in fallback; this port serves the baked copy
-/// (embedded at build time from upstream's shared/modelCatalog.json).
+/// models:catalog — the REMOTE model catalog, `{catalog, fetchedAt, stale}`
+/// (6h TTL cache under the harness home, never fatal). A null catalog means
+/// "keep the catalog compiled into this build" — the renderer's baked floor.
 #[tauri::command(async)]
-pub fn models_catalog(app: AppHandle) -> Result<Value, String> {
-    let _ = app;
-    serde_json::from_str::<Value>(include_str!("modelCatalog.json"))
-        .map_err(|e| format!("embedded catalog invalid: {e}"))
+pub async fn models_catalog(app: AppHandle, force: Option<bool>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard_async("models_catalog", async move {
+    let cache = harness_home(&app).join("model-catalog.json");
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || crate::misc::load_model_catalog(&cache, force))
+        .await
+        .map_err(|e| e.to_string())
+    }).await
 }
 
 /// hero:payload — the Settings hero card, fetched + cached with a 6h TTL and
@@ -679,6 +788,7 @@ pub fn models_catalog(app: AppHandle) -> Result<Value, String> {
 /// a cold cache means a bounded network fetch.
 #[tauri::command(async)]
 pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard_async("hero_payload", async move {
     // Not `hero.json`: earlier builds cached the upstream project's payload
     // there, and a stale copy would otherwise outlive a failing fetch forever.
     let cache = harness_home(&app).join("hero-agent-office.json");
@@ -686,6 +796,7 @@ pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, 
     tauri::async_runtime::spawn_blocking(move || load_hero(&cache, force))
         .await
         .map_err(|e| e.to_string())
+    }).await
 }
 
 // ─── roster ─────────────────────────────────────────────────────────────────
@@ -694,8 +805,16 @@ pub async fn hero_payload(app: AppHandle, force: Option<bool>) -> Result<Value, 
 /// for the renderer's first paint; Tauri IPC is async either way, but the
 /// name is the contract).
 #[tauri::command(async)]
-pub fn roster_read_sync(app: AppHandle) -> Result<Option<Value>, String> {
+pub fn roster_read_sync(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<Value>, String> {
+    crate::panic_guard::cmd_guard("roster_read_sync", || {
+    if window.label() != crate::floors::MAIN_LABEL {
+        return Ok(None); // a floor's roster is its own (see roster_read)
+    }
     Ok(state(&app).roster.read())
+    })
 }
 
 // ─── provider BYOK keys (write-only keychain entries) ──────────────────────
@@ -723,6 +842,7 @@ fn provider_key_name(provider: &str) -> Result<String, String> {
 
 #[tauri::command(async)]
 pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("provider_key_set", || {
     let key = provider_key_name(&provider)?;
     if value.is_empty() {
         return Err("key required".into());
@@ -731,29 +851,40 @@ pub fn provider_key_set(app: AppHandle, provider: String, value: String) -> Resu
     // config only lists the key once its value provably persists somewhere.
     let st = state(&app);
     crate::misc::secret_set_persist(&key, &value, st.config_store.dir())?;
-    let mut cfg = st.config.lock().unwrap();
-    if !cfg.secret_env_keys.contains(&key) {
-        cfg.secret_env_keys.push(key);
-        st.config_store.save(&cfg).map_err(err_str)?;
+    {
+        let mut cfg = st.config.lock_safe();
+        if !cfg.secret_env_keys.contains(&key) {
+            cfg.secret_env_keys.push(key);
+            st.config_store.save(&cfg).map_err(err_str)?;
+        }
     }
+    crate::commands::emit_config_changed(&app);
     Ok(true)
+    })
 }
 
 #[tauri::command(async)]
 pub fn provider_key_has(app: AppHandle, provider: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("provider_key_has", || {
     let dir = state(&app).config_store.dir().to_path_buf();
     Ok(crate::misc::secret_get_persist(&provider_key_name(&provider)?, &dir).is_some())
+    })
 }
 
 #[tauri::command(async)]
 pub fn provider_key_clear(app: AppHandle, provider: String) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("provider_key_clear", || {
     let key = provider_key_name(&provider)?;
     let st = state(&app);
     crate::misc::secret_delete_persist(&key, st.config_store.dir());
-    let mut cfg = st.config.lock().unwrap();
-    cfg.secret_env_keys.retain(|k| k != &key);
-    st.config_store.save(&cfg).map_err(err_str)?;
+    {
+        let mut cfg = st.config.lock_safe();
+        cfg.secret_env_keys.retain(|k| k != &key);
+        st.config_store.save(&cfg).map_err(err_str)?;
+    }
+    crate::commands::emit_config_changed(&app);
     Ok(true)
+    })
 }
 
 // ─── webhooks (server lifecycle + endpoint bookkeeping) ─────────────────────
@@ -787,12 +918,13 @@ static WEBHOOK_TUNNEL: std::sync::Mutex<Option<(String, std::process::Child)>> =
 /// The tunnel is non-fatal — the loopback handler is the security boundary.
 #[tauri::command(async)]
 pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("webhook_start", || {
     if WEBHOOK_LATCHED.load(Ordering::SeqCst) {
         return Err("webhook server was stopped this session; restart the app to rebind".into());
     }
     let st = state(&app);
     let (eps, cfg_port) = {
-        let cfg = st.config.lock().unwrap();
+        let cfg = st.config.lock_safe();
         (cfg.webhooks.clone(), cfg.webhook_port)
     };
     let port = port.unwrap_or(cfg_port);
@@ -811,37 +943,39 @@ pub fn webhook_start(app: AppHandle, port: Option<u16>) -> Result<Value, String>
             log::warn!("[webhook] server stopped: {e:#}");
         }
         WEBHOOK_BOUND.store(false, Ordering::SeqCst);
-        if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
+        if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock_safe().take() {
             crate::misc::kill_process_tree(&mut child);
         }
     });
     // Public tunnel (openTunnel, non-fatal) — mint AFTER the bind so the URL
     // is never forwarded at a dead port.
-    if WEBHOOK_TUNNEL.lock().unwrap().is_none() {
+    if WEBHOOK_TUNNEL.lock_safe().is_none() {
         match crate::misc::start_tunnel(port) {
-            Ok((url, child)) => *WEBHOOK_TUNNEL.lock().unwrap() = Some((url, child)),
+            Ok((url, child)) => *WEBHOOK_TUNNEL.lock_safe() = Some((url, child)),
             Err(e) => log::warn!("[webhook] tunnel unavailable: {e}"),
         }
     }
     let tunnel_url = WEBHOOK_TUNNEL
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|(u, _)| u.clone());
     Ok(json!({ "running": true, "port": port, "url": tunnel_url }))
+    })
 }
 
 /// webhook:stop — signal the serve loop to exit (one-way latch; the port
 /// rebinds only on the next app launch).
 #[tauri::command(async)]
 pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
+    crate::panic_guard::cmd_guard("webhook_stop", || {
     state(&app).webhook.stop();
     WEBHOOK_BOUND.store(false, Ordering::SeqCst);
     WEBHOOK_LATCHED.store(true, Ordering::SeqCst);
-    if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock().unwrap().take() {
+    if let Some((_, mut child)) = WEBHOOK_TUNNEL.lock_safe().take() {
         crate::misc::kill_process_tree(&mut child);
     }
     Ok(true)
+    })
 }
 
 /// webhooks:status — {running, port, endpoints} (upstream also reported the
@@ -849,13 +983,13 @@ pub fn webhook_stop(app: AppHandle) -> Result<bool, String> {
 /// `url` is the loopback base and `endpoints` is the served id list).
 #[tauri::command(async)]
 pub fn webhook_status(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("webhook_status", || {
     let st = state(&app);
-    let cfg_port = st.config.lock().unwrap().webhook_port;
+    let cfg_port = st.config.lock_safe().webhook_port;
     let bound = WEBHOOK_PORT.load(Ordering::SeqCst);
     let port = if bound != 0 { bound } else { cfg_port };
     let tunnel_url = WEBHOOK_TUNNEL
-        .lock()
-        .unwrap()
+        .lock_safe()
         .as_ref()
         .map(|(u, _)| u.clone());
     Ok(json!({
@@ -863,14 +997,17 @@ pub fn webhook_status(app: AppHandle) -> Result<Value, String> {
         "url": tunnel_url.unwrap_or_else(|| format!("http://127.0.0.1:{port}")),
         "endpoints": st.webhook.endpoint_ids(),
     }))
+    })
 }
 
 /// webhooks:generateSecret — mint a 256-bit secret for the operator to paste
 /// into their caller (not persisted here).
 #[tauri::command(async)]
 pub fn webhook_generate_secret(app: AppHandle) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("webhook_generate_secret", || {
     let _ = app;
     Ok(random_hex32())
+    })
 }
 
 /// webhooks:delete — drop one endpoint by id and hot-swap the served list (a
@@ -881,56 +1018,95 @@ pub fn webhooks_delete(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<crate::webhook::WebhookEndpoint>, String> {
+    crate::panic_guard::cmd_guard("webhooks_delete", || {
     let st = state(&app);
     let list = {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         cfg.webhooks.retain(|w| w.id != id);
         let list = cfg.webhooks.clone();
         st.config_store.save(&cfg).map_err(err_str)?;
         list
     };
     let _ = st.webhook.set_endpoints(&list);
+    crate::commands::emit_config_changed(&app);
     Ok(list)
+    })
 }
 
 // ─── slack config + reply helper ────────────────────────────────────────────
 
-/// slack:setConfig — persist {channel_id, port, enabled} to the persist kv
-/// (`slack_config`; the slimmed Config has no slack fields). Disabling stops
-/// the running server, matching upstream's reconcile (we deliberately do NOT
-/// auto-start on save — the user presses Start).
+/// slack:setConfig - upstream `writeConfig({slack*})`: channelId / port /
+/// enabled / proactivePosting land in config.json (`slackChannelId`,
+/// `slackPort`, `slackEnabled`, `slackProactivePosting` - what Settings
+/// re-reads on reopen; the kv `slack_config` mirror is kept for older readers).
+/// `signingSecret` / `botToken` go to the credential store, never to disk or
+/// the agent env; a blank value leaves the stored secret alone (the UI cannot
+/// show it back). Disabling - or having no signing secret - stops the running
+/// adapter; we deliberately do NOT auto-start on save, the user presses Start.
 #[tauri::command(async)]
 pub fn slack_set_config(app: AppHandle, cfg: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("slack_set_config", || {
     let st = state(&app);
-    let mut cur = st
+    let trimmed = |v: Option<&Value>| -> Option<String> {
+        v.and_then(|v| v.as_str()).map(|s| s.trim().to_string())
+    };
+    for (field, key) in [
+        ("signingSecret", "SLACK_SIGNING_SECRET"),
+        ("botToken", "SLACK_BOT_TOKEN"),
+    ] {
+        if let Some(v) = trimmed(cfg.get(field)).filter(|v| !v.is_empty()) {
+            crate::misc::secret_set_persist(key, &v, st.config_store.dir())?;
+        }
+    }
+    let mut patch = serde_json::Map::new();
+    let mut mirror = st
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv("slack_config")
         .filter(|v| v.is_object())
         .unwrap_or_else(|| json!({}));
-    let obj = cur.as_object_mut().unwrap(); // is_object filtered above
-    if let Some(v) = cfg
-        .get("channel_id")
-        .or_else(|| cfg.get("channelId"))
-        .and_then(|v| v.as_str())
-    {
-        obj.insert("channel_id".into(), json!(v.trim()));
+    let obj = mirror.as_object_mut().unwrap(); // is_object filtered above
+    if let Some(c) = trimmed(cfg.get("channel_id").or_else(|| cfg.get("channelId"))) {
+        obj.insert("channel_id".into(), json!(c));
+        // An emptied field clears back to unset.
+        patch.insert(
+            "slackChannelId".into(),
+            if c.is_empty() { Value::Null } else { json!(c) },
+        );
     }
     if let Some(p) = cfg.get("port").and_then(|v| v.as_u64()) {
         if p <= u16::MAX as u64 {
             obj.insert("port".into(), json!(p));
+            patch.insert("slackPort".into(), json!(p));
         }
     }
     if let Some(e) = cfg.get("enabled").and_then(|v| v.as_bool()) {
         obj.insert("enabled".into(), json!(e));
+        patch.insert("slackEnabled".into(), json!(e));
+    }
+    if let Some(pp) = cfg.get("proactivePosting").and_then(|v| v.as_bool()) {
+        patch.insert("slackProactivePosting".into(), json!(pp));
     }
     let next = Value::Object(obj.clone());
-    st.persist.lock().unwrap().set_kv("slack_config", &next);
-    if next.get("enabled") == Some(&json!(false)) {
-        st.slack.stop();
+    st.persist.lock_safe().set_kv("slack_config", &next);
+    if !patch.is_empty() {
+        let typed = st
+            .config_store
+            .patch_raw(&patch)
+            .map_err(|e| format!("could not save Slack settings: {e}"))?;
+        *st.config.lock_safe() = typed;
     }
+    // Reconcile the running adapter: disabled, or no signing secret -> stop.
+    let raw = st.config_store.raw_value();
+    let enabled = raw.get("slackEnabled").and_then(|v| v.as_bool()) == Some(true);
+    let has_secret =
+        crate::misc::secret_get_persist("SLACK_SIGNING_SECRET", st.config_store.dir()).is_some();
+    if !enabled || !has_secret {
+        crate::commands::slack_teardown(&app);
+    }
+    crate::commands::emit_config_changed(&app);
     Ok(next)
+    })
 }
 
 /// slack:replyScriptPath — absolute path of the `<harness>/bin/slack-reply`
@@ -938,8 +1114,10 @@ pub fn slack_set_config(app: AppHandle, cfg: Value) -> Result<Value, String> {
 /// the bot token travels via the SLACK_BOT_TOKEN env, never an argv).
 #[tauri::command(async)]
 pub fn slack_reply_script_path(app: AppHandle) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("slack_reply_script_path", || {
     let path = write_slack_reply_script(&harness_home(&app))?;
     Ok(path.display().to_string())
+    })
 }
 
 // ─── telemetry (the OTel collector's read surface) ─────────────────────────
@@ -948,19 +1126,24 @@ pub fn slack_reply_script_path(app: AppHandle) -> Result<String, String> {
 /// that missed the live pushes.
 #[tauri::command(async)]
 pub fn telemetry_snapshot(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("telemetry_snapshot", || {
     Ok(state(&app).telemetry.snapshot())
+    })
 }
 
 /// telemetry:spans — one agent's recent tool-span ring, oldest→newest.
 #[tauri::command(async)]
 pub fn telemetry_spans(app: AppHandle, agent_id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("telemetry_spans", || {
     Ok(json!(state(&app).telemetry.spans(&agent_id)))
+    })
 }
 
 /// telemetry:usage — one agent's cumulative usage with upstream's fallback
 /// order: live OTel sample → proxy-sample ledger → transcript reconciler.
 #[tauri::command(async)]
 pub fn telemetry_usage(app: AppHandle, agent_id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("telemetry_usage", || {
     let st = state(&app);
     let sample = st
         .telemetry
@@ -981,30 +1164,45 @@ pub fn telemetry_usage(app: AppHandle, agent_id: String) -> Result<Value, String
         }
         None => Ok(Value::Null),
     }
+    })
 }
 
 // ─── window / config / control extras ───────────────────────────────────────
 
-/// window:newFloor — open a second office window on the same state. Labels
-/// roll forward (floor-2, floor-3, …) so reopening never collides.
-#[tauri::command]
-pub fn window_new_floor(app: AppHandle) -> Result<Value, String> {
-    let mut n = 2u32;
-    let label = loop {
-        let l = format!("floor-{n}");
-        if app.get_webview_window(&l).is_none() {
-            break l;
-        }
-        n += 1;
-        if n > 64 {
-            return Err("too many floors".into());
-        }
-    };
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
-        .title("Agent Office")
-        .build()
-        .map_err(|e| e.to_string())?;
+/// window:newFloor — open another office window ("floor", floors.rs), gated by
+/// the `multiWindow` config flag (default OFF). Resolves `{ok}` like upstream
+/// (`{ok:false}` when the flag is off); a real failure rejects. Async on
+/// purpose: WebView2 deadlocks when a window is built from a synchronous
+/// command.
+#[tauri::command(async)]
+pub fn window_new_floor(app: AppHandle, window: tauri::WebviewWindow) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("window_new_floor", || {
+    if !crate::floors::multi_window_enabled(&app) {
+        return Ok(json!({
+            "ok": false,
+            "error": "multi-window floors are off (Settings > General > Multiple windows)"
+        }));
+    }
+    let label = crate::floors::open_floor(&app, Some(&window))?;
     Ok(json!({ "ok": true, "label": label }))
+    })
+}
+
+/// window:closeFloor — the CONFIRMED close of a floor that still has live
+/// terminals: stop only the PTYs this floor owns (their normal exit teardown
+/// still runs), then destroy the window. Floors only — `main` closes through
+/// the app-quit gate.
+#[tauri::command(async)]
+pub fn window_close_floor(app: AppHandle, window: tauri::WebviewWindow) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("window_close_floor", || {
+    let label = window.label().to_string();
+    if !crate::floors::is_floor_label(&label) {
+        return Err("only a floor window can be closed this way".into());
+    }
+    let killed = crate::floors::kill_owned(&app, &label);
+    window.destroy().map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "killed": killed }))
+    })
 }
 
 /// config:changeHome — repointing the harness home requires re-init of every
@@ -1021,6 +1219,7 @@ pub fn config_change_home(
     new_home: String,
     mode: Option<String>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("config_change_home", || {
     let expanded = expand_tilde(&new_home);
     if expanded.is_empty() {
         return Err("invalid newHome".into());
@@ -1049,7 +1248,7 @@ pub fn config_change_home(
     if mode.as_deref() == Some("move") {
         // Close the SQLite conn before touching harness.db — the files stay
         // locked on Windows while a connection holds them.
-        st.persist.lock().unwrap().close();
+        st.persist.lock_safe().close();
         let mut copied: Vec<String> = Vec::new();
         let mut move_errs: Vec<String> = Vec::new();
         // EVERYTHING the home holds is state — hive, palace, knowledge,
@@ -1116,6 +1315,7 @@ pub fn config_change_home(
 
     drop(st);
     app.restart(); // diverges — the renderer's await never resolves
+    })
 }
 
 /// Recursive dir copy for 'move' mode — follows nothing exotic, plain files
@@ -1142,6 +1342,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// disk; `~` expands first, same defense-in-depth rule as upstream (#140).
 #[tauri::command(async)]
 pub fn config_ensure_home(app: AppHandle, path: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("config_ensure_home", || {
     let _ = app;
     let p = expand_tilde(&path);
     if p.is_empty() {
@@ -1150,12 +1351,15 @@ pub fn config_ensure_home(app: AppHandle, path: String) -> Result<Value, String>
     std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(Path::new(&p).join("hive")).map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true, "path": p }))
+    })
 }
 
 /// config:homeSync — the current harness home path.
 #[tauri::command(async)]
 pub fn config_home_sync(app: AppHandle) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("config_home_sync", || {
     Ok(harness_home(&app).display().to_string())
+    })
 }
 
 /// config:setAgentTokenCap — set/clear one agent's work-token ceiling
@@ -1167,6 +1371,7 @@ pub fn config_set_agent_token_cap(
     agent_id: String,
     cap: Option<u64>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("config_set_agent_token_cap", || {
     const MAX_AGENT_TOKEN_CAP: u64 = 10_000_000_000;
     let id = agent_id.trim();
     if id.is_empty() {
@@ -1178,7 +1383,7 @@ pub fn config_set_agent_token_cap(
         }
     }
     let st = state(&app);
-    let mut cfg = st.config.lock().unwrap();
+    let mut cfg = st.config.lock_safe();
     match cap {
         Some(v) => {
             cfg.agent_token_caps.insert(id.to_string(), v);
@@ -1188,7 +1393,11 @@ pub fn config_set_agent_token_cap(
         }
     }
     st.config_store.save(&cfg).map_err(err_str)?;
-    serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+    let out = serde_json::to_value(&*cfg).map_err(|e| e.to_string());
+    drop(cfg);
+    crate::commands::emit_config_changed(&app);
+    out
+    })
 }
 
 /// config:setAgentCostCap — set/clear one agent's USD spend ceiling
@@ -1200,6 +1409,7 @@ pub fn config_set_agent_cost_cap(
     agent_id: String,
     cap: Option<f64>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("config_set_agent_cost_cap", || {
     const MAX_AGENT_COST_CAP_USD: f64 = 1_000_000.0;
     let id = agent_id.trim();
     if id.is_empty() {
@@ -1211,7 +1421,7 @@ pub fn config_set_agent_cost_cap(
         }
     }
     let st = state(&app);
-    let mut cfg = st.config.lock().unwrap();
+    let mut cfg = st.config.lock_safe();
     match cap {
         Some(v) => {
             cfg.agent_cost_caps.insert(id.to_string(), v);
@@ -1221,7 +1431,11 @@ pub fn config_set_agent_cost_cap(
         }
     }
     st.config_store.save(&cfg).map_err(err_str)?;
-    serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+    let out = serde_json::to_value(&*cfg).map_err(|e| e.to_string());
+    drop(cfg);
+    crate::commands::emit_config_changed(&app);
+    out
+    })
 }
 
 /// control:setBreakerState — upstream fanned a BreakerState from the breaker
@@ -1235,51 +1449,54 @@ pub fn control_set_breaker_state(
     agent_id: String,
     enabled: bool,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("control_set_breaker_state", || {
     let st = state(&app);
     let _ = app.emit(
         "control:breakerState",
         json!({ "agentId": agent_id, "enabled": enabled }),
     );
-    let snap = st.control.lock().unwrap().snapshot(&agent_id);
+    let snap = st.control.lock_safe().snapshot(&agent_id);
     Ok(json!(snap))
+    })
 }
 
-/// control:autoDelivery — set one agent's auto-delivery flag. `enabled`
-/// here is the POSITIVE toggle (auto-delivery on); the control registry stores
-/// the inverted `auto_delivery_paused` bit. Like upstream, the paused-agent
-/// id list is also persisted (persist kv `auto_delivery_paused_agents`) so a
-/// restart keeps the holds.
+/// control:autoDelivery — set one agent's auto-delivery hold. `paused` is the
+/// frontend's argument (true = hold deliveries) and maps straight onto the
+/// control registry's `auto_delivery_paused` bit. Like upstream, the
+/// paused-agent id list is also persisted (persist kv
+/// `auto_delivery_paused_agents`) so a restart keeps the holds.
 #[tauri::command(async)]
 pub fn control_auto_delivery(
     app: AppHandle,
     agent_id: String,
-    enabled: bool,
+    paused: bool,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("control_auto_delivery", || {
     let st = state(&app);
     let snap = {
-        let mut c = st.control.lock().unwrap();
-        c.pause_auto_delivery(&agent_id, !enabled);
+        let mut c = st.control.lock_safe();
+        c.pause_auto_delivery(&agent_id, paused);
         c.snapshot(&agent_id)
     };
     let key = "auto_delivery_paused_agents";
     let mut list: Vec<String> = st
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv(key)
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default()
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
         .collect();
-    if enabled {
+    if !paused {
         list.retain(|id| id != &agent_id);
     } else if !list.iter().any(|id| id == &agent_id) {
         list.push(agent_id.clone());
     }
     list.sort();
-    st.persist.lock().unwrap().set_kv(key, &json!(list));
+    st.persist.lock_safe().set_kv(key, &json!(list));
     Ok(json!(snap))
+    })
 }
 
 // ─── triggers — context rules + the org blob ────────────────────────────────
@@ -1327,17 +1544,19 @@ fn sanitize_context_rule(patch: &Value, current: &Value) -> Value {
 /// `triggers_context`), else derived defaults from the live config.
 #[tauri::command(async)]
 pub fn triggers_get_context(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("triggers_get_context", || {
     let st = state(&app);
-    if let Some(v) = st.persist.lock().unwrap().get_kv("triggers_context") {
+    if let Some(v) = st.persist.lock_safe().get_kv("triggers_context") {
         if v.is_object() {
             return Ok(v);
         }
     }
-    let ct = st.config.lock().unwrap().context_trigger.clone();
+    let ct = st.config.lock_safe().context_trigger.clone();
     let mut d = default_context_blob();
     d["compact"] = serde_json::to_value(&ct.compact).unwrap_or_else(|_| json!({}));
     d["clear"] = serde_json::to_value(&ct.clear).unwrap_or_else(|_| json!({}));
     Ok(d)
+    })
 }
 
 /// triggers:setContext — merge + clamp both halves, persist the blob, and
@@ -1345,6 +1564,7 @@ pub fn triggers_get_context(app: AppHandle) -> Result<Value, String> {
 /// (lib.rs's beat) sees the new cadence on its next tick.
 #[tauri::command(async)]
 pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("triggers_set_context", || {
     let st = state(&app);
     let current = triggers_get_context(app.clone())?;
     let compact_patch = ctx.get("compact").cloned().unwrap_or_else(|| json!({}));
@@ -1353,9 +1573,9 @@ pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String>
         "compact": sanitize_context_rule(&compact_patch, &current["compact"]),
         "clear": sanitize_context_rule(&clear_patch, &current["clear"]),
     });
-    st.persist.lock().unwrap().set_kv("triggers_context", &next);
+    st.persist.lock_safe().set_kv("triggers_context", &next);
     {
-        let mut cfg = st.config.lock().unwrap();
+        let mut cfg = st.config.lock_safe();
         // Mirror BOTH halves into typed config — the struct now carries the
         // upstream {compact,clear} shape so the sanitized blob parses 1:1.
         if let Ok(c) = serde_json::from_value::<crate::config::ContextRule>(next["compact"].clone())
@@ -1367,22 +1587,25 @@ pub fn triggers_set_context(app: AppHandle, ctx: Value) -> Result<Value, String>
         }
         st.config_store.save(&cfg).map_err(err_str)?;
     }
+    crate::commands::emit_config_changed(&app);
     Ok(next)
+    })
 }
 
 /// org:getTrigger — the org/clone-node blob (persist kv `org_trigger`;
 /// upstream persisted-only too — no transport service exists yet).
 #[tauri::command(async)]
 pub fn org_get_trigger(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("org_get_trigger", || {
     let st = state(&app);
     let v = st
         .persist
-        .lock()
-        .unwrap()
+        .lock_safe()
         .get_kv("org_trigger")
         .filter(|v| v.is_object())
         .unwrap_or_else(|| json!({ "apiKey": "", "enabled": false, "mode": "strict" }));
     Ok(v)
+    })
 }
 
 /// org:setTrigger — persist-only merge; valid modes are the shared
@@ -1390,6 +1613,7 @@ pub fn org_get_trigger(app: AppHandle) -> Result<Value, String> {
 /// verbatim: nothing reads apiKey beyond the settings surface).
 #[tauri::command(async)]
 pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("org_set_trigger", || {
     let st = state(&app);
     let current = org_get_trigger(app.clone())?;
     let valid_mode = |v: &str| matches!(v, "strict" | "allow-all" | "communication-only");
@@ -1410,8 +1634,9 @@ pub fn org_set_trigger(app: AppHandle, arg: Value) -> Result<Value, String> {
             .map(String::from)
             .unwrap_or_else(|| current["mode"].as_str().unwrap_or("strict").to_string()),
     });
-    st.persist.lock().unwrap().set_kv("org_trigger", &next);
+    st.persist.lock_safe().set_kv("org_trigger", &next);
     Ok(next)
+    })
 }
 
 #[cfg(test)]
@@ -1448,6 +1673,36 @@ mod tests {
         let big_b64 = base64::engine::general_purpose::STANDARD.encode(&big);
         assert!(save_pasted_image(&dir, &big_b64).unwrap_err().contains("too large"));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn reset_removes_only_this_hives_exposed_codex_data() {
+        let codex = tmp("codexexp"); // stands in for ~/.codex (never the real one)
+        let hive_root = codex.join("somewhere").join("hive");
+        let id = codex_hive_id(&hive_root);
+        let other = "0123456789ab";
+        assert_ne!(id, other);
+        for kind in ["sessions", "archived_sessions"] {
+            let ns = codex.join(kind).join("agent-office");
+            std::fs::create_dir_all(ns.join(&id).join("dev1")).unwrap();
+            std::fs::write(ns.join(&id).join("dev1").join("rollout.jsonl"), "{}").unwrap();
+            std::fs::create_dir_all(ns.join(other).join("dev9")).unwrap();
+        }
+        // the user's own sessions are untouched
+        std::fs::create_dir_all(codex.join("sessions").join("2026")).unwrap();
+        let gone = remove_exposed_codex_data(&codex, &hive_root);
+        assert_eq!(gone.len(), 2);
+        for kind in ["sessions", "archived_sessions"] {
+            let ns = codex.join(kind).join("agent-office");
+            assert!(!ns.join(&id).exists());
+            assert!(ns.join(other).join("dev9").exists(), "another hive's data stays");
+        }
+        assert!(codex.join("sessions").join("2026").exists());
+        // second pass: nothing left, empty namespace dirs are tidied
+        std::fs::remove_dir_all(codex.join("sessions").join("agent-office").join(other)).unwrap();
+        assert!(remove_exposed_codex_data(&codex, &hive_root).is_empty());
+        assert!(!codex.join("sessions").join("agent-office").exists());
+        let _ = std::fs::remove_dir_all(&codex);
     }
 
     #[test]

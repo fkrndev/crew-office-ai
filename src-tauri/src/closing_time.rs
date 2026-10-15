@@ -8,6 +8,7 @@
 //! notes) — this module only injects the kickoff mail and watches routed
 //! traffic; it never types into terminals.
 
+use crate::lock_ext::LockExt;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -66,13 +67,12 @@ fn now_ms() -> u64 {
 
 impl ClosingTime {
     pub fn is_active(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
+        self.inner.lock_safe().is_some()
     }
 
     pub fn progress(&self) -> (usize, usize) {
         self.inner
-            .lock()
-            .unwrap()
+            .lock_safe()
             .as_ref()
             .map(|a| (a.acked.len(), a.workers.len()))
             .unwrap_or((0, 0))
@@ -89,7 +89,7 @@ impl ClosingTime {
     ) -> Result<usize, String> {
         let god_id = hive.god_id().unwrap_or_else(|| "god".to_string());
         {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_safe();
             if let Some(a) = g.as_mut() {
                 // Re-pressed while running — re-arm, keep waiting.
                 a.deadline_ms = now_ms() + TIMEOUT_MS;
@@ -167,7 +167,7 @@ impl ClosingTime {
             );
         }
 
-        *self.inner.lock().unwrap() = Some(Active {
+        *self.inner.lock_safe() = Some(Active {
             god_id,
             workers,
             acked: HashSet::new(),
@@ -177,8 +177,7 @@ impl ClosingTime {
         });
         Ok(self
             .inner
-            .lock()
-            .unwrap()
+            .lock_safe()
             .as_ref()
             .map(|a| a.workers.len())
             .unwrap_or(0))
@@ -186,7 +185,7 @@ impl ClosingTime {
 
     /// Stand the floor back up — clear pending steers and tell god.
     pub fn cancel(&self, hive: &crate::hive::Hive, control: &mut crate::control::ControlRegistry) {
-        let Some(a) = self.inner.lock().unwrap().take() else {
+        let Some(a) = self.inner.lock_safe().take() else {
             return;
         };
         control.clear_steers(&a.god_id);
@@ -224,7 +223,7 @@ impl ClosingTime {
             Vec::new()
         };
         let pending: Vec<String> = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_safe();
             let a = g.as_mut()?;
             if is_ack(subject) && a.workers.contains(from) && targets.contains(&a.god_id) {
                 if a.acked.insert(from.to_string()) {
@@ -270,7 +269,7 @@ impl ClosingTime {
 
     /// Tick check — Some("timeout") once past the deadline (until re-armed).
     pub fn poll_timeout(&self) -> Option<&'static str> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_safe();
         let a = g.as_mut()?;
         if !a.timeout_emitted && now_ms() >= a.deadline_ms {
             a.timeout_emitted = true;
@@ -282,8 +281,7 @@ impl ClosingTime {
     /// The concluded flag — lib.rs schedules teardown after the grace.
     pub fn concluded(&self) -> bool {
         self.inner
-            .lock()
-            .unwrap()
+            .lock_safe()
             .as_ref()
             .is_some_and(|a| a.concluded)
     }

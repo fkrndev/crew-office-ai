@@ -12,6 +12,7 @@
 //! decision the operator opts into). The gate sits on INTAKE only: reaping
 //! and teardown of running workers continue when the toggle is off.
 
+use crate::lock_ext::LockExt;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,8 +82,8 @@ fn archive_request(path: &Path, sub: &str) {
 
 /// Provider id → {bin, model flag, autoMode flag}. A mirror of the renderer's
 /// AGENT_PROVIDER_PRESETS — the watcher has no renderer to build commands.
-fn preset_command(provider: &str, model: Option<&str>, auto_mode: bool) -> String {
-    let (bin, auto_flag) = match provider {
+fn provider_preset(provider: &str) -> (&'static str, &'static str) {
+    match provider {
         "codex" => ("codex", "-a never -s workspace-write"),
         "grok" => ("grok", "--permission-mode bypassPermissions"),
         "kimi" => ("kimi", "--auto"),
@@ -96,14 +97,98 @@ fn preset_command(provider: &str, model: Option<&str>, auto_mode: bool) -> Strin
         "cursor" => ("cursor-agent", "--force --trust"),
         "hermes" => ("hermes --cli", "--yolo"),
         "openclaw" => ("openclaw tui --local", ""),
+        // A custom provider has no auto flag of its own; with no explicit
+        // command the fallback binary is the default (claude).
+        "custom" => ("claude", ""),
         _ => ("claude", "--permission-mode bypassPermissions"),
-    };
-    let mut cmd = bin.to_string();
-    if auto_mode && !auto_flag.is_empty() {
-        cmd.push_str(&format!(" {auto_flag}"));
     }
-    if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
-        cmd.push_str(&format!(" --model {}", m.trim()));
+}
+
+/// Codex counts any of these as an explicit permission posture (upstream
+/// autoStanceTokens) — including the old full bypass.
+const CODEX_STANCE_TOKENS: &[&str] = &[
+    "-a",
+    "--ask-for-approval",
+    "-s",
+    "--sandbox",
+    "--full-auto",
+    "--dangerously-bypass-approvals-and-sandbox",
+];
+
+/// `inferAgentProvider` for a request: an explicit known provider wins, else
+/// the command's executable leaf (cmd-shim suffixes stripped); empty → claude.
+fn infer_worker_provider(command: &str, explicit: Option<&str>) -> String {
+    const KNOWN: &[&str] = &[
+        "claude", "codex", "grok", "kimi", "gemini", "antigravity", "qwen", "opencode", "crush",
+        "pi", "copilot", "cursor", "hermes", "openclaw", "custom",
+    ];
+    if let Some(p) = explicit
+        .map(|s| s.trim().to_lowercase())
+        .filter(|p| KNOWN.contains(&p.as_str()))
+    {
+        return p;
+    }
+    let first = crate::misc::tokenize_command(command)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let leaf = first.rsplit(['/', '\\']).next().unwrap_or("");
+    let bin = [".exe", ".cmd", ".bat", ".ps1"]
+        .iter()
+        .find_map(|ext| leaf.strip_suffix(ext))
+        .unwrap_or(leaf);
+    match bin {
+        "codex" => "codex",
+        "grok" => "grok",
+        "kimi" => "kimi",
+        "gemini" => "gemini",
+        "agy" | "antigravity" => "antigravity",
+        "qwen" => "qwen",
+        "opencode" => "opencode",
+        "crush" => "crush",
+        "pi" => "pi",
+        "copilot" => "copilot",
+        "cursor-agent" | "agent" => "cursor",
+        "hermes" => "hermes",
+        "openclaw" => "openclaw",
+        "" | "claude" => "claude",
+        _ => "custom",
+    }
+    .to_string()
+}
+
+/// A worker's effective command LINE (upstream buildWorkerLaunch): god's
+/// explicit `command` — or the provider's preset binary — plus the app's auto
+/// (skip-permissions) flag unless the line already states a stance of its own
+/// (TOKEN match, not substring: copilot's flag starts with `-s`), plus a
+/// separate `model` as `--model` unless the line already picked one. A
+/// headless worker has no human to click through tool prompts, so without the
+/// auto flag it stalls at the first ask until the idle reaper kills it.
+fn build_worker_command(
+    request_command: Option<&str>,
+    provider: &str,
+    model: Option<&str>,
+    auto_mode: bool,
+) -> String {
+    let mut cmd = match request_command.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) => c.to_string(),
+        None => provider_preset(provider).0.to_string(),
+    };
+    let (_, auto_flag) = provider_preset(provider);
+    if auto_mode && !auto_flag.is_empty() {
+        let lead = auto_flag.split_whitespace().next().unwrap_or("");
+        let has_stance = crate::misc::tokenize_command(&cmd).iter().any(|t| {
+            t == lead || (provider == "codex" && CODEX_STANCE_TOKENS.contains(&t.as_str()))
+        });
+        if !has_stance {
+            cmd.push_str(&format!(" {auto_flag}"));
+        }
+    }
+    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        if !crate::misc::tokenize_command(&cmd).iter().any(|t| t == "--model") {
+            cmd.push_str(&format!(" --model {}", crate::misc::quote_command_token(m)));
+        }
     }
     cmd
 }
@@ -184,7 +269,7 @@ fn worker_tokens_used(app: &AppHandle, worker_id: &str) -> u64 {
 /// removeWorkerScratch — delete ONLY a dead worker's hive agent dir, never a
 /// live one's (path-safety: resolved dir must sit directly under agents/).
 fn remove_worker_scratch(st: &AppState, worker_id: &str) {
-    if st.live_workers.lock().unwrap().contains_key(worker_id) {
+    if st.live_workers.lock_safe().contains_key(worker_id) {
         return;
     }
     let dir = st.hive.agent_dir(worker_id);
@@ -211,7 +296,7 @@ fn finalize_worker_worktree(st: &AppState, wt_path: &Path, orig_cwd: &Path, rec:
     }
     let keep = crate::git_ops::worktree_unintegrated_details(wt_path, &rec.base_branch);
     let register = |st: &AppState| {
-        st.preserved_worktrees.lock().unwrap().insert(
+        st.preserved_worktrees.lock_safe().insert(
             wt_path.to_path_buf(),
             PreservedWorktree {
                 worker_id: format!("worker-{}", rec.req_id),
@@ -273,8 +358,8 @@ fn finalize_worker_worktree(st: &AppState, wt_path: &Path, orig_cwd: &Path, rec:
 /// `live_workers` is AGENT-id keyed while `worktree_paths` is PTY-id keyed
 /// (upstream liveWorkers[agentId] vs worktreePaths[ptyId]) — hence two ids.
 pub fn finalize_teardown(st: &AppState, pty_id: &str, agent_id: &str) {
-    let worker = st.live_workers.lock().unwrap().remove(agent_id);
-    if let Some((wt_path, orig_cwd)) = st.worktree_paths.lock().unwrap().remove(pty_id) {
+    let worker = st.live_workers.lock_safe().remove(agent_id);
+    if let Some((wt_path, orig_cwd)) = st.worktree_paths.lock_safe().remove(pty_id) {
         match worker {
             Some(rec) => finalize_worker_worktree(st, &wt_path, &orig_cwd, &rec),
             None => {
@@ -292,14 +377,13 @@ pub fn finalize_teardown(st: &AppState, pty_id: &str, agent_id: &str) {
 pub fn gc_preserved_worktrees(st: &AppState) {
     let keys: Vec<PathBuf> = st
         .preserved_worktrees
-        .lock()
-        .unwrap()
+        .lock_safe()
         .keys()
         .cloned()
         .collect();
     for key in keys {
         let e = {
-            let p = st.preserved_worktrees.lock().unwrap();
+            let p = st.preserved_worktrees.lock_safe();
             match p.get(&key) {
                 Some(e) => PreservedWorktree {
                     worker_id: e.worker_id.clone(),
@@ -315,14 +399,14 @@ pub fn gc_preserved_worktrees(st: &AppState) {
         };
         // A worker id that is live again (reqId reuse) → never GC out from
         // under the new run.
-        if st.live_workers.lock().unwrap().contains_key(&e.worker_id) {
+        if st.live_workers.lock_safe().contains_key(&e.worker_id) {
             continue;
         }
         // (a) Worktree already gone (clean teardown, or removed by hand) →
         //     reclaim the scratch dir + drop tracking.
         if !e.wt_path.exists() {
             remove_worker_scratch(st, &e.worker_id);
-            st.preserved_worktrees.lock().unwrap().remove(&key);
+            st.preserved_worktrees.lock_safe().remove(&key);
             continue;
         }
         // (b) Still on disk → reclaim ONLY when provably integrated + clean.
@@ -342,7 +426,7 @@ pub fn gc_preserved_worktrees(st: &AppState) {
             continue;
         }
         remove_worker_scratch(st, &e.worker_id);
-        st.preserved_worktrees.lock().unwrap().remove(&key);
+        st.preserved_worktrees.lock_safe().remove(&key);
         inform_god(
             &st.hive,
             &format!("[worker worktree reclaimed] {}", e.worker_id),
@@ -455,7 +539,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         })
         .collect();
     let worker_id = format!("worker-{req_id}");
-    if st.live_workers.lock().unwrap().contains_key(&worker_id) {
+    if st.live_workers.lock_safe().contains_key(&worker_id) {
         fail!(format!("worker \"{worker_id}\" already running"));
     }
 
@@ -474,16 +558,14 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         ));
     }
 
-    let provider = raw["provider"].as_str().unwrap_or("claude");
-    let auto = st.config.lock().unwrap().auto_mode;
-    let command = match raw["command"]
-        .as_str()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        Some(c) => c.to_string(),
-        None => preset_command(provider, raw["model"].as_str(), auto),
-    };
+    let auto = st.config.lock_safe().auto_mode;
+    let request_command = raw["command"].as_str();
+    // An explicit `command` stays authoritative for the BINARY, but the app's
+    // auto-mode flag and a separate `model` are still applied (see
+    // build_worker_command); the provider is inferred from it when unnamed.
+    let provider = infer_worker_provider(request_command.unwrap_or(""), raw["provider"].as_str());
+    let provider = provider.as_str();
+    let command = build_worker_command(request_command, provider, raw["model"].as_str(), auto);
     let bin = crate::misc::tokenize_command(&command)
         .into_iter()
         .next()
@@ -520,7 +602,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         .as_f64()
         .filter(|c| c.is_finite() && *c > 0.0)
         .map(|c| c as u64);
-    st.live_workers.lock().unwrap().insert(
+    st.live_workers.lock_safe().insert(
         worker_id.clone(),
         WorkerRec {
             req_id: req_id.clone(),
@@ -573,21 +655,35 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
             // MAIN-initiated — no renderer consumes the seedPrompt, so keep
             // the server-side type-into-TUI.
             auto_type_seed: true,
+            owner: None,
         },
     );
     if let Err(e) = spawned {
-        st.live_workers.lock().unwrap().remove(&worker_id);
+        st.live_workers.lock_safe().remove(&worker_id);
         crate::integrations::BROKER.revoke(&worker_id);
         fail!(format!("spawn failed — {e}"));
     }
 
     // A god-hired worker is a main-initiated spawn — broadcast the card so
     // the floor sees it (upstream 'hive:agentSpawned').
+    // The card's cwd is the worktree when isolation applied (worktree_paths
+    // is keyed by pty id == worker id); `character` / `accent` are optional
+    // floor-appearance hints the renderer validates against the real cast and
+    // accent lists, so a bad value degrades to the default.
+    let worktree_path = st
+        .worktree_paths
+        .lock_safe()
+        .get(&worker_id)
+        .map(|(wt, _)| wt.display().to_string());
     let _ = app.emit(
         "hive:agentSpawned",
         json!({
             "id": worker_id, "name": name, "provider": provider,
-            "cwd": cwd, "command": command, "role": "worker",
+            "cwd": worktree_path.clone().unwrap_or_else(|| cwd.clone()),
+            "command": command, "role": "worker",
+            "worktreePath": worktree_path,
+            "character": raw["character"].as_str(),
+            "accent": raw["accent"].as_str(),
         }),
     );
 
@@ -604,7 +700,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
         }
         None => "[AUTONOMOUS WORKER TASK — no interactive human is watching. Work autonomously; do not ask interactive questions.] The task starts now: ".to_string(),
     };
-    let suffix = "\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with \"act\":\"done\" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.";
+    let suffix = "\n\n[CAPABILITIES] Before you start, consult your capability catalog — run the `/capabilities` skill (or read `$AGENT_DIR/.claude/skills/capabilities/SKILL.md`). It lists your temporal date-range skills (`/today`, `/last30Days`, `/lastQuarter`, …) and the integrations available to you (reached via the loopback broker) and how to call each. For any time-scoped work, resolve the dates with those skills instead of computing them by hand.\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with \"act\":\"done\" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.";
     let mut msg = crate::hive::Message::new(
         "god",
         &worker_id,
@@ -624,7 +720,7 @@ pub fn process_spawn_request(app: &AppHandle, path: &Path) {
 /// the same tick — then (2) pull new requests up to the concurrency cap.
 pub fn tick(app: &AppHandle) {
     let st = state(app);
-    let cfg = st.config.lock().unwrap().clone();
+    let cfg = st.config.lock_safe().clone();
     let max_workers = cfg.max_concurrent_workers.max(1) as usize;
     let idle_timeout_ms = (cfg.worker_idle_timeout_minutes.max(1) as u64) * 60_000;
     let default_cap = cfg.default_worker_token_cap;
@@ -632,10 +728,10 @@ pub fn tick(app: &AppHandle) {
 
     // (1) Finish or reap. Each release tears the PTY down explicitly, like
     // every other kill site.
-    let ids: Vec<String> = st.live_workers.lock().unwrap().keys().cloned().collect();
+    let ids: Vec<String> = st.live_workers.lock_safe().keys().cloned().collect();
     for worker_id in ids {
         let (releasing, rec_slack, rec_req_id, rec_spawned, rec_cap) = {
-            let lw = st.live_workers.lock().unwrap();
+            let lw = st.live_workers.lock_safe();
             match lw.get(&worker_id) {
                 Some(r) => (
                     r.releasing,
@@ -654,7 +750,7 @@ pub fn tick(app: &AppHandle) {
             // Success: settle its inbox so a re-hired incarnation doesn't boot
             // into stale orders — only mail from BEFORE the done signal is
             // filed; a follow-up that crossed it stays pending.
-            if let Some(r) = st.live_workers.lock().unwrap().get_mut(&worker_id) {
+            if let Some(r) = st.live_workers.lock_safe().get_mut(&worker_id) {
                 r.releasing = true;
             }
             let settled = st.hive.settle_inbox(&worker_id, done_at);
@@ -699,7 +795,7 @@ pub fn tick(app: &AppHandle) {
         // Token-cap reap (default-off plumbing).
         let cap = rec_cap.unwrap_or(default_cap);
         if cap > 0 && worker_tokens_used(app, &worker_id) > cap {
-            if let Some(r) = st.live_workers.lock().unwrap().get_mut(&worker_id) {
+            if let Some(r) = st.live_workers.lock_safe().get_mut(&worker_id) {
                 r.releasing = true;
             }
             let used = worker_tokens_used(app, &worker_id);
@@ -718,14 +814,14 @@ pub fn tick(app: &AppHandle) {
         // Idle reap — no PTY output for the configured window and never
         // signaled done. `worker_id` is an agent id — resolve its PTY.
         let idle_ms = st.resolve_pty_id(&worker_id).and_then(|pid| {
-            st.ptys.lock().unwrap().get(&pid).map(|h| {
+            st.ptys.lock_safe().get(&pid).map(|h| {
                 now.saturating_sub(h.last_output_at.load(std::sync::atomic::Ordering::Relaxed))
             })
         });
         match idle_ms {
             None => continue, // PTY already gone — teardown paths clean up
             Some(ms) if ms > idle_timeout_ms => {
-                if let Some(r) = st.live_workers.lock().unwrap().get_mut(&worker_id) {
+                if let Some(r) = st.live_workers.lock_safe().get_mut(&worker_id) {
                     r.releasing = true;
                 }
                 inform_god(
@@ -749,7 +845,7 @@ pub fn tick(app: &AppHandle) {
     {
         static LAST_SWEEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let prev = LAST_SWEEP.load(std::sync::atomic::Ordering::Relaxed);
-        if !st.preserved_worktrees.lock().unwrap().is_empty()
+        if !st.preserved_worktrees.lock_safe().is_empty()
             && now.saturating_sub(prev) >= 60_000
             && LAST_SWEEP
                 .compare_exchange(
@@ -782,7 +878,7 @@ pub fn tick(app: &AppHandle) {
         .unwrap_or_default();
     files.sort();
     for f in files {
-        if st.live_workers.lock().unwrap().len() >= max_workers {
+        if st.live_workers.lock_safe().len() >= max_workers {
             break; // backpressure — the rest waits for a freed slot
         }
         process_spawn_request(app, &f);
@@ -808,6 +904,54 @@ mod tests {
         })
         .unwrap();
         (root, hive)
+    }
+
+    #[test]
+    fn worker_command_inherits_auto_flag_and_dedupes_model() {
+        let cmd = |c: Option<&str>, p: Option<&str>, m: Option<&str>, auto: bool| {
+            let provider = infer_worker_provider(c.unwrap_or(""), p);
+            build_worker_command(c, &provider, m, auto)
+        };
+        // Preset binary + the provider's auto flag + --model.
+        assert_eq!(
+            cmd(None, None, Some(" opus "), true),
+            "claude --permission-mode bypassPermissions --model opus"
+        );
+        assert_eq!(cmd(None, Some("codex"), None, true), "codex -a never -s workspace-write");
+        assert_eq!(cmd(None, None, None, false), "claude");
+        // god's explicit command is authoritative for the binary, but still
+        // gets the app's auto flag (provider inferred from it)...
+        assert_eq!(
+            cmd(Some("claude --verbose"), None, None, true),
+            "claude --verbose --permission-mode bypassPermissions"
+        );
+        assert_eq!(
+            cmd(Some("codex --foo"), None, None, true),
+            "codex --foo -a never -s workspace-write"
+        );
+        // ...unless it already states a stance (TOKEN match, not substring).
+        assert_eq!(
+            cmd(Some("claude --permission-mode plan"), None, None, true),
+            "claude --permission-mode plan"
+        );
+        assert_eq!(
+            cmd(Some("codex --dangerously-bypass-approvals-and-sandbox"), None, None, true),
+            "codex --dangerously-bypass-approvals-and-sandbox"
+        );
+        assert_eq!(
+            cmd(Some("copilot --silent"), None, None, true),
+            "copilot --silent -s --allow-all-tools --no-ask-user",
+            "-s must match as a token, not a substring of --silent"
+        );
+        // A separate `model` is appended once, and never over god's own.
+        assert_eq!(
+            cmd(Some("claude --model sonnet"), None, Some("opus"), false),
+            "claude --model sonnet"
+        );
+        assert_eq!(cmd(Some("claude"), None, Some("opus"), false), "claude --model opus");
+        // An unknown wrapper stays custom: no foreign auto flag is bolted on.
+        assert_eq!(cmd(Some("my-wrapper --x"), None, None, true), "my-wrapper --x");
+        assert_eq!(infer_worker_provider(r"C:\bin\codex.cmd", None), "codex");
     }
 
     #[test]
@@ -852,20 +996,18 @@ mod tests {
 /// WorkerSnapshot[]; preserved worktrees are not tracked in this port yet).
 pub fn list(app: &AppHandle) -> Value {
     let st = state(app);
-    let cfg = st.config.lock().unwrap().clone();
+    let cfg = st.config.lock_safe().clone();
     let now = now_ms();
     let live: Vec<Value> = st
         .live_workers
-        .lock()
-        .unwrap()
+        .lock_safe()
         .values()
         .map(|r| {
             let idle_ms = st
                 .resolve_pty_id(&format!("worker-{}", r.req_id))
                 .and_then(|pid| {
                     st.ptys
-                        .lock()
-                        .unwrap()
+                        .lock_safe()
                         .get(&pid)
                         .map(|h| h.last_output_at.clone())
                 })
@@ -890,8 +1032,7 @@ pub fn list(app: &AppHandle) -> Value {
         .collect();
     let preserved: Vec<Value> = st
         .preserved_worktrees
-        .lock()
-        .unwrap()
+        .lock_safe()
         .values()
         .map(|e| {
             json!({

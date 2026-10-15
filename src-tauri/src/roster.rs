@@ -14,6 +14,7 @@
 //!   2. Never write a truncated file — unique temp + rename.
 //!   3. Never let an empty write erase a full roster — the empty-guard below.
 
+use crate::lock_ext::LockExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -83,7 +84,7 @@ impl RosterStore {
             return;
         }
         let _ = fs::create_dir_all(self.backup_dir());
-        let mut seq = self.seq.lock().unwrap();
+        let mut seq = self.seq.lock_safe();
         *seq += 1;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -143,7 +144,7 @@ impl RosterStore {
         }
         let _ = fs::create_dir_all(&self.home);
         let existing = self.read();
-        let mut wrote = self.wrote.lock().unwrap();
+        let mut wrote = self.wrote.lock_safe();
         if !*wrote
             && existing
                 .as_ref()

@@ -13,6 +13,7 @@
 //!   spawn → boot-quiet detect → bracketed-paste prompt + \r → idle-settle →
 //!   transcript JSONL extract (last assistant text block) → kill
 
+use crate::lock_ext::LockExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -300,7 +301,7 @@ pub fn run_hidden_claude(prompt: &str, opts: &HiddenClaudeOptions) -> HiddenClau
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(_) => {
-                    *last_activity_r.lock().unwrap() = Instant::now();
+                    *last_activity_r.lock_safe() = Instant::now();
                 }
                 Err(_) => break,
             }
@@ -315,7 +316,7 @@ pub fn run_hidden_claude(prompt: &str, opts: &HiddenClaudeOptions) -> HiddenClau
         if settled.load(Ordering::Relaxed) {
             break;
         }
-        let elapsed = Instant::now().duration_since(*last_activity.lock().unwrap());
+        let elapsed = Instant::now().duration_since(*last_activity.lock_safe());
         if elapsed >= boot_quiet {
             // Boot quiet — send the prompt via bracketed paste + CR.
             let paste = format!("\x1b[200~{prompt}\x1b[201~");
@@ -353,7 +354,7 @@ pub fn run_hidden_claude(prompt: &str, opts: &HiddenClaudeOptions) -> HiddenClau
             Ok(None) => {}
             Err(_) => break,
         }
-        let elapsed = Instant::now().duration_since(*last_activity.lock().unwrap());
+        let elapsed = Instant::now().duration_since(*last_activity.lock_safe());
         if prompt_sent.load(Ordering::Relaxed) && elapsed >= idle_quiet {
             break;
         }

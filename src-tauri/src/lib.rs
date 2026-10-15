@@ -13,12 +13,14 @@ mod cmd_memory;
 mod cmd_misc;
 mod cmd_realtime;
 mod cmd_update;
+mod codex_remote;
 pub mod commands;
 pub mod config;
 pub mod mcp;
 mod control;
 pub mod cost_lifetime;
 mod db;
+mod floors;
 mod freeflow;
 pub mod fs_ops;
 mod git_ops;
@@ -31,8 +33,11 @@ mod hooks;
 pub mod integrations;
 pub mod kg;
 pub mod memory_palace;
+pub mod lock_ext;
+mod mic_gate;
 pub mod misc;
 pub mod missions;
+pub mod panic_guard;
 mod power_monitor;
 pub mod pricing;
 pub mod proxy;
@@ -44,6 +49,7 @@ pub mod reflect;
 pub mod roster;
 pub mod skills;
 mod slack;
+mod spawn_ext;
 mod telemetry;
 pub mod trigger_history;
 mod usage;
@@ -51,9 +57,14 @@ mod webhook;
 mod workers;
 mod workerwake;
 
+use crate::lock_ext::LockExt;
 use std::time::Duration;
 
 use commands::AppState;
+
+/// Delta gate for the Grok usage-file ledger append (see the breaker beat).
+static GROK_LEDGER_GATE: std::sync::LazyLock<usage::CumulativeSampleGate> =
+    std::sync::LazyLock::new(usage::CumulativeSampleGate::default);
 use tauri::{Emitter, Manager};
 
 /// Dispatch one due mission (index.ts fire()): non-compact kinds mail `body`
@@ -65,7 +76,7 @@ use tauri::{Emitter, Manager};
 /// `mission:autoCompact` alias for compact until every consumer moves over.
 fn emit_context_trigger(app: &tauri::AppHandle, action: &str) {
     let st = commands::state(app);
-    let cfg = st.config.lock().unwrap();
+    let cfg = st.config.lock_safe();
     let rule = if action == "compact" {
         serde_json::to_value(&cfg.context_trigger.compact).unwrap_or_else(|_| serde_json::json!({}))
     } else {
@@ -154,28 +165,206 @@ fn startup_failure(
 
 /// Kill every live agent PTY so quitting never orphans the agent CLIs (and
 /// their MCP/helper process trees). Idempotent: the map is drained.
+///
+/// Order matters (upstream killAll, 276f782a): on Windows every agent's process
+/// TREE is swept synchronously FIRST — taskkill /T /F while the roots are still
+/// alive, since the app exits within ~a second and a deferred sweep would never
+/// run (a Windows child is not killed when its parent exits) — and only then
+/// are the PTY roots closed. The Slack public-tunnel child is stopped here
+/// too, so it doesn't outlive the app either.
 fn kill_all_ptys(app: &tauri::AppHandle) {
     let Some(st) = app.try_state::<AppState>() else {
         return;
     };
-    let handles: Vec<pty::PtyHandle> = st
+    let mut handles: Vec<pty::PtyHandle> = st
         .ptys
-        .lock()
-        .map(|mut m| m.drain().map(|(_, h)| h).collect())
-        .unwrap_or_default();
-    for mut h in handles {
-        let _ = h.kill();
+        .lock_safe()
+        .drain()
+        .map(|(_, h)| h)
+        .collect();
+    let pids: Vec<u32> = handles.iter().filter_map(|h| h.pid).collect();
+    pty::kill_trees(&pids);
+    for h in handles.iter_mut() {
+        let _ = h.kill_root();
+    }
+    // The tunnel (npx.cmd shim → node grandchild) — tree-kill like any child.
+    let tunnel = st.slack_tunnel.lock_safe().take();
+    if let Some((_url, mut child)) = tunnel {
+        misc::kill_process_tree(&mut child);
+    }
+    power_monitor::release_keep_awake();
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// bootstrapHiveServices (index.ts) — the once-per-launch hive work that must
+/// run right after state exists and BEFORE the renderer can respawn anything.
+fn bootstrap_hive_services(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let st = app.state::<AppState>();
+
+    // The hive's renderer event sink (upstream's `emit` ctor arg): reports
+    // whether the event reached a live window, which is what lets a terminal
+    // handoff that cannot be delivered bounce to god instead of vanishing.
+    {
+        let h = app.clone();
+        st.hive.set_emitter(move |channel, payload| {
+            h.get_webview_window("main").is_some() && h.emit(channel, payload).is_ok()
+        });
+    }
+
+    // refreshGeneratedDocs: PROTOCOL.md / COMMANDS.md follow app updates. Only
+    // here — runtime paths never rewrite them.
+    st.hive.refresh_generated_docs();
+
+    // Hook-endpoint bind outcome → log.jsonl (a packaged app has no console).
+    hooks::log_bind_outcome(&st.hive);
+
+    // `app-start` marker: the god prompt promises one on every launch, and it
+    // is how a relaunch or a build switch is spotted. WHICH bundle, not just
+    // which version — a stale copy and a fresh one report the same version.
+    let exe = std::env::current_exe().ok();
+    let _ = st.hive.log(&serde_json::json!({
+        "kind": "app-start",
+        "version": env!("CARGO_PKG_VERSION"),
+        "packaged": !cfg!(debug_assertions),
+        "appPath": exe.as_ref().and_then(|p| p.parent()).map(|p| p.display().to_string()),
+        "exePath": exe.as_ref().map(|p| p.display().to_string()),
+        "platform": if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" },
+    }));
+
+    // archiveOrphanedAgents (#57/#58): no agent owns a PTY yet, so every
+    // archived:false non-god entry is a stale carry-over from a session that
+    // quit without archiving — archive it so it leaves broadcast fan-out,
+    // fleet.json and god's roster. A respawn clears the flag again.
+    for id in st.hive.archive_orphaned_agents(&st.live_agent_ids()) {
+        log::info!("[migration] archived orphaned agent (no live PTY): {id}");
+    }
+
+    // Codex rollout dirs of agents that predate the exposure (it used to
+    // happen only at spawn).
+    st.hive.reexpose_codex_sessions();
+
+    // replaceAutoDeliveryPauses: the operator's per-agent delivery holds
+    // survive a restart (persist kv, written by control_auto_delivery).
+    let paused: Vec<String> = st
+        .persist
+        .lock_safe()
+        .get_kv("auto_delivery_paused_agents")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    st.control.lock_safe().replace_auto_delivery_pauses(paused);
+
+    // maint-1 retirement carry-over: a retired compact-maintenance mission's
+    // elapsed time moves to the context trigger's cadence, so retiring it
+    // mid-cycle doesn't restart a 2h clock from zero.
+    let retired = std::mem::take(&mut st.config.lock_safe().retired_compact_last_fired);
+    if retired > 0 {
+        let mut m = st.context_last_compact.lock_safe();
+        m.insert("compact".into(), retired);
+        let _ = st.persist.lock_safe().set_kv(
+            "context:lastRun",
+            &serde_json::to_value(&*m).unwrap_or_else(|_| serde_json::json!({})),
+        );
+    }
+}
+
+/// Epoch-ms of the last UNSAVED resize/move (0 = nothing pending) — the clock
+/// of the window-bounds debounce.
+static WINDOW_DIRTY_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Persist the main window's geometry (kv `window.bounds`, physical pixels) —
+/// never while minimized / maximized / fullscreen, so a restore can't save the
+/// minimized sentinel position or the fullscreen rect.
+fn save_window_bounds(win: &tauri::WebviewWindow) {
+    if win.is_minimized().unwrap_or(false)
+        || win.is_maximized().unwrap_or(false)
+        || win.is_fullscreen().unwrap_or(false)
+    {
+        return;
+    }
+    // inner_size pairs with set_size on restore (outer_position with
+    // set_position) — the frame never accumulates across launches.
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) else {
+        return;
+    };
+    let st = win.state::<AppState>();
+    st.persist.lock_safe().set_kv(
+        db::WINDOW_BOUNDS_KEY,
+        &serde_json::json!({
+            "x": pos.x, "y": pos.y, "width": size.width, "height": size.height
+        }),
+    );
+}
+
+/// Restore the saved geometry, clamped onto a connected monitor (a window
+/// parked on an unplugged display must not open off-screen). No saved bounds
+/// → the configured default window is left alone.
+fn restore_window_bounds(win: &tauri::WebviewWindow) {
+    use tauri::{PhysicalPosition, PhysicalSize};
+    let st = win.state::<AppState>();
+    let Some(raw) = st.persist.lock_safe().get_kv(db::WINDOW_BOUNDS_KEY) else {
+        return;
+    };
+    let areas: Vec<(i32, i32, u32, u32)> = win
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let w = m.work_area();
+            (w.position.x, w.position.y, w.size.width, w.size.height)
+        })
+        .collect();
+    // tauri.conf.json's minWidth/minHeight are logical.
+    let sf = win.scale_factor().unwrap_or(1.0);
+    let min = ((960.0 * sf) as u32, (600.0 * sf) as u32);
+    let Some(b) = db::clamp_window_bounds(&raw, &areas, min) else {
+        return;
+    };
+    let _ = win.set_size(PhysicalSize::new(b.width, b.height));
+    match (b.x, b.y) {
+        (Some(x), Some(y)) => {
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+        _ => {
+            let _ = win.center();
+        }
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The release profile unwinds instead of aborting (Cargo.toml), so a stray
+    // panic ends only its own thread/task. Record every one — message,
+    // location, thread, backtrace — in `<app data dir>/panic.log` from the very
+    // first moment. The context is built first only to learn the bundle
+    // identifier (app_data_dir = <OS data dir>/<identifier>).
+    let context = tauri::generate_context!();
+    panic_guard::install_panic_hook(
+        dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(&context.config().identifier)
+            .join("panic.log"),
+    );
     tauri::Builder::default()
+        // Microphone only while Free Flow / a realtime voice session is live;
+        // every other permission kind keeps its default behaviour (mic_gate.rs).
+        .on_permission_request(mic_gate::on_permission_request)
+        // ...and WebView2 must not remember the answer (see mic_gate.rs).
+        .plugin(mic_gate::plugin())
         // Upstream requestSingleInstanceLock — a second process launch hands
         // its argv to the running instance (Windows/Linux deep links arrive
         // exactly that way) and focuses the main window, never spawning a
         // second harness on the same hive.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| panic_guard::guarded_unit("single-instance", || {
             use tauri::{Emitter, Manager};
             for arg in &argv {
                 if let Some(src) = crate::hire::parse_hire_deep_link(arg) {
@@ -194,12 +383,15 @@ pub fn run() {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
-        }))
+        })))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Signed auto-update (desktop-only app): pubkey + endpoints live in
+        // tauri.conf.json `plugins.updater`; driven from cmd_update.rs.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Deep links only fire for installed apps on Windows/Linux —
             // register_all makes dev builds handle
@@ -211,11 +403,13 @@ pub fn run() {
                     log::warn!("[deep-link] register_all failed: {e}");
                 }
             }
-            let default_home = app
+            let app_data = app
                 .path()
                 .app_data_dir()
-                .map_err(|e| startup_failure(app.handle(), "locate the app data directory", e))?
-                .join("harness");
+                .map_err(|e| startup_failure(app.handle(), "locate the app data directory", e))?;
+            // Authoritative location of panic.log (matches the early guess).
+            panic_guard::set_log_path(app_data.join("panic.log"));
+            let default_home = app_data.join("harness");
             // config_change_home's pointer: `harnessHome` in the FIXED
             // default-home config.json — the only file readable before we
             // know which home is active. A custom home survives restarts
@@ -238,6 +432,10 @@ pub fn run() {
             state.sock_addr = Some(server.addr.clone());
             app.manage(state);
             app.manage(cmd_update::UpdateState::default());
+            // Upstream a84efe56: a crash mid-voice-session must not boot with
+            // the mic gate pre-opened.
+            mic_gate::reset_realtime_voice_flag(app.handle());
+            bootstrap_hive_services(app.handle());
 
             // bootstrapHiveServices equivalents: the integration broker +
             // the memory palace mine loop start implicitly with the app.
@@ -255,20 +453,69 @@ pub fn run() {
             // live workers is held at the gate until the user confirms the
             // closing-time protocol; an empty floor exits normally.
             if let Some(win) = app.get_webview_window("main") {
+                // Window geometry (upstream 1c980498): restore the last
+                // size/position (clamped to a visible monitor), then persist
+                // on resize/move (debounced below) and on close.
+                restore_window_bounds(&win);
                 let win2 = win.clone();
-                win.on_window_event(move |ev| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                // Event-loop thread: a panic would unwind out of tao's message
+                // loop and end the whole app, so it is contained per event.
+                win.on_window_event(move |ev| panic_guard::guarded_unit("window-event", || match ev {
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                        WINDOW_DIRTY_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        save_window_bounds(&win2);
                         let st = win2.state::<AppState>();
-                        let live = !st.ptys.lock().unwrap().is_empty();
+                        let live = !st.ptys.lock_safe().is_empty();
                         if live && !st.closing.is_active() {
                             api.prevent_close();
                             // Upstream 'app:closeRequested' carries the live
                             // PTY count — the QuitWarningModal renders it.
-                            let count = st.ptys.lock().unwrap().len();
-                            let _ = win2.emit(
+                            let count = st.ptys.lock_safe().len();
+                            // Main only: a floor's own close prompt is a
+                            // different event (floors.rs).
+                            floors::emit_to_owner(
+                                win2.app_handle(),
+                                floors::MAIN_LABEL,
                                 "app:closeRequested",
                                 serde_json::json!({ "ptyCount": count }),
                             );
+                        }
+                    }
+                    // Closing `main` ends the app even while floors are open
+                    // (the CloseRequested gate above already held it for live
+                    // PTYs). Without a floor Tauri exits on its own.
+                    tauri::WindowEvent::Destroyed => {
+                        let app = win2.app_handle();
+                        if app
+                            .webview_windows()
+                            .keys()
+                            .any(|l| floors::is_floor_label(l))
+                        {
+                            app.exit(0);
+                        }
+                    }
+                    _ => {}
+                }));
+                // Trailing-edge debounce for the move/resize flood: save once
+                // the window has been still for ~400ms.
+                let win3 = win.clone();
+                panic_guard::supervise_arg("window-bounds-saver", win3, |win3| async move {
+                    let mut tick = tokio::time::interval(Duration::from_millis(200));
+                    loop {
+                        tick.tick().await;
+                        let at = WINDOW_DIRTY_AT.load(std::sync::atomic::Ordering::Relaxed);
+                        if at != 0 && now_ms().saturating_sub(at) >= 400 {
+                            // Only clear the mark we observed — an event that
+                            // landed meanwhile keeps its own (later) stamp.
+                            let _ = WINDOW_DIRTY_AT.compare_exchange(
+                                at,
+                                0,
+                                std::sync::atomic::Ordering::Relaxed,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            save_window_bounds(&win3);
                         }
                     }
                 });
@@ -295,7 +542,7 @@ pub fn run() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let handle3 = app.handle().clone();
-                app.deep_link().on_open_url(move |event| {
+                app.deep_link().on_open_url(move |event| panic_guard::guarded_unit("deep-link", || {
                     for url in event.urls() {
                         if let Some(src) = crate::hire::parse_hire_deep_link(url.as_str()) {
                             let home = handle3
@@ -309,7 +556,7 @@ pub fn run() {
                             let _ = handle3.emit("hire-pending", &src);
                         }
                     }
-                });
+                }));
             }
 
             // (The unauthenticated sync-IPC loopback server was removed — it
@@ -319,7 +566,7 @@ pub fn run() {
             // Router loop — the Electron version watched outboxes via chokidar;
             // a 250ms poll keeps the same deliver contract with no watcher dep.
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            panic_guard::supervise_arg("router-loop", handle, |handle| async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(250));
                 let mut closing_nudge_ticks = 0u32;
                 // Archive/log retention: once at startup (first tick), then at
@@ -337,10 +584,11 @@ pub fn run() {
                     maintain_ticks = (maintain_ticks + 1) % 2400; // 2400 x 250ms
                     // realtimeCompletionWatcher — poll once per tick so
                     // dispatch completions surface even without a waiter.
-                    crate::realtime::WATCHER
-                        .lock()
-                        .unwrap()
-                        .poll(&st.hive, Some(&handle));
+                    panic_guard::guarded("realtime-watcher", || {
+                        crate::realtime::WATCHER
+                            .lock_safe()
+                            .poll(&st.hive, Some(&handle))
+                    });
                     match st.hive.router_tick() {
                         Ok(deliveries) => {
                             // Closing-time observer: routed subjects carry
@@ -423,15 +671,12 @@ pub fn run() {
                                 }
                             }
                             for d in deliveries {
+                                // (The terminal work-order handoff event —
+                                // `hive:terminalHandoff` — is emitted inside
+                                // route_message through the Hive's event
+                                // sink, which bounces the mail to god when no
+                                // window is there to receive it.)
                                 let _ = handle.emit("hive-deliver", &d);
-                                // Terminal work-order handoff (upstream
-                                // `hive:terminalHandoff`, hive.ts:1806): the
-                                // router already decided mail-to-inbox was
-                                // impossible and attached the full message —
-                                // emit it under the upstream channel name.
-                                if let Some(h) = &d.handoff {
-                                    let _ = handle.emit("hive:terminalHandoff", h);
-                                }
                             }
                         }
                         Err(e) => {
@@ -444,7 +689,9 @@ pub fn run() {
                     // Floor delta watcher (realtimeFloorWatcher.ts) — emits
                     // `realtime:floorDelta` while a voice session is live;
                     // no-ops otherwise.
-                    crate::realtime::FLOOR_WATCHER.lock().unwrap().tick(&handle);
+                    panic_guard::guarded("floor-watcher", || {
+                        crate::realtime::FLOOR_WATCHER.lock_safe().tick(&handle)
+                    });
                 }
             });
 
@@ -452,13 +699,13 @@ pub fn run() {
             // progress window. Policy lives in breaker.rs; enforcement here:
             // steer/constrain ride the hive mail channel, stop kills the PTY.
             let handle2 = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            panic_guard::supervise_arg("breaker-beat", handle2, |handle2| async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(30));
                 const PROGRESS_WINDOW_MS: u64 = 300_000;
                 loop {
                     tick.tick().await;
                     let st = handle2.state::<AppState>();
-                    let cfg = st.config.lock().unwrap().clone();
+                    let cfg = st.config.lock_safe().clone();
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
@@ -510,7 +757,7 @@ pub fn run() {
                     // session's cumulative usd is ledgered when the counter
                     // moved — the fold detects restarts as counter decreases.
                     {
-                        let mut moved = st.cost_moved.lock().unwrap();
+                        let mut moved = st.cost_moved.lock_safe();
                         for a in st.hive.registry() {
                             if !live.contains(&a.id) {
                                 continue;
@@ -523,6 +770,33 @@ pub fn run() {
                                 }
                                 if st.hive.append_cost_sample(&a.id, &row).is_ok() {
                                     moved.insert(key, usd);
+                                }
+                            }
+                            // Grok pushes no OTel and writes no Claude
+                            // transcript: cost it from the usage file its CLI
+                            // maintains (upstream #536), gated on the numbers
+                            // having moved (a running total would otherwise
+                            // re-append the same row every beat).
+                            if a.provider == "grok" {
+                                if let Some(sid) =
+                                    a.session_id.as_deref().filter(|s| !s.is_empty())
+                                {
+                                    if let Some(g) = usage::grok_usage(&a.cwd, sid) {
+                                        if GROK_LEDGER_GATE.admits(&a.id, sid, &g) {
+                                            let _ = st.hive.append_cost_sample(
+                                                &a.id,
+                                                &serde_json::json!({
+                                                    "session_id": sid,
+                                                    "input": g.sample.input,
+                                                    "output": g.sample.output,
+                                                    "cache_read": g.sample.cache_read,
+                                                    "cache_creation": g.sample.cache_creation,
+                                                    "model": g.model,
+                                                    "usd": g.sample.usd,
+                                                }),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -546,7 +820,7 @@ pub fn run() {
                     // Drain each agent's api_error stamps into the breaker's
                     // storm window before the tick (telemetry push → pull).
                     {
-                        let mut b = st.breaker.lock().unwrap();
+                        let mut b = st.breaker.lock_safe();
                         for i in &inputs {
                             for _ in st.telemetry.take_api_errors(&i.agent_id) {
                                 b.record_error(&i.agent_id);
@@ -557,7 +831,7 @@ pub fn run() {
                     let decisions = if inputs.is_empty() {
                         Vec::new()
                     } else {
-                        st.breaker.lock().unwrap().tick(
+                        st.breaker.lock_safe().tick(
                             &inputs,
                             now,
                             &cfg.circuit_breaker,
@@ -613,7 +887,7 @@ pub fn run() {
                                 // runs the full agent-keyed cleanup.
                                 if let Some(pty_id) = st.pty_for_agent(&id) {
                                     if let Some(mut h) =
-                                        st.ptys.lock().unwrap().remove(&pty_id)
+                                        st.ptys.lock_safe().remove(&pty_id)
                                     {
                                         let _ = h.kill();
                                     }
@@ -643,8 +917,7 @@ pub fn run() {
                         }
                         let fired = st
                             .context_last_compact
-                            .lock()
-                            .unwrap()
+                            .lock_safe()
                             .get(action)
                             .copied()
                             .unwrap_or(0);
@@ -652,9 +925,9 @@ pub fn run() {
                             continue;
                         }
                         {
-                            let mut m = st.context_last_compact.lock().unwrap();
+                            let mut m = st.context_last_compact.lock_safe();
                             m.insert(action.to_string(), now);
-                            let _ = st.persist.lock().unwrap().set_kv(
+                            let _ = st.persist.lock_safe().set_kv(
                                 "context:lastRun",
                                 &serde_json::to_value(&*m).unwrap_or_else(|_| serde_json::json!({})),
                             );
@@ -670,7 +943,9 @@ pub fn run() {
                 let mut tick = tokio::time::interval(Duration::from_secs(8));
                 loop {
                     tick.tick().await;
-                    commands::write_fleet_snapshot(&handle6);
+                    panic_guard::guarded("fleet-snapshot", || {
+                        commands::write_fleet_snapshot(&handle6)
+                    });
                 }
             });
             // Ephemeral-worker watcher (workers.rs — upstream's 1.5s
@@ -681,14 +956,14 @@ pub fn run() {
                 let mut tick = tokio::time::interval(Duration::from_millis(1500));
                 loop {
                     tick.tick().await;
-                    workers::tick(&handle5);
+                    panic_guard::guarded("worker-watcher", || workers::tick(&handle5));
                 }
             });
             // Worker-wake watchdog beat (workerwake.rs, #151): the backstop
             // for mail that lands on an ALREADY-idle worker — the Stop-time
             // idle delivery can't see it. 10s cadence, edge-triggered nudges.
             let handle4 = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            panic_guard::supervise_arg("worker-wake-watchdog", handle4, |handle4| async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(10));
                 loop {
                     tick.tick().await;
@@ -704,7 +979,7 @@ pub fn run() {
                         let Some(pty_id) = st.pty_for_agent(&a.id) else {
                             continue;
                         };
-                        let pty = st.ptys.lock().unwrap();
+                        let pty = st.ptys.lock_safe();
                         let Some(h) = pty.get(&pty_id) else {
                             drop(pty);
                             continue;
@@ -728,7 +1003,7 @@ pub fn run() {
                                 m.id.clone()
                             })
                             .collect();
-                        let snap = st.control.lock().unwrap().snapshot(&a.id);
+                        let snap = st.control.lock_safe().snapshot(&a.id);
                         // Telemetry is the watchdog's primary turn-proof; the
                         // transcript read is the same signal at rest.
                         let tel_activity = st.telemetry.last_activity_at(&a.id);
@@ -745,8 +1020,10 @@ pub fn run() {
                             auto_delivery_paused: snap.auto_delivery_paused,
                             paused: snap.paused,
                             halted: snap.halted,
+                            // A turn only (upstream activityEvidenceAt): a
+                            // zero-token session-start sample is not one.
                             last_activity_at: tel_activity
-                                .max(sample.as_ref().map(|s| s.ts).unwrap_or(0)),
+                                .max(telemetry::sample_activity_ts(sample.as_ref())),
                             has_telemetry: st.telemetry.has_telemetry(&a.id) || sample.is_some(),
                             oldest_mail_at: oldest,
                         });
@@ -768,7 +1045,7 @@ pub fn run() {
                     // cooldown — the watchdog's silence otherwise reads as
                     // "nothing to do" (upstream shouldReportHold).
                     {
-                        let mut wake = st.wake.lock().unwrap();
+                        let mut wake = st.wake.lock_safe();
                         for f in &facts {
                             if f.oldest_mail_at > 0
                                 && now.saturating_sub(f.oldest_mail_at) > 60_000
@@ -827,7 +1104,7 @@ pub fn run() {
             {
                 let st = app.state::<AppState>();
                 let (eps, port) = {
-                    let cfg = st.config.lock().unwrap();
+                    let cfg = st.config.lock_safe();
                     (cfg.webhooks.clone(), cfg.webhook_port)
                 };
                 if st.webhook.set_endpoints(&eps) > 0 {
@@ -852,7 +1129,7 @@ pub fn run() {
             // mission_rearm (upstream's clearMissionTimers+re-arm on write).
             // Heartbeat rides its adaptive cadence map, exactly upstream.
             let handle3 = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            panic_guard::supervise_arg("mission-scheduler", handle3, |handle3| async move {
                 let mut heartbeat_cadence: std::collections::HashMap<String, u64> =
                     std::collections::HashMap::new();
                 loop {
@@ -862,7 +1139,7 @@ pub fn run() {
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
                     let missions_now: Vec<missions::ScheduledMission> =
-                        st.config.lock().unwrap().missions.clone();
+                        st.config.lock_safe().missions.clone();
                     let mut fired_ids: Vec<String> = Vec::new();
                     for m in &missions_now {
                         let Some(due) =
@@ -885,7 +1162,7 @@ pub fn run() {
                         fired_ids.push(m.id.clone());
                     }
                     if !fired_ids.is_empty() {
-                        let mut cfg = st.config.lock().unwrap();
+                        let mut cfg = st.config.lock_safe();
                         for m in cfg.missions.iter_mut() {
                             if fired_ids.contains(&m.id) {
                                 m.last_fired_at = now;
@@ -899,8 +1176,7 @@ pub fn run() {
                     // 60s cap bounds drift if a mission is added out-of-band.
                     let wait = st
                         .config
-                        .lock()
-                        .unwrap()
+                        .lock_safe()
                         .missions
                         .iter()
                         .filter_map(|m| {
@@ -937,7 +1213,7 @@ pub fn run() {
                         };
                         while let Ok(ev) = prx.recv() {
                             use crate::power_monitor::PowerEvent::*;
-                            match ev {
+                            panic_guard::guarded("power-event", || match ev {
                                 Suspend | LockScreen => suspend_at = now_ms(),
                                 Resume | UnlockScreen => {
                                     let reason = if ev == Resume {
@@ -959,7 +1235,7 @@ pub fn run() {
                                         );
                                     });
                                 }
-                            }
+                            });
                         }
                     });
                 } else {
@@ -967,7 +1243,7 @@ pub fn run() {
                     // wall-clock gap watchdog — a suspended machine freezes
                     // every timer, so a >5s gap means we slept.
                     let handle10 = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
+                    panic_guard::supervise_arg("wall-clock-gap-watchdog", handle10, |handle10| async move {
                         let mut tick = tokio::time::interval(Duration::from_secs(1));
                         tick.tick().await;
                         let mut last_wall = 0u64;
@@ -992,9 +1268,70 @@ pub fn run() {
                     });
                 }
             }
+            // Keep-awake (upstream syncKeepAwake): while any agent PTY is live
+            // the OS must not idle-suspend the harness (Modern Standby froze
+            // every agent mid-turn behind the lock screen). Re-evaluated every
+            // 2s instead of at each spawn/teardown call site — idempotent, so
+            // a toggled `strongKeepalive` also swaps the mode live. Released
+            // the moment the floor empties (and at quit, in kill_all_ptys).
+            let handle_k = app.handle().clone();
+            panic_guard::supervise_arg("keep-awake", handle_k, |handle_k| async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(2));
+                loop {
+                    tick.tick().await;
+                    let st = handle_k.state::<AppState>();
+                    let live = !st.ptys.lock_safe().is_empty();
+                    let strong = st.config.lock_safe().strong_keepalive;
+                    power_monitor::sync_keep_awake(live, strong);
+                }
+            });
+
+            // MemoryReflector timer (upstream reflector.start()): bound
+            // oversized agent memory.md files on a 30-min cadence — the first
+            // scan one interval OUT (launch must not compete with an LLM call,
+            // and a freshly-restored home isn't condensed before it's mined).
+            // Tunables are read from config each tick; passes are serialized
+            // (the next tick only starts after the previous scan returned).
+            // The manual `reflect_now` command uses the same thresholds.
+            let handle_r = app.handle().clone();
+            panic_guard::supervise_arg("memory-reflector", handle_r, |handle_r| async move {
+                let first = {
+                    let st = handle_r.state::<AppState>();
+                    let cfg = st.config.lock_safe();
+                    reflect::ReflectSettings::from_config(&cfg).scan_every_ms()
+                };
+                let mut wait = first;
+                loop {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    let (settings, hive_root) = {
+                        let st = handle_r.state::<AppState>();
+                        let cfg = st.config.lock_safe();
+                        (reflect::ReflectSettings::from_config(&cfg), st.hive.root.clone())
+                    };
+                    wait = settings.scan_every_ms();
+                    if !settings.enabled {
+                        continue;
+                    }
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        let path = pty::user_shell_path();
+                        let claude = match pty::resolve_program("claude", &path) {
+                            Some(pty::Resolved::Exe(p)) | Some(pty::Resolved::Script(p)) => {
+                                p.display().to_string()
+                            }
+                            None => "claude".to_string(),
+                        };
+                        reflect::reflect_scan(&hive_root, &claude, &settings)
+                    })
+                    .await;
+                }
+            });
+            // Slack boot re-arm from config.slackEnabled (upstream index.ts:5436)
+            // and the notify-only updater's background checks / just-updated page.
+            commands::slack_autostart(app.handle());
+            cmd_update::start_background_checks(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(panic_guard::guard_invoke(tauri::generate_handler![
             commands::spawn_agent,
             commands::pty_write,
             commands::pty_resize,
@@ -1157,6 +1494,7 @@ pub fn run() {
             cmd_misc::telemetry_spans,
             cmd_misc::telemetry_usage,
             cmd_misc::window_new_floor,
+            cmd_misc::window_close_floor,
             cmd_misc::config_change_home,
             cmd_misc::config_ensure_home,
             cmd_misc::config_home_sync,
@@ -1177,6 +1515,7 @@ pub fn run() {
             commands::config_update,
             commands::webhook_set_config,
             commands::hire_open_file,
+            commands::hire_open_files,
             commands::kv_get,
             commands::kv_set,
             commands::command_history_add,
@@ -1212,17 +1551,26 @@ pub fn run() {
             commands::secret_set,
             commands::secret_delete,
             commands::secrets_list,
-        ])
-        .build(tauri::generate_context!())
+        ]))
+        .build(context)
         .expect("error while building agent-office")
         .run(|app, ev| {
             // Upstream's endSession — one coarse session_ended event on quit,
             // before the process drops (analytics.rs gates on DNT/opt-out).
             if matches!(ev, tauri::RunEvent::Exit) {
-                crate::analytics::global().end_session(app);
+                // Each step isolated: a panic in analytics must not skip the
+                // PTY kill below (this handler runs on the event-loop thread).
+                panic_guard::guarded_unit("exit:analytics", || {
+                    crate::analytics::global().end_session(app)
+                });
                 // Exit is final (ExitRequested can still be prevented, so the
                 // kill lives here) — don't orphan the agent CLIs.
-                kill_all_ptys(app);
+                panic_guard::guarded_unit("exit:kill-ptys", || kill_all_ptys(app));
+                // A restart-and-install the user asked for while agents were
+                // running (and then confirmed the quit warning for).
+                panic_guard::guarded_unit("exit:install-staged", || {
+                    cmd_update::install_staged_on_exit(app)
+                });
             }
         });
 }

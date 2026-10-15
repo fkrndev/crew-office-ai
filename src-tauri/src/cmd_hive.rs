@@ -3,6 +3,7 @@
 //! Frontend calls these via `invoke()`; names mirror upstream's ipcMain
 //! channels (hive:addTask → hive_add_task, …).
 
+use crate::lock_ext::LockExt;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
@@ -18,15 +19,19 @@ fn err_str(e: anyhow::Error) -> String {
 /// caller left them out and rejects a duplicate id.
 #[tauri::command(async)]
 pub fn hive_add_task(app: AppHandle, fields: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_add_task", || {
     let st = state(&app);
     crate::hive_admin::add_task(&st.hive, &fields).map_err(err_str)
+    })
 }
 
 /// hive:deleteTask — remove one card by id; returns the remaining list.
 #[tauri::command(async)]
 pub fn hive_delete_task(app: AppHandle, id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_delete_task", || {
     let st = state(&app);
     crate::hive_admin::delete_task(&st.hive, &id).map_err(err_str)
+    })
 }
 
 /// hive:patchTask — per-card merge over the raw ledger entry (upstream
@@ -34,12 +39,14 @@ pub fn hive_delete_task(app: AppHandle, id: String) -> Result<Value, String> {
 /// re-pinned so a stray id in the patch can't rename it.
 #[tauri::command(async)]
 pub fn hive_patch_task(app: AppHandle, id: String, patch: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_patch_task", || {
     let st = state(&app);
     let patch = patch
         .as_object()
         .cloned()
         .ok_or_else(|| "patch must be an object".to_string())?;
     st.hive.update_task(&id, &patch).map_err(err_str)
+    })
 }
 
 // ─── registry edits ─────────────────────────────────────────────────────────
@@ -47,20 +54,25 @@ pub fn hive_patch_task(app: AppHandle, id: String, patch: Value) -> Result<Value
 /// hive:patchAgentRole — durable job string + identity.md refresh.
 #[tauri::command(async)]
 pub fn hive_patch_agent_role(app: AppHandle, id: String, role: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_patch_agent_role", || {
     let st = state(&app);
     crate::hive_admin::patch_agent_role(&st.hive, &id, &role).map_err(err_str)
+    })
 }
 
 /// hive:renameAgent — display name only; id/dir/mailboxes are unchanged.
 #[tauri::command(async)]
 pub fn hive_rename_agent(app: AppHandle, id: String, name: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_rename_agent", || {
     let st = state(&app);
     crate::hive_admin::rename_agent(&st.hive, &id, &name).map_err(err_str)
+    })
 }
 
 /// hive:setArchived — retained-but-hidden floor flag (sidecar).
 #[tauri::command(async)]
 pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_set_archived", || {
     let st = state(&app);
     let res = crate::hive_admin::set_archived(&st.hive, &id, archived).map_err(err_str)?;
     // Upstream setArchived dep (index.ts:4530): the floor hears every
@@ -74,13 +86,16 @@ pub fn hive_set_archived(app: AppHandle, id: String, archived: bool) -> Result<V
         serde_json::json!({ "id": id }),
     );
     Ok(res)
+    })
 }
 
 /// hive:setAgentHold — 1:1 claimed by the human; paused-delivery marker.
 #[tauri::command(async)]
 pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_set_agent_hold", || {
     let st = state(&app);
     crate::hive_admin::set_hold(&st.hive, &id, hold).map_err(err_str)
+    })
 }
 
 // ─── read surface ───────────────────────────────────────────────────────────
@@ -92,6 +107,7 @@ pub fn hive_set_agent_hold(app: AppHandle, id: String, hold: bool) -> Result<Val
 /// folder listing instead (the port's per-agent file surface).
 #[tauri::command(async)]
 pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_agent_directory", || {
     let st = state(&app);
     if let Some(id) = id {
         return Ok(json!(crate::hive_admin::agent_directory(&st.hive, &id)));
@@ -133,7 +149,7 @@ pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value,
                         + u["cache_creation"].as_u64().unwrap_or(0)
                 })
                 .unwrap_or(0);
-            let ctx = st.context_usage.lock().unwrap().get(&a.id).copied();
+            let ctx = st.context_usage.lock_safe().get(&a.id).copied();
             let usd = u.and_then(|u| u["usd"].as_f64()).unwrap_or(0.0);
             let ts = u.and_then(|u| u["ts"].as_u64());
             json!({
@@ -151,7 +167,7 @@ pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value,
                 "sessionId": a.session_id,
                 "hasMemory": st.hive.has_memory(&a.id),
                 "inboxBacklog": st.hive.inbox_backlog(&a.id),
-                "breaker": st.breaker.lock().unwrap().level_for(&a.id),
+                "breaker": st.breaker.lock_safe().level_for(&a.id),
                 "tokens": tokens,
                 "usd": (usd * 10000.0).round() / 10000.0,
                 "lastTool": spans.last().and_then(|s| s["tool"].as_str()),
@@ -163,6 +179,7 @@ pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value,
         })
         .collect();
     Ok(json!({ "godId": god_id, "agents": agents }))
+    })
 }
 
 /// hive:agentUsage — cost-ledger fold PLUS the transcript reconciler sample
@@ -171,6 +188,7 @@ pub fn hive_agent_directory(app: AppHandle, id: Option<String>) -> Result<Value,
 /// took a cwd, so both call shapes resolve.
 #[tauri::command(async)]
 pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_agent_usage", || {
     let st = state(&app);
     let mut v = crate::hive_admin::agent_usage(&st.hive, &agent_id);
     let entry = st.hive.registry().into_iter().find(|a| a.id == agent_id);
@@ -184,6 +202,7 @@ pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, Strin
     };
     v["transcript"] = json!(st.usage.sample(&cwd, sid.as_deref()));
     Ok(v)
+    })
 }
 
 /// hive:agentContext — the last Status-hook context slot (tokens, limit) for
@@ -191,12 +210,13 @@ pub fn hive_agent_usage(app: AppHandle, agent_id: String) -> Result<Value, Strin
 /// fires — same "unknown, not empty" reading upstream's gauge needs.
 #[tauri::command(async)]
 pub fn hive_agent_context(app: AppHandle, agent_id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("hive_agent_context", || {
     let st = state(&app);
     // `agent_id` is the registry namespace — live-ness resolves through the
     // pty→agent map (pty keys carry the renderer's `pty-` prefix).
     let live = st.pty_for_agent(&agent_id).is_some();
     let mut v = crate::hive_admin::agent_context(&st.hive, &agent_id, live);
-    let slot = st.context_usage.lock().unwrap().get(&agent_id).copied();
+    let slot = st.context_usage.lock_safe().get(&agent_id).copied();
     match slot {
         Some((tokens, limit)) => {
             v["tokens"] = json!(tokens);
@@ -214,16 +234,19 @@ pub fn hive_agent_context(app: AppHandle, agent_id: String) -> Result<Value, Str
         }
     }
     Ok(v)
+    })
 }
 
 /// hive:log — newest-first tail of log.jsonl (default 200, hard cap 500).
 #[tauri::command(async)]
 pub fn hive_log(app: AppHandle, limit: Option<u32>) -> Result<Vec<Value>, String> {
+    crate::panic_guard::cmd_guard("hive_log", || {
     let st = state(&app);
     Ok(crate::hive_admin::hive_log(
         &st.hive,
         limit.unwrap_or(200) as usize,
     ))
+    })
 }
 
 /// hive:messages — upstream voiceMessages: floor-wide or per-agent mail in
@@ -237,6 +260,7 @@ pub fn hive_messages(
     limit: Option<u32>,
     include_archived: Option<bool>,
 ) -> Result<Vec<Value>, String> {
+    crate::panic_guard::cmd_guard("hive_messages", || {
     let st = state(&app);
     Ok(crate::hive_admin::voice_messages(
         &st.hive,
@@ -245,6 +269,7 @@ pub fn hive_messages(
         limit.map(|l| l as usize),
         include_archived,
     ))
+    })
 }
 
 /// hive:textSearch — literal substring scan across hive text files.
@@ -254,20 +279,69 @@ pub fn hive_text_search(
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<Value>, String> {
+    crate::panic_guard::cmd_guard("hive_text_search", || {
     let st = state(&app);
     Ok(crate::hive_admin::text_search(
         &st.hive,
         &query,
         limit.unwrap_or(100) as usize,
     ))
+    })
 }
 
-/// session:resolveCwd — where a resume should boot: registry cwd, else the
-/// agent's hive folder.
+/// Resolve a pasted Claude session id to the cwd it originally ran in
+/// (upstream transcript.ts resolveSessionCwd): find
+/// `<projects_root>/<dir>/<sid>.jsonl` (newest mtime wins if several) and read
+/// the `cwd` off its first record that carries one — deliberately NOT by
+/// un-dashing the project-dir name, which is lossy when the path has dashes.
+/// None when the id is invalid/unknown or no record has a cwd.
+pub(crate) fn resolve_session_cwd_in(projects_root: &std::path::Path, sid: &str) -> Option<String> {
+    use std::io::BufRead;
+    if sid.is_empty() || !sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for e in std::fs::read_dir(projects_root).ok()?.flatten() {
+        let cand = e.path().join(format!("{sid}.jsonl"));
+        if let Ok(m) = std::fs::metadata(&cand) {
+            if !m.is_file() {
+                continue;
+            }
+            let t = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
+                best = Some((t, cand));
+            }
+        }
+    }
+    let (_, file) = best?;
+    let reader = std::io::BufReader::new(std::fs::File::open(file).ok()?);
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(rec) = serde_json::from_str::<Value>(line) {
+            if let Some(cwd) = rec.get("cwd").and_then(|c| c.as_str()).filter(|c| !c.is_empty()) {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// session:resolveCwd — the renderer passes a PASTED SESSION ID (Add Agent's
+/// resume field) and wants the folder that session ran in, or null when it
+/// is unknown. (The param keeps the `agent_id` name — cth.ts maps `agentId`.)
 #[tauri::command(async)]
 pub fn session_resolve_cwd(app: AppHandle, agent_id: String) -> Result<Value, String> {
-    let st = state(&app);
-    Ok(crate::hive_admin::resolve_cwd(&st.hive, &agent_id))
+    crate::panic_guard::cmd_guard("session_resolve_cwd", || {
+    let _ = app;
+    let root = dirs::home_dir().map(|h| h.join(".claude").join("projects"));
+    Ok(root
+        .and_then(|r| resolve_session_cwd_in(&r, agent_id.trim()))
+        .map(Value::String)
+        .unwrap_or(Value::Null))
+    })
 }
 
 // ─── pty / workers ──────────────────────────────────────────────────────────
@@ -277,11 +351,11 @@ pub fn session_resolve_cwd(app: AppHandle, agent_id: String) -> Result<Value, St
 /// waitForTerminalReady keys on `id`/`pid`/`hasOutput`; ids are PTY ids.
 #[tauri::command(async)]
 pub fn pty_list(app: AppHandle) -> Result<Vec<Value>, String> {
+    crate::panic_guard::cmd_guard("pty_list", || {
     let st = state(&app);
     let list: Vec<Value> = st
         .ptys
-        .lock()
-        .unwrap()
+        .lock_safe()
         .iter()
         .map(|(id, h)| {
             json!({
@@ -295,6 +369,7 @@ pub fn pty_list(app: AppHandle) -> Result<Vec<Value>, String> {
         })
         .collect();
     Ok(list)
+    })
 }
 
 /// pty:redraw — upstream semantics: a SAME-SIZE resize forces the child's TUI
@@ -306,20 +381,35 @@ pub fn pty_list(app: AppHandle) -> Result<Vec<Value>, String> {
 /// discards it — delivery rides the emitted events.
 #[tauri::command(async)]
 pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
+    crate::panic_guard::cmd_guard("pty_redraw", || {
     let st = state(&app);
-    let (tail, size) = {
-        let ptys = st.ptys.lock().unwrap();
+    let (tail, size, owner) = {
+        let ptys = st.ptys.lock_safe();
         match ptys.get(&id) {
-            Some(h) => (h.tail(), h.size()),
+            Some(h) => {
+                // The terminal view is mounting and will answer ConPTY's cursor
+                // query out of the replayed tail: the reader's fallback stands
+                // down (before the tail is read - see pty::CursorGate).
+                h.terminal_attached();
+                (h.tail(), h.size(), h.owner.clone())
+            }
             None => return Ok(String::new()),
         }
     };
-    if let Some(h) = st.ptys.lock().unwrap().get(&id) {
+    if let Some(h) = st.ptys.lock_safe().get(&id) {
         let _ = h.resize(size.0, size.1);
     }
     if !tail.is_empty() {
-        let _ = app.emit(&format!("pty:data:{id}"), serde_json::json!(tail));
-        let _ = app.emit(
+        // Replayed to the owning window only, like the live stream.
+        crate::floors::emit_to_owner(
+            &app,
+            &owner,
+            &format!("pty:data:{id}"),
+            serde_json::json!(tail),
+        );
+        crate::floors::emit_to_owner(
+            &app,
+            &owner,
             "pty-output",
             crate::pty::PtyOutputPayload {
                 id: id.clone(),
@@ -328,6 +418,7 @@ pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
         );
     }
     Ok(tail)
+    })
 }
 
 /// workers:list — upstream's ephemeral-worker tab snapshot:
@@ -335,7 +426,9 @@ pub fn pty_redraw(app: AppHandle, id: String) -> Result<String, String> {
 /// worktree list is not tracked in this port yet — PORTING.md).
 #[tauri::command(async)]
 pub fn workers_list(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("workers_list", || {
     Ok(crate::workers::list(&app))
+    })
 }
 
 /// workers:registry — every registry entry joined with its live-PTY flag
@@ -343,6 +436,7 @@ pub fn workers_list(app: AppHandle) -> Result<Value, String> {
 /// same data into hive:agentDirectory).
 #[tauri::command(async)]
 pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
+    crate::panic_guard::cmd_guard("workers_registry", || {
     let st = state(&app);
     // Registry rows are agent-keyed; live-ness is agent-namespace too
     // (st.ptys keys are pty ids — translate through the spawn-time mapping).
@@ -364,6 +458,7 @@ pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
         out.push(v);
     }
     Ok(out)
+    })
 }
 
 /// workers:stop — the same teardown as pty:kill/kill_agent (kill the PTY,
@@ -372,5 +467,39 @@ pub fn workers_registry(app: AppHandle) -> Result<Vec<Value>, String> {
 /// returns the upstream `{ok, error?}` envelope.
 #[tauri::command(async)]
 pub fn workers_stop(app: AppHandle, id: String) -> crate::commands::PtyOpResult {
+    crate::panic_guard::cmd_guard("workers_stop", || {
     crate::commands::kill_agent(app, id)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_a_session_id_to_the_cwd_in_its_transcript() {
+        let root = std::env::temp_dir().join(format!("oa-sesscwd-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("C--proj-with-dashes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = "0f1e2d3c-aaaa-bbbb-cccc-1234567890ab";
+        std::fs::write(
+            dir.join(format!("{sid}.jsonl")),
+            "\n{\"type\":\"summary\"}\nnot json\n{\"cwd\":\"C:\\\\proj-with-dashes\",\"x\":1}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_session_cwd_in(&root, sid).as_deref(),
+            Some("C:\\proj-with-dashes")
+        );
+        // unknown id, malformed id, traversal → None
+        assert_eq!(resolve_session_cwd_in(&root, "ffffffff-0000"), None);
+        assert_eq!(resolve_session_cwd_in(&root, "../x"), None);
+        assert_eq!(resolve_session_cwd_in(&root, ""), None);
+        // a transcript with no cwd record → None
+        std::fs::write(dir.join("nocwd.jsonl"), "{\"a\":1}\n").unwrap();
+        assert_eq!(resolve_session_cwd_in(&root, "nocwd"), None);
+        // missing projects root → None
+        assert_eq!(resolve_session_cwd_in(&root.join("nope"), sid), None);
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

@@ -21,6 +21,7 @@
 //! No background thread here: `poll()` is driven by the commands (and can be
 //! hooked into the lib.rs router_tick loop — it reads hive state each call).
 
+use crate::lock_ext::LockExt;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{LazyLock, Mutex};
 
@@ -595,11 +596,10 @@ impl FloorWatcher {
         // pty activity — keyed by AGENT id (upstream strips the `pty-` prefix;
         // we resolve through the spawn-time pty→agent map, falling back to the
         // strip for unmapped/legacy PTYs).
-        let agent_of = st.pty_to_agent.lock().unwrap().clone();
+        let agent_of = st.pty_to_agent.lock_safe().clone();
         let active: HashMap<String, bool> = st
             .ptys
-            .lock()
-            .unwrap()
+            .lock_safe()
             .iter()
             .map(|(id, h)| {
                 let last = h.last_output_at.load(std::sync::atomic::Ordering::Relaxed);

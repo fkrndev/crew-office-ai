@@ -12,6 +12,7 @@
 //! (hive send / task mutations / spawn_inner / control.* / missions save /
 //! kill_agent) — thin wrappers only, exactly like upstream's deps design.
 
+use crate::lock_ext::LockExt;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -543,7 +544,7 @@ static PENDING: std::sync::LazyLock<Mutex<Option<Pending>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
 fn pending_fresh() -> Option<Pending> {
-    let mut g = PENDING.lock().unwrap();
+    let mut g = PENDING.lock_safe();
     if let Some(p) = g.as_ref() {
         if now_ms().saturating_sub(p.created_at) > PENDING_TTL_MS {
             *g = None;
@@ -559,7 +560,7 @@ fn pending_fresh() -> Option<Pending> {
 }
 
 fn stage(p: Pending) {
-    *PENDING.lock().unwrap() = Some(p);
+    *PENDING.lock_safe() = Some(p);
 }
 
 // ─── deps (the upstream dep-table, as small fns over AppState) ─────────────
@@ -867,8 +868,7 @@ fn exec_dispatch(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult
     // rt-12: register with the completion watcher.
     if let Some(cid) = msg.get("id").and_then(|v| v.as_str()) {
         crate::realtime::WATCHER
-            .lock()
-            .unwrap()
+            .lock_safe()
             .track(crate::realtime::PendingDispatch {
                 correlation_id: cid.to_string(),
                 kind: crate::realtime::PendingKind::Dispatch,
@@ -895,8 +895,7 @@ fn exec_steer(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
     }
     state(app)
         .control
-        .lock()
-        .unwrap()
+        .lock_safe()
         .steer(&r.id, &format!("[{}] {}", VOICE_ACTOR, text));
     let mut extra = Map::new();
     extra.insert(
@@ -1060,7 +1059,7 @@ fn exec_update_task(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionRes
 fn exec_resume(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResult> {
     let (g, agents) = registry_doc(app);
     let r = resolve_agent(&target_of(a), &g, &agents).map_err(|e| anyhow::anyhow!(e))?;
-    state(app).control.lock().unwrap().resume(&r.id);
+    state(app).control.lock_safe().resume(&r.id);
     attribute(app, "resume", &r.id, Map::new());
     Ok(ok(format!("Resumed {} — tools flow again.", r.name)))
 }
@@ -1089,8 +1088,7 @@ fn exec_auto_delivery(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionR
         || raw.contains("stop");
     state(app)
         .control
-        .lock()
-        .unwrap()
+        .lock_safe()
         .pause_auto_delivery(&r.id, paused);
     let mut extra = Map::new();
     extra.insert(
@@ -1134,8 +1132,7 @@ fn exec_gate_tool(app: &AppHandle, a: &Map<String, Value>) -> Result<ActionResul
     let on = !off; // default: gate it
     state(app)
         .control
-        .lock()
-        .unwrap()
+        .lock_safe()
         .gate_tool(&r.id, &tool, on);
     let mut extra = Map::new();
     extra.insert(
@@ -1254,7 +1251,7 @@ fn propose_destructive(
                 name: r.name.clone(),
             },
         };
-        let snap = state(app).control.lock().unwrap().snapshot(&r.id);
+        let snap = state(app).control.lock_safe().snapshot(&r.id);
         let note = if snap.halted {
             " (note: already halted)"
         } else if snap.paused {
@@ -1381,7 +1378,7 @@ fn propose_destructive(
     if verb == "edit_schedule" {
         let missions = {
             let st = state(app);
-            let cfg = st.config.lock().unwrap();
+            let cfg = st.config.lock_safe();
             cfg.missions.clone()
         };
         if missions.is_empty() {
@@ -1578,7 +1575,7 @@ fn propose_destructive(
             let mut patch = Map::new();
             patch.insert(key.clone(), value.clone());
             let cfg = state(app).config_store.patch_raw(&patch)?;
-            *state(app).config.lock().unwrap() = cfg;
+            *state(app).config.lock_safe() = cfg;
             let _ = app.emit("config:changed", json!({}));
             let mut extra = Map::new();
             extra.insert(
@@ -1638,12 +1635,12 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             })
         }
         CommitSpec::Pause { id, name } => {
-            state(app).control.lock().unwrap().pause(id, true);
+            state(app).control.lock_safe().pause(id, true);
             attribute(app, "pause", id, Map::new());
             Ok(format!("Paused {}.", name))
         }
         CommitSpec::Halt { id, name } => {
-            state(app).control.lock().unwrap().halt(id);
+            state(app).control.lock_safe().halt(id);
             attribute(app, "halt", id, Map::new());
             Ok(format!("Halted {}.", name))
         }
@@ -1719,6 +1716,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
                     // MAIN-initiated: nobody consumes seedPrompt — the backend
                     // types the hive-protocol seed itself.
                     auto_type_seed: true,
+                    owner: None,
                 },
             );
             // Main-initiated spawn — the floor adds the card from this
@@ -1747,7 +1745,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
         CommitSpec::EditSchedule { mission, action } => {
             let all = {
                 let st = state(app);
-                let cfg = st.config.lock().unwrap();
+                let cfg = st.config.lock_safe();
                 cfg.missions.clone()
             };
             let next: Vec<ScheduledMission> = if action == "delete" {
@@ -1782,7 +1780,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
         CommitSpec::CreateSchedule { mission, minutes } => {
             let mut all = {
                 let st = state(app);
-                let cfg = st.config.lock().unwrap();
+                let cfg = st.config.lock_safe();
                 cfg.missions.clone()
             };
             all.push(mission.clone());
@@ -1821,7 +1819,7 @@ fn commit_pending(app: &AppHandle, commit: &CommitSpec) -> Result<String> {
             let mut patch = Map::new();
             patch.insert(key.clone(), value.clone());
             let cfg = state(app).config_store.patch_raw(&patch)?;
-            *state(app).config.lock().unwrap() = cfg;
+            *state(app).config.lock_safe() = cfg;
             let _ = app.emit("config:changed", json!({}));
             let mut extra = Map::new();
             extra.insert(
@@ -1849,7 +1847,7 @@ fn run_action(app: &AppHandle, verb: &str, a: &Map<String, Value>) -> Result<Act
         return Ok(err(format!("I don't have an action called \"{}\".", verb)));
     };
     // Any new proposal supersedes a stale pending.
-    *PENDING.lock().unwrap() = None;
+    *PENDING.lock_safe() = None;
     if !spec.destructive {
         return match verb {
             "ping" => exec_ping(app, a),
@@ -1876,6 +1874,7 @@ pub async fn realtime_action(
     app: AppHandle,
     payload: Option<Value>,
 ) -> Result<ActionResult, String> {
+    crate::panic_guard::cmd_guard_async("realtime_action", async move {
     let p = payload.unwrap_or_else(|| json!({}));
     let obj = p.as_object().cloned().unwrap_or_default();
     let verb = norm(&strv(&obj, "verb")).replace(' ', "_");
@@ -1886,6 +1885,7 @@ pub async fn realtime_action(
             Ok(err(format!("That action failed: {}.", e)))
         }
     }
+    }).await
 }
 
 #[tauri::command(async)]
@@ -1893,6 +1893,7 @@ pub async fn realtime_action_confirm(
     app: AppHandle,
     payload: Option<Value>,
 ) -> Result<ActionResult, String> {
+    crate::panic_guard::cmd_guard_async("realtime_action_confirm", async move {
     let p = payload.unwrap_or_else(|| json!({}));
     let obj = p.as_object().cloned().unwrap_or_default();
     let cur = pending_fresh();
@@ -1907,7 +1908,7 @@ pub async fn realtime_action_confirm(
         )));
     }
     // Consume before running so a failure can't be re-confirmed.
-    *PENDING.lock().unwrap() = None;
+    *PENDING.lock_safe() = None;
     match commit_pending(&app, &cur.commit) {
         Result::Ok(spoken) => Ok(ok(spoken)),
         Result::Err(e) => {
@@ -1915,15 +1916,18 @@ pub async fn realtime_action_confirm(
             Ok(err(format!("That action failed: {}.", e)))
         }
     }
+    }).await
 }
 
 #[tauri::command(async)]
 pub async fn realtime_action_cancel() -> Result<ActionResult, String> {
+    crate::panic_guard::cmd_guard_async("realtime_action_cancel", async move {
     let had = pending_fresh();
-    *PENDING.lock().unwrap() = None;
+    *PENDING.lock_safe() = None;
     Ok(ok(had
         .map(|p| format!("Cancelled the {}.", p.verb))
         .unwrap_or_else(|| "Nothing to cancel.".into())))
+    }).await
 }
 
 #[cfg(test)]

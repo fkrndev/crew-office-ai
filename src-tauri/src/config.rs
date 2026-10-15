@@ -81,6 +81,27 @@ pub struct Config {
     /// write/secret ids require an explicit true — the merge never lets a
     /// keyed server ride in on a default.
     pub mcp_defaults: HashMap<String, McpDefaultCfg>,
+    /// Opt-in "strong keep-alive" (upstream strongKeepalive): while >=1 agent
+    /// PTY is live, escalate the power request from prevent-app-suspension to
+    /// prevent-display-sleep (the display stays on too — battery cost).
+    pub strong_keepalive: bool,
+    // ─── Memory reflection (the janitor's condense half; reflect.rs) ────────
+    // Upstream defaults: on, 30-min scan, condense past 50% of the 128KB
+    // budget OR >50 sections (above a 16KB floor), newest 12 sections kept.
+    /// Master toggle for the periodic MemoryReflector.
+    pub reflect_enabled: bool,
+    /// How often to scan for oversized memory files (floored at 60s).
+    pub reflect_interval_ms: u64,
+    pub reflect_byte_trigger_pct: u64,
+    pub reflect_section_trigger: usize,
+    pub reflect_recent_keep: usize,
+    pub reflect_min_bytes: u64,
+    /// Elapsed-time carry-over from a retired `compact-maintenance` mission
+    /// (see `seed_missions`): the boot code hands it to the context-trigger
+    /// cadence map so retiring mid-cycle doesn't restart the clock. In-memory
+    /// only — never written to config.json.
+    #[serde(skip)]
+    pub retired_compact_last_fired: u64,
 }
 
 /// One mcpDefaults row — `{enabled}` object, same wire shape as the renderer's
@@ -177,6 +198,14 @@ impl Default for Config {
             provider_base_urls: HashMap::new(),
             provider_default_models: HashMap::new(),
             mcp_defaults: HashMap::new(),
+            strong_keepalive: false,
+            reflect_enabled: true,
+            reflect_interval_ms: 1_800_000,
+            reflect_byte_trigger_pct: 50,
+            reflect_section_trigger: 50,
+            reflect_recent_keep: 12,
+            reflect_min_bytes: 16_384,
+            retired_compact_last_fired: 0,
         }
     }
 }
@@ -184,7 +213,16 @@ impl Default for Config {
 impl Config {
     /// Seed the built-in missions once (upstream ensureDefaultMissions):
     /// stamped with last_fired_at = now so a first launch waits a full
-    /// cadence rather than opening with an interruption.
+    /// cadence rather than opening with an interruption. Then the two
+    /// compaction migrations, so contextTrigger.compact is the ONLY schedule
+    /// that compacts:
+    ///  - maint-1 RETIREMENT: a `compact-maintenance` mission (older builds
+    ///    seeded one) is folded into contextTrigger.compact — its enabled flag
+    ///    and a usable interval carry over — and removed; nothing re-seeds it.
+    ///    Its last-fired time is parked in `retired_compact_last_fired`.
+    ///  - autoCompact RETIREMENT: the legacy per-mission flag is stripped
+    ///    wherever it survives (it made a default install compact on two
+    ///    cadences). Idempotent — one no-op scan per boot once clean.
     pub fn seed_missions(&mut self, now_ms: u64) -> bool {
         let mut changed = false;
         let mut ensure = |m: ScheduledMission, seeded: &mut bool| {
@@ -200,10 +238,26 @@ impl Config {
         };
         ensure(crate::missions::ops_standup(), &mut self.ops_standup_seeded);
         ensure(crate::missions::heartbeat(), &mut self.heartbeat_seeded);
-        ensure(
-            crate::missions::compact_maintenance(),
-            &mut self.compact_seeded,
-        );
+        if let Some(pos) = self
+            .missions
+            .iter()
+            .position(|m| m.id == "compact-maintenance")
+        {
+            let retiring = self.missions.remove(pos);
+            self.context_trigger.compact.enabled = retiring.enabled;
+            // A hand-tuned interval is a decision; only a missing/absurd one
+            // falls back to what the trigger already carries.
+            if retiring.interval_ms > 0 {
+                self.context_trigger.compact.every_ms = retiring.interval_ms;
+            }
+            self.retired_compact_last_fired = retiring.last_fired_at;
+            self.compact_seeded = true;
+            changed = true;
+        }
+        for m in self.missions.iter_mut().filter(|m| m.auto_compact) {
+            m.auto_compact = false;
+            changed = true;
+        }
         changed
     }
 }
@@ -377,6 +431,59 @@ mod tests {
         );
         assert!(d.join("config.json.bak").exists());
         fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn seed_retires_compact_maintenance_into_the_context_trigger() {
+        let mut cfg = Config::default();
+        // An older build's seeded schedule: enabled, hand-tuned to 30 min,
+        // plus a stray legacy autoCompact flag on the standup.
+        let mut cm = crate::missions::compact_maintenance();
+        cm.enabled = true;
+        cm.interval_ms = 1_800_000;
+        cm.last_fired_at = 4242;
+        cfg.missions.push(cm);
+        let mut standup = crate::missions::ops_standup();
+        standup.auto_compact = true;
+        cfg.missions.push(standup);
+        cfg.ops_standup_seeded = true;
+        cfg.heartbeat_seeded = true;
+        assert!(!cfg.context_trigger.compact.enabled || cfg.context_trigger.compact.every_ms != 1_800_000);
+
+        assert!(cfg.seed_missions(1_000));
+        assert!(cfg.missions.iter().all(|m| m.id != "compact-maintenance"));
+        assert!(cfg.context_trigger.compact.enabled);
+        assert_eq!(cfg.context_trigger.compact.every_ms, 1_800_000);
+        assert_eq!(cfg.retired_compact_last_fired, 4242);
+        assert!(cfg.compact_seeded);
+        assert!(cfg.missions.iter().all(|m| !m.auto_compact), "legacy flag stripped");
+        // Idempotent: nothing left to migrate, and it is never re-seeded.
+        cfg.retired_compact_last_fired = 0;
+        assert!(!cfg.seed_missions(2_000));
+        assert!(cfg.missions.iter().all(|m| m.id != "compact-maintenance"));
+
+        // A DISABLED retiring mission turns the trigger rule off (the
+        // operator's decision carries over).
+        let mut off = Config::default();
+        off.ops_standup_seeded = true;
+        off.heartbeat_seeded = true;
+        off.missions.push(crate::missions::compact_maintenance()); // enabled: false
+        off.seed_missions(1);
+        assert!(!off.context_trigger.compact.enabled);
+    }
+
+    #[test]
+    fn reflect_and_keepalive_defaults_match_upstream() {
+        let c = Config::default();
+        assert!(c.reflect_enabled && !c.strong_keepalive);
+        assert_eq!(
+            (c.reflect_interval_ms, c.reflect_byte_trigger_pct, c.reflect_section_trigger,
+             c.reflect_recent_keep, c.reflect_min_bytes),
+            (1_800_000, 50, 50, 12, 16_384)
+        );
+        // A pre-existing config.json without the keys still gets them.
+        let parsed: Config = serde_json::from_value(serde_json::json!({ "autoMode": true })).unwrap();
+        assert!(parsed.reflect_enabled && parsed.reflect_min_bytes == 16_384);
     }
 
     #[test]

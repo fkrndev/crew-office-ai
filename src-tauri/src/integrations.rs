@@ -23,6 +23,8 @@
 //! secrets never returned to the renderer / logged / echoed in errors, NOT an
 //! open proxy (path confined under the integration origin).
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -797,7 +799,7 @@ impl IntegrationBroker {
     /// just reports its port. The serve loop runs on a std thread.
     pub fn start(&self, home: &Path, preferred_port: u16) -> Result<u16, String> {
         {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock_safe();
             if inner.server.is_some() {
                 return Ok(inner.port);
             }
@@ -810,7 +812,7 @@ impl IntegrationBroker {
         };
         let server = Arc::new(server);
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_safe();
             inner.port = port;
             inner.home = Some(home.to_path_buf());
             inner.server = Some(server.clone());
@@ -824,24 +826,24 @@ impl IntegrationBroker {
     /// Close the broker. Idempotent + best-effort. Clears all capabilities.
     pub fn stop_broker(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_safe();
         if let Some(s) = inner.server.take() {
             s.unblock();
         }
         inner.port = 0;
         inner.home = None;
         drop(inner);
-        self.by_token.lock().unwrap().clear();
-        self.by_worker.lock().unwrap().clear();
+        self.by_token.lock_safe().clear();
+        self.by_worker.lock_safe().clear();
     }
 
     /// Whether the broker is bound and serving.
     pub fn running(&self) -> bool {
-        self.inner.lock().unwrap().server.is_some()
+        self.inner.lock_safe().server.is_some()
     }
 
     pub fn port(&self) -> u16 {
-        self.inner.lock().unwrap().port
+        self.inner.lock_safe().port
     }
 
     /// The base URL workers use (only valid while running).
@@ -854,7 +856,7 @@ impl IntegrationBroker {
     pub fn grant(&self, worker_id: &str, allowed_ids: Vec<String>) -> String {
         self.revoke(worker_id);
         let token = mint_token();
-        self.by_token.lock().unwrap().insert(
+        self.by_token.lock_safe().insert(
             token.clone(),
             Capability {
                 worker_id: worker_id.to_string(),
@@ -863,22 +865,21 @@ impl IntegrationBroker {
             },
         );
         self.by_worker
-            .lock()
-            .unwrap()
+            .lock_safe()
             .insert(worker_id.to_string(), token.clone());
         token
     }
 
     /// Revoke a worker's capability (called on teardown). Idempotent.
     pub fn revoke(&self, worker_id: &str) {
-        let token = self.by_worker.lock().unwrap().remove(worker_id);
+        let token = self.by_worker.lock_safe().remove(worker_id);
         if let Some(t) = token {
-            self.by_token.lock().unwrap().remove(&t);
+            self.by_token.lock_safe().remove(&t);
         }
     }
 
     pub fn capability_count(&self) -> usize {
-        self.by_token.lock().unwrap().len()
+        self.by_token.lock_safe().len()
     }
 
     /// Constant-time-ish lookup of a presented token against live capabilities.
@@ -887,8 +888,7 @@ impl IntegrationBroker {
             return None;
         }
         self.by_token
-            .lock()
-            .unwrap()
+            .lock_safe()
             .iter()
             .find(|(token, _)| secret_eq(provided, token))
             .map(|(_, cap)| cap.clone())
@@ -901,26 +901,28 @@ impl IntegrationBroker {
             if BROKER.stop.load(Ordering::Relaxed) {
                 return;
             }
-            let mut req = match server.recv_timeout(Duration::from_millis(500)) {
-                Ok(Some(r)) => r,
-                Ok(None) => continue,
-                Err(_) => {
-                    if BROKER.stop.load(Ordering::Relaxed) {
+            panic_guard::guarded("broker-accept", || {
+                let mut req = match server.recv_timeout(Duration::from_millis(500)) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return,
+                    Err(_) => {
+                        if BROKER.stop.load(Ordering::Relaxed) {
+                            return;
+                        }
                         return;
                     }
-                    continue;
-                }
-            };
-            let h = home.clone();
-            std::thread::spawn(move || {
-                let (status, headers, body) = BROKER.handle(&mut req, &h);
-                let mut resp = tiny_http::Response::from_data(body).with_status_code(status);
-                for (k, v) in headers {
-                    if let Ok(hdr) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
-                        resp = resp.with_header(hdr);
+                };
+                let h = home.clone();
+                std::thread::spawn(move || {
+                    let (status, headers, body) = BROKER.handle(&mut req, &h);
+                    let mut resp = tiny_http::Response::from_data(body).with_status_code(status);
+                    for (k, v) in headers {
+                        if let Ok(hdr) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+                            resp = resp.with_header(hdr);
+                        }
                     }
-                }
-                let _ = req.respond(resp);
+                    let _ = req.respond(resp);
+                });
             });
         }
     }

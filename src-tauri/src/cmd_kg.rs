@@ -31,20 +31,25 @@ fn harness_home(app: &AppHandle) -> PathBuf {
 
 #[tauri::command(async)]
 pub fn kg_status(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_status", || {
     Ok(kg::status(&harness_home(&app)))
+    })
 }
 
 #[tauri::command(async)]
 pub fn kg_list(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_list", || {
     let root = kg::kg_root(&harness_home(&app));
     if !root.exists() {
         return Ok(json!([]));
     }
     Ok(json!(kg::list(&root)))
+    })
 }
 
 #[tauri::command(async)]
 pub fn kg_search(app: AppHandle, query: String, limit: Option<u32>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_search", || {
     if query.trim().is_empty() {
         return Ok(json!([]));
     }
@@ -53,10 +58,12 @@ pub fn kg_search(app: AppHandle, query: String, limit: Option<u32>) -> Result<Va
         return Ok(json!([]));
     }
     Ok(json!(kg::search(&root, &query, limit)))
+    })
 }
 
 #[tauri::command(async)]
 pub fn kg_get(app: AppHandle, id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_get", || {
     if id.is_empty() {
         return Ok(Value::Null);
     }
@@ -65,12 +72,15 @@ pub fn kg_get(app: AppHandle, id: String) -> Result<Value, String> {
         Some((meta, text)) => Ok(json!({ "meta": meta, "text": text })),
         None => Ok(Value::Null),
     }
+    })
 }
 
 #[tauri::command(async)]
 pub fn kg_remove(app: AppHandle, id: String) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_remove", || {
     let ok = !id.is_empty() && kg::remove_doc(&kg::kg_root(&harness_home(&app)), &id);
     Ok(json!({ "ok": ok }))
+    })
 }
 
 /// Ingest files by path and/or inline content. Accepts BOTH shapes:
@@ -79,6 +89,7 @@ pub fn kg_remove(app: AppHandle, id: String) -> Result<Value, String> {
 /// Best-effort per file; per-file results so the UI can report partial success.
 #[tauri::command(async)]
 pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_ingest_files", || {
     let root = kg::kg_root(&harness_home(&app));
     let shared_tags = payload
         .get("tags")
@@ -158,12 +169,14 @@ pub fn kg_ingest_files(app: AppHandle, payload: Value) -> Result<Value, String> 
     }
 
     Ok(json!({ "results": results }))
+    })
 }
 
 /// "Add documents" — ingest explicit disk paths (the renderer's file picker
 /// supplies them; upstream opened the dialog itself). Same per-file results.
 #[tauri::command(async)]
 pub fn kg_add_files(app: AppHandle, payload: Option<Value>) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("kg_add_files", || {
     let root = kg::kg_root(&harness_home(&app));
     let p = payload.unwrap_or_else(|| json!({}));
     let mut paths: Vec<String> = p
@@ -212,6 +225,7 @@ pub fn kg_add_files(app: AppHandle, payload: Option<Value>) -> Result<Value, Str
         .map(|p| ingest_one(&root, p, None, None, &tags, None))
         .collect();
     Ok(json!({ "ok": true, "results": results }))
+    })
 }
 
 fn ingest_one(

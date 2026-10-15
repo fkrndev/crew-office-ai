@@ -33,27 +33,34 @@ fn harness_home(app: &AppHandle) -> PathBuf {
 /// `integrations:list` — records with secretRef redacted to `hasSecret`.
 #[tauri::command(async)]
 pub fn integrations_list(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_list", || {
     Ok(json!(integrations::list_redacted(&harness_home(&app))))
+    })
 }
 
 /// `integrations:templates` — the v1 reference presets.
 #[tauri::command(async)]
 pub fn integrations_templates() -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_templates", || {
     Ok(integrations::templates())
+    })
 }
 
 /// `integrations:upsert` — validated create/replace; same {ok,record|error} shape.
 #[tauri::command(async)]
 pub fn integrations_upsert(app: AppHandle, record: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_upsert", || {
     match integrations::upsert_record(&harness_home(&app), &record) {
         Ok(rec) => Ok(json!({ "ok": true, "record": rec })),
         Err(e) => Ok(json!({ "ok": false, "error": e })),
     }
+    })
 }
 
 /// `integrations:remove` — drops the record AND its stored secret.
 #[tauri::command(async)]
 pub fn integrations_remove(app: AppHandle, payload: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_remove", || {
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if id.is_empty() {
         return Ok(json!({ "ok": false, "error": "id required" }));
@@ -62,11 +69,13 @@ pub fn integrations_remove(app: AppHandle, payload: Value) -> Result<Value, Stri
         Ok(()) => Ok(json!({ "ok": true })),
         Err(e) => Ok(json!({ "ok": false, "error": e })),
     }
+    })
 }
 
 /// `integrations:setSecret` — {id, secret, key?} → keychain only, never echoed.
 #[tauri::command(async)]
 pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_set_secret", || {
     let _ = app;
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if id.is_empty() {
@@ -84,6 +93,7 @@ pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, 
         Ok(()) => Ok(json!({ "ok": true })),
         Err(e) => Ok(json!({ "ok": false, "error": e })),
     }
+    })
 }
 
 /// `integrations:test` — probe reachability through the broker's own auth
@@ -91,6 +101,7 @@ pub fn integrations_set_secret(app: AppHandle, payload: Value) -> Result<Value, 
 /// upstream status crosses back).
 #[tauri::command(async)]
 pub fn integrations_test(app: AppHandle, payload: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_test", || {
     let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
     Ok(integrations::test_integration(
@@ -98,6 +109,7 @@ pub fn integrations_test(app: AppHandle, payload: Value) -> Result<Value, String
         id,
         path,
     ))
+    })
 }
 
 /// Start the loopback broker (idempotent). `preferred_port` 0/absent ⇒ OS pick.
@@ -107,23 +119,28 @@ pub fn integrations_broker_start(
     app: AppHandle,
     preferred_port: Option<u16>,
 ) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_broker_start", || {
     match BROKER.start(&harness_home(&app), preferred_port.unwrap_or(0)) {
         Ok(port) => Ok(json!({ "ok": true, "port": port, "url": BROKER.url() })),
         Err(e) => Ok(json!({ "ok": false, "error": e })),
     }
+    })
 }
 
 /// Stop the broker and clear all capabilities (upstream stop()).
 #[tauri::command(async)]
 pub fn integrations_broker_stop(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_broker_stop", || {
     let _ = app;
     BROKER.stop_broker();
     Ok(json!({ "ok": true }))
+    })
 }
 
 /// {running, url, port, capabilities} — secrets are not part of status.
 #[tauri::command(async)]
 pub fn integrations_broker_status(app: AppHandle) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_broker_status", || {
     let _ = app;
     Ok(json!({
         "running": BROKER.running(),
@@ -131,6 +148,7 @@ pub fn integrations_broker_status(app: AppHandle) -> Result<Value, String> {
         "port": BROKER.port(),
         "capabilities": BROKER.capability_count(),
     }))
+    })
 }
 
 /// Issue a per-worker capability token — upstream granted one implicitly at
@@ -140,6 +158,7 @@ pub fn integrations_broker_status(app: AppHandle) -> Result<Value, String> {
 /// secret, and lives only in broker memory.
 #[tauri::command(async)]
 pub fn integrations_broker_token(app: AppHandle, payload: Value) -> Result<Value, String> {
+    crate::panic_guard::cmd_guard("integrations_broker_token", || {
     if !BROKER.running() {
         return Ok(json!({ "ok": false, "error": "broker not running" }));
     }
@@ -170,4 +189,5 @@ pub fn integrations_broker_token(app: AppHandle, payload: Value) -> Result<Value
         "allowedIds": allowed,
         "url": BROKER.url(),
     }))
+    })
 }

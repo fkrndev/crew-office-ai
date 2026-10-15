@@ -43,7 +43,14 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-notification = "2.5.1"
 tauri-plugin-opener = "2.7.0"
+# Signed auto-update (minisign signature over the installer; unrelated to OS
+# code-signing). Restart goes through AppHandle::restart / the installer's own
+# relaunch, so tauri-plugin-process is not needed.
+tauri-plugin-updater = "2.13"
 log = "0.4.34"
+# `FutureExt::catch_unwind` for panic_guard::cmd_guard_async (same 0.3.34 that
+# tauri already resolves — no new crate version in the lock).
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 # `test` enables tauri::test (mock_app + the noop Wry runtime) so unit tests
 # can exercise code paths that carry an AppHandle without a real window.
 [dev-dependencies]
@@ -53,10 +60,17 @@ tauri = { version = "2.12", features = ["test"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_Security_Cryptography", "Win32_System_Memory"] }
 junction = "1"
 winreg = "0.52"
+# Same versions wry/tauri resolve (Cargo.lock): the mic gate adds a second
+# PermissionRequested handler on the platform webview (mic_gate.rs).
+webview2-com = "0.39.1"
+windows-core = "0.62.2"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwind (the default), NOT abort: a panic in any background thread must end
+# only that thread, not the whole app and every agent CLI it owns. The panic
+# hook + guarded()/supervise() in panic_guard.rs, and the poison-tolerant
+# lock_ext.rs, are what make that survivable — do not switch back to "abort".
 strip = true

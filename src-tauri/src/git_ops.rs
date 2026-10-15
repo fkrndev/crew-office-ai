@@ -30,7 +30,20 @@ pub fn branch(cwd: &Path) -> Option<Value> {
         ),
         None => ("(no commits yet)".to_string(), false),
     };
-    Some(json!({ "branch": name, "detached": detached }))
+    // `current` is upstream's getBranch() key (null when detached; an unborn
+    // branch still names itself). `branch` stays for the Rust-internal callers
+    // (worktree base ref, spawn isolation) that read the display name.
+    let current: Option<String> = if detached {
+        None
+    } else if head.is_some() {
+        Some(name.clone())
+    } else {
+        repo.find_reference("HEAD")
+            .ok()
+            .and_then(|r| r.symbolic_target().ok().flatten().map(str::to_string))
+            .map(|t| t.trim_start_matches("refs/heads/").to_string())
+    };
+    Some(json!({ "branch": name, "current": current, "detached": detached }))
 }
 
 /// Working-tree counters — getStatus(): staged/unstaged/untracked counts +
@@ -70,41 +83,206 @@ pub fn status(cwd: &Path) -> Option<Value> {
     }))
 }
 
-/// Ahead/behind the upstream tracking branch — getAheadBehind().
-pub fn ahead_behind(cwd: &Path) -> Option<Value> {
+/// The git:status payload the git panes read — getStatus(): per-file entries
+/// like `git status --porcelain=v1 -z --untracked-files=all`:
+/// `{ staged: [{path, index, worktree, oldPath?}], unstaged: [...],
+/// untracked: [path] }`. `staged` holds entries whose index letter is set,
+/// `unstaged` those whose worktree letter is set (a file can be in both);
+/// a staged rename carries its source in `oldPath`.
+pub fn status_entries(cwd: &Path) -> Option<Value> {
     let repo = git2::Repository::discover(cwd).ok()?;
-    let head = repo.head().ok()?;
-    let local = head.target()?;
-    let upstream = repo
-        .branch_upstream_name(head.shorthand().unwrap_or(""))
-        .ok()
-        .and_then(|n| {
-            repo.find_branch(n.as_str().unwrap_or(""), git2::BranchType::Remote)
-                .ok()
-        })
-        .and_then(|b| b.get().target());
-    let Some(up) = upstream else {
-        return Some(json!({ "ahead": 0, "behind": 0, "hasUpstream": false }));
-    };
-    let (a, b) = repo.graph_ahead_behind(local, up).ok()?;
-    Some(json!({ "ahead": a, "behind": b, "hasUpstream": true }))
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true)
+        .exclude_submodules(true);
+    let statuses = repo.statuses(Some(&mut opts)).ok()?;
+    let (mut staged, mut unstaged, mut untracked) = (Vec::new(), Vec::new(), Vec::new());
+    for s in statuses.iter() {
+        let st = s.status();
+        let delta_path = |d: Option<git2::DiffDelta>, old: bool| -> Option<String> {
+            let d = d?;
+            let f = if old { d.old_file() } else { d.new_file() };
+            f.path().map(|p| p.to_string_lossy().into_owned())
+        };
+        let path = delta_path(s.head_to_index(), false)
+            .or_else(|| s.path().ok().map(str::to_string))
+            .unwrap_or_else(|| String::from_utf8_lossy(s.path_bytes()).into_owned());
+        if st.contains(git2::Status::WT_NEW) && !st.intersects(git2::Status::INDEX_NEW) {
+            untracked.push(json!(path));
+            continue;
+        }
+        let (index, worktree) = if st.contains(git2::Status::CONFLICTED) {
+            ('U', 'U')
+        } else {
+            let i = if st.contains(git2::Status::INDEX_RENAMED) {
+                'R'
+            } else if st.contains(git2::Status::INDEX_NEW) {
+                'A'
+            } else if st.contains(git2::Status::INDEX_DELETED) {
+                'D'
+            } else if st.contains(git2::Status::INDEX_TYPECHANGE) {
+                'T'
+            } else if st.contains(git2::Status::INDEX_MODIFIED) {
+                'M'
+            } else {
+                ' '
+            };
+            let w = if st.contains(git2::Status::WT_DELETED) {
+                'D'
+            } else if st.contains(git2::Status::WT_RENAMED) {
+                'R'
+            } else if st.contains(git2::Status::WT_TYPECHANGE) {
+                'T'
+            } else if st.contains(git2::Status::WT_MODIFIED) {
+                'M'
+            } else {
+                ' '
+            };
+            (i, w)
+        };
+        if index == ' ' && worktree == ' ' {
+            continue; // ignored / current — not a change
+        }
+        let mut entry = json!({
+            "path": path,
+            "index": index.to_string(),
+            "worktree": worktree.to_string(),
+        });
+        if index == 'R' {
+            if let Some(old) = delta_path(s.head_to_index(), true) {
+                entry["oldPath"] = json!(old);
+            }
+        }
+        if index != ' ' {
+            staged.push(entry.clone());
+        }
+        if worktree != ' ' {
+            unstaged.push(entry);
+        }
+    }
+    Some(json!({ "staged": staged, "unstaged": unstaged, "untracked": untracked }))
 }
 
-/// Recent commits — getLog(n): sha, subject, author, timestamp.
+/// Ahead/behind the upstream tracking branch — getAheadBehind():
+/// `{ahead, behind, upstream}` (`upstream` null with no tracking branch, and
+/// likewise on a detached or unborn HEAD). `hasUpstream` rides along for the
+/// Rust-internal worktree-safety checks.
+pub fn ahead_behind(cwd: &Path) -> Option<Value> {
+    let repo = git2::Repository::discover(cwd).ok()?;
+    let none = json!({ "ahead": 0, "behind": 0, "upstream": null, "hasUpstream": false });
+    let Ok(head) = repo.head() else {
+        return Some(none);
+    };
+    let Some(local) = head.target() else {
+        return Some(none);
+    };
+    let up_branch = head
+        .is_branch()
+        .then(|| head.shorthand().ok().map(str::to_string))
+        .flatten()
+        .and_then(|n| repo.find_branch(&n, git2::BranchType::Local).ok())
+        .and_then(|b| b.upstream().ok());
+    let Some(up_branch) = up_branch else {
+        return Some(none);
+    };
+    let upstream_name = up_branch.name().ok().flatten().map(str::to_string);
+    let Some(up) = up_branch.get().target() else {
+        return Some(none);
+    };
+    let (a, b) = repo.graph_ahead_behind(local, up).ok()?;
+    Some(json!({
+        "ahead": a, "behind": b, "upstream": upstream_name, "hasUpstream": true,
+    }))
+}
+
+/// `git log %D` decorations per commit — `HEAD -> main`, `origin/main`,
+/// `tag: v1` (what the commit chips strip down), HEAD first.
+fn decorations(repo: &git2::Repository) -> std::collections::HashMap<git2::Oid, Vec<String>> {
+    let mut map: std::collections::HashMap<git2::Oid, Vec<String>> = Default::default();
+    let head_ref = repo.head().ok();
+    let head_branch = head_ref
+        .as_ref()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.name().ok().map(str::to_string));
+    if let Some(h) = &head_ref {
+        if let Some(oid) = h.target() {
+            if head_branch.is_none() {
+                map.entry(oid).or_default().push("HEAD".into());
+            }
+        }
+    }
+    let mut named: Vec<(git2::Oid, String)> = Vec::new();
+    for r in repo.references().into_iter().flatten().flatten() {
+        let Some(full) = r.name().ok().map(str::to_string) else {
+            continue;
+        };
+        let label = if let Some(s) = full.strip_prefix("refs/heads/") {
+            s.to_string()
+        } else if let Some(s) = full.strip_prefix("refs/remotes/") {
+            s.to_string()
+        } else if let Some(s) = full.strip_prefix("refs/tags/") {
+            format!("tag: {s}")
+        } else {
+            continue;
+        };
+        let Ok(commit) = r.peel_to_commit() else {
+            continue;
+        };
+        if head_branch.as_deref() == Some(full.as_str()) {
+            map.entry(commit.id())
+                .or_default()
+                .insert(0, format!("HEAD -> {label}"));
+        } else {
+            named.push((commit.id(), label));
+        }
+    }
+    named.sort_by(|a, b| a.1.cmp(&b.1));
+    for (oid, label) in named {
+        map.entry(oid).or_default().push(label);
+    }
+    map
+}
+
+/// One GitCommit row — `{sha, shortSha, parents, subject, author, time (unix
+/// seconds), refs}` as git.ts getLog/getLogGraph build them.
+fn commit_row(
+    c: &git2::Commit,
+    deco: &std::collections::HashMap<git2::Oid, Vec<String>>,
+) -> Value {
+    let sha = c.id().to_string();
+    json!({
+        "shortSha": sha[..7.min(sha.len())].to_string(),
+        "sha": sha,
+        "parents": c.parent_ids().map(|p| p.to_string()).collect::<Vec<_>>(),
+        "subject": c.summary().ok().flatten().unwrap_or(""),
+        "author": c.author().name().unwrap_or(""),
+        "time": c.author().when().seconds(),
+        "refs": deco.get(&c.id()).cloned().unwrap_or_default(),
+    })
+}
+
+/// Every ref tip (plus HEAD) pushed on the walk — `git log --all`.
+fn push_all_refs(repo: &git2::Repository, walk: &mut git2::Revwalk) {
+    for r in repo.references().into_iter().flatten().flatten() {
+        if let Ok(c) = r.peel_to_commit() {
+            let _ = walk.push(c.id());
+        }
+    }
+    let _ = walk.push_head();
+}
+
+/// Recent commits — getLog(n): `git log --all --max-count=n`, newest first.
 pub fn log(cwd: &Path, n: usize) -> Option<Vec<Value>> {
     let repo = git2::Repository::discover(cwd).ok()?;
     let mut walk = repo.revwalk().ok()?;
-    walk.push_head().ok()?;
     walk.set_sorting(git2::Sort::TIME).ok()?;
+    push_all_refs(&repo, &mut walk);
+    let deco = decorations(&repo);
     let mut out = Vec::new();
     for oid in walk.take(n).flatten() {
         if let Ok(c) = repo.find_commit(oid) {
-            out.push(json!({
-                "sha": oid.to_string(),
-                "subject": c.summary().ok().flatten().unwrap_or(""),
-                "author": c.author().name().unwrap_or(""),
-                "ts": c.time().seconds() * 1000,
-            }));
+            out.push(commit_row(&c, &deco));
         }
     }
     Some(out)
@@ -201,8 +379,29 @@ fn safe_rel_path(path: &str) -> Option<String> {
     Some(norm)
 }
 
-/// Local + remote branch list — getBranches(), extended with per-branch
-/// upstream/ahead/behind for the pane's branch picker.
+/// git:branches payload — getBranches(): `{local: [names], remote: [names],
+/// current}` (`current` null when detached), plus the per-branch detail rows
+/// (`branches`) under `details`.
+pub fn branches_payload(cwd: &Path) -> Option<Value> {
+    let rows = branches(cwd)?;
+    let names = |remote: bool| -> Vec<Value> {
+        rows.iter()
+            .filter(|r| r["isRemote"].as_bool() == Some(remote))
+            .map(|r| r["name"].clone())
+            .collect()
+    };
+    let repo = git2::Repository::discover(cwd).ok()?;
+    let current = repo
+        .head()
+        .ok()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().ok().map(str::to_string));
+    Some(json!({
+        "local": names(false), "remote": names(true), "current": current, "details": rows,
+    }))
+}
+
+/// Local + remote branch list with per-branch upstream/ahead/behind.
 pub fn branches(cwd: &Path) -> Option<Vec<Value>> {
     let repo = git2::Repository::discover(cwd).ok()?;
     let mut out = Vec::new();
@@ -374,8 +573,9 @@ pub fn checkout(cwd: &Path, rev: &str, detach: bool) -> Result<Value, String> {
         return Err("invalid revision".into());
     }
     let repo = git2::Repository::discover(cwd).map_err(|e| map_err(&e))?;
-    let s = status(cwd).ok_or_else(|| "could not verify a clean tree".to_string())?;
-    let dirty = s["staged"].as_u64().unwrap_or(1) + s["unstaged"].as_u64().unwrap_or(1);
+    let s = status_entries(cwd).ok_or_else(|| "could not verify a clean tree".to_string())?;
+    let len = |k: &str| s[k].as_array().map_or(1, |a| a.len());
+    let dirty = len("staged") + len("unstaged");
     if dirty > 0 {
         return Err(format!(
             "working tree has {dirty} uncommitted change{} — commit or stash first",
@@ -773,22 +973,12 @@ pub fn log_graph(cwd: &Path, n: usize, skip: usize) -> Option<Vec<Value>> {
     let repo = git2::Repository::discover(cwd).ok()?;
     let mut walk = repo.revwalk().ok()?;
     walk.set_sorting(git2::Sort::TOPOLOGICAL).ok()?;
-    for r in repo.references().ok()?.flatten() {
-        if let Some(oid) = r.target() {
-            let _ = walk.push(oid);
-        }
-    }
-    let _ = walk.push_head();
+    push_all_refs(&repo, &mut walk);
+    let deco = decorations(&repo);
     let mut out = Vec::new();
     for oid in walk.skip(skip).take(n).flatten() {
         if let Ok(c) = repo.find_commit(oid) {
-            out.push(json!({
-                "sha": oid.to_string(),
-                "subject": c.summary().ok().flatten().unwrap_or(""),
-                "author": c.author().name().unwrap_or(""),
-                "ts": c.time().seconds() * 1000,
-                "parents": c.parent_ids().map(|p| p.to_string()).collect::<Vec<_>>(),
-            }));
+            out.push(commit_row(&c, &deco));
         }
     }
     Some(out)
@@ -861,10 +1051,12 @@ pub fn commit_files(cwd: &Path, sha: &str) -> Result<Vec<Value>, String> {
     Ok(delta_files(&d, true))
 }
 
-/// Compare two refs — compareRefs() three-dot semantics: ahead = commits in
-/// `head` not `base`, behind = the reverse, files = merge-base…head
-/// name-status (falls back to the literal base…head diff when unrelated).
-pub fn compare_refs(cwd: &Path, base: &str, head: &str) -> Result<Value, String> {
+/// Compare two refs — compareRefs(): ahead = commits in `head` not `base`,
+/// behind = the reverse. `two_dot` false (upstream's default 'three', PR
+/// style) lists what head adds since the merge base (falling back to the
+/// literal diff when the histories are unrelated); true ('two') is the
+/// literal state difference base → head.
+pub fn compare_refs(cwd: &Path, base: &str, head: &str, two_dot: bool) -> Result<Value, String> {
     if !is_safe_rev(base) || !is_safe_rev(head) {
         return Err("invalid revision".into());
     }
@@ -882,6 +1074,7 @@ pub fn compare_refs(cwd: &Path, base: &str, head: &str) -> Result<Value, String>
     let mb = repo.merge_base(b_oid, h_oid).ok();
     let tree_of = |oid: git2::Oid| repo.find_commit(oid).and_then(|c| c.tree());
     let from = mb
+        .filter(|_| !two_dot)
         .and_then(|o| tree_of(o).ok())
         .or_else(|| tree_of(b_oid).ok());
     let to = tree_of(h_oid).ok();
@@ -1139,6 +1332,208 @@ mod tests {
             Some(false)
         );
         assert!(show_file(&d, &c1.to_string(), "../escape").is_err());
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn branch_payload_has_current_and_branch() {
+        let d = tmpdir("branchcur");
+        let repo = init_repo(&d);
+        let c1 = commit_file(&repo, &d, "a.txt", "one", "init");
+        let b = branch(&d).unwrap();
+        assert!(b["current"].is_string() && b["current"] == b["branch"]);
+        assert_eq!(b["detached"], false);
+        repo.set_head_detached(c1).unwrap();
+        let b = branch(&d).unwrap();
+        assert!(b["current"].is_null());
+        assert_eq!(b["detached"], true);
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn status_entries_shape_staged_unstaged_untracked_rename() {
+        let d = tmpdir("statentries");
+        let repo = init_repo(&d);
+        commit_file(&repo, &d, "a.txt", "one\ntwo\nthree\nfour\nfive\n", "init");
+        commit_file(&repo, &d, "keep.txt", "k", "k");
+        // staged rename a.txt -> sub/b.txt
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::rename(d.join("a.txt"), d.join("sub").join("b.txt")).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.remove_path(Path::new("a.txt")).unwrap();
+        idx.add_path(Path::new("sub/b.txt")).unwrap();
+        idx.write().unwrap();
+        // unstaged edit + untracked file in a dir
+        std::fs::write(d.join("keep.txt"), "changed").unwrap();
+        std::fs::create_dir_all(d.join("newdir")).unwrap();
+        std::fs::write(d.join("newdir").join("n.txt"), "x").unwrap();
+        let s = status_entries(&d).unwrap();
+        let staged = s["staged"].as_array().unwrap();
+        assert_eq!(staged.len(), 1, "{s}");
+        assert_eq!(staged[0]["path"], "sub/b.txt");
+        assert_eq!(staged[0]["index"], "R");
+        assert_eq!(staged[0]["worktree"], " ");
+        assert_eq!(staged[0]["oldPath"], "a.txt");
+        let unstaged = s["unstaged"].as_array().unwrap();
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0]["path"], "keep.txt");
+        assert_eq!(unstaged[0]["worktree"], "M");
+        assert_eq!(unstaged[0]["index"], " ");
+        // --untracked-files=all: the file, not its directory
+        assert_eq!(s["untracked"], json!(["newdir/n.txt"]));
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn status_entries_added_then_modified_is_in_both_lists() {
+        let d = tmpdir("statboth");
+        let repo = init_repo(&d);
+        commit_file(&repo, &d, "a.txt", "one", "init");
+        std::fs::write(d.join("n.txt"), "1").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("n.txt")).unwrap();
+        idx.write().unwrap();
+        std::fs::write(d.join("n.txt"), "2").unwrap();
+        let s = status_entries(&d).unwrap();
+        assert_eq!(s["staged"][0]["index"], "A");
+        assert_eq!(s["unstaged"][0]["worktree"], "M");
+        assert!(s["untracked"].as_array().unwrap().is_empty());
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn branches_payload_local_remote_current() {
+        let d = tmpdir("branchespl");
+        let repo = init_repo(&d);
+        let c1 = commit_file(&repo, &d, "a.txt", "one", "init");
+        let commit = repo.find_commit(c1).unwrap();
+        repo.branch("feature/x", &commit, false).unwrap();
+        repo.reference("refs/remotes/origin/main", c1, true, "t").unwrap();
+        let p = branches_payload(&d).unwrap();
+        let local: Vec<&str> = p["local"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(local.contains(&"feature/x"));
+        assert_eq!(p["remote"], json!(["origin/main"]));
+        assert!(p["current"].is_string());
+        assert!(local.contains(&p["current"].as_str().unwrap()));
+        drop(commit);
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn ahead_behind_reports_upstream_name() {
+        let d = tmpdir("abup");
+        let repo = init_repo(&d);
+        let c1 = commit_file(&repo, &d, "a.txt", "one", "init");
+        let cur = repo.head().unwrap().shorthand().unwrap().to_string();
+        // libgit2 maps a branch's upstream through the remote's fetch refspec,
+        // so the remote has to exist (nothing is ever fetched from it).
+        repo.remote("origin", "https://example.invalid/x.git").unwrap();
+        repo.reference("refs/remotes/origin/main", c1, true, "t").unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str(&format!("branch.{cur}.remote"), "origin").unwrap();
+        cfg.set_str(&format!("branch.{cur}.merge"), "refs/heads/main").unwrap();
+        commit_file(&repo, &d, "b.txt", "two", "ahead");
+        let ab = ahead_behind(&d).unwrap();
+        assert_eq!(ab["upstream"], "origin/main");
+        assert_eq!(ab["ahead"], 1);
+        assert_eq!(ab["behind"], 0);
+        // no-upstream shape carries a null `upstream`
+        drop(cfg);
+        drop(repo);
+        let d2 = tmpdir("abup2");
+        let r2 = init_repo(&d2);
+        commit_file(&r2, &d2, "a.txt", "one", "init");
+        let ab = ahead_behind(&d2).unwrap();
+        assert!(ab["upstream"].is_null());
+        drop(r2);
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::remove_dir_all(&d2).ok();
+    }
+
+    #[test]
+    fn log_rows_carry_short_sha_parents_time_refs() {
+        let d = tmpdir("logrows");
+        let repo = init_repo(&d);
+        let c1 = commit_file(&repo, &d, "a.txt", "one", "init");
+        let c2 = commit_file(&repo, &d, "b.txt", "two", "second");
+        let commit = repo.find_commit(c1).unwrap();
+        repo.tag_lightweight("v1", commit.as_object(), false).unwrap();
+        let rows = log(&d, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        let top = rows.iter().find(|r| r["sha"] == c2.to_string()).unwrap();
+        assert_eq!(top["shortSha"], c2.to_string()[..7]);
+        assert_eq!(top["parents"], json!([c1.to_string()]));
+        assert_eq!(top["subject"], "second");
+        assert!(top["time"].as_i64().unwrap() > 1_000_000_000, "unix seconds");
+        let refs = top["refs"].as_array().unwrap();
+        assert!(refs[0].as_str().unwrap().starts_with("HEAD -> "), "{refs:?}");
+        let first = rows.iter().find(|r| r["sha"] == c1.to_string()).unwrap();
+        assert_eq!(first["refs"], json!(["tag: v1"]));
+        // log_graph rows share the shape
+        let g = log_graph(&d, 10, 0).unwrap();
+        assert!(g[0]["shortSha"].is_string() && g[0]["refs"].is_array());
+        drop(commit);
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn compare_refs_two_vs_three_dot() {
+        let d = tmpdir("cmpmode");
+        let repo = init_repo(&d);
+        let base = commit_file(&repo, &d, "a.txt", "one", "init");
+        let base_name = repo.head().unwrap().shorthand().unwrap().to_string();
+        let bc = repo.find_commit(base).unwrap();
+        repo.branch("feat", &bc, false).unwrap();
+        // main advances with m.txt; feat advances with f.txt
+        commit_file(&repo, &d, "m.txt", "m", "main work");
+        repo.set_head("refs/heads/feat").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit_file(&repo, &d, "f.txt", "f", "feat work");
+        let three = compare_refs(&d, &base_name, "feat", false).unwrap();
+        let paths = |v: &Value| -> Vec<String> {
+            v["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["path"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(paths(&three), vec!["f.txt"]);
+        assert_eq!(three["ahead"], 1);
+        assert_eq!(three["behind"], 1);
+        assert_eq!(three["mergeBase"], base.to_string());
+        let mut two = paths(&compare_refs(&d, &base_name, "feat", true).unwrap());
+        two.sort();
+        assert_eq!(two, vec!["f.txt", "m.txt"]);
+        drop(bc);
+        drop(repo);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn checkout_refuses_staged_or_unstaged_changes() {
+        let d = tmpdir("coguard");
+        let repo = init_repo(&d);
+        let c1 = commit_file(&repo, &d, "a.txt", "one", "init");
+        std::fs::write(d.join("a.txt"), "dirty").unwrap();
+        let err = checkout(&d, &c1.to_string(), true).unwrap_err();
+        assert!(err.contains("uncommitted change"), "{err}");
+        std::fs::write(d.join("a.txt"), "one").unwrap();
+        // untracked alone does not block
+        std::fs::write(d.join("u.txt"), "u").unwrap();
+        assert_eq!(checkout(&d, &c1.to_string(), true).unwrap()["detached"], true);
         drop(repo);
         std::fs::remove_dir_all(&d).ok();
     }

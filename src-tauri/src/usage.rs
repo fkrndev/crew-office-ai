@@ -12,6 +12,7 @@
 //! one stat per file. A torn trailing line is left unparsed until the writer
 //! completes it.
 
+use crate::lock_ext::LockExt;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -103,6 +104,111 @@ fn seed_session_transcript_in(projects_root: &std::path::Path, cwd: &str, sessio
     false
 }
 
+// ─── Grok usage file (upstream telemetry.ts grokFallback, #536) ─────────────
+
+/// JS `encodeURIComponent`: everything but `A-Za-z0-9 - _ . ! ~ * ' ( )` is
+/// percent-encoded per UTF-8 byte (the Grok CLI keys its session dir by it).
+fn encode_uri_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// One Grok session's cumulative snapshot plus the model it reports.
+pub struct GrokUsage {
+    pub sample: UsageSample,
+    pub model: String,
+}
+
+/// `~/.grok/sessions/<encodeURIComponent(cwd)>/<sessionId>/usage.json`, read
+/// from the user's home.
+pub fn grok_usage(cwd: &str, session_id: &str) -> Option<GrokUsage> {
+    let home =
+        std::env::home_dir().or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))?;
+    grok_usage_in(&home.join(".grok").join("sessions"), cwd, session_id)
+}
+
+/// The root-injectable core of `grok_usage` (tests use a temp dir). `None` for
+/// a missing/mid-write file or a session id that is not a plain path segment.
+/// Cost is Grok's own `costUsdTicks` (10^10 ticks to the dollar) — taken as
+/// given, no price table to maintain.
+fn grok_usage_in(sessions_root: &Path, cwd: &str, session_id: &str) -> Option<GrokUsage> {
+    if cwd.is_empty()
+        || session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    let file = sessions_root
+        .join(encode_uri_component(cwd))
+        .join(session_id)
+        .join("usage.json");
+    let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
+    let t = parsed.get("session")?;
+    let num = |k: &str| {
+        t.get(k)
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .unwrap_or(0.0)
+    };
+    let ts = parsed
+        .get("updatedAt")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.timestamp_millis() as u64)
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        });
+    Some(GrokUsage {
+        sample: UsageSample {
+            input: num("inputTokens") as u64,
+            output: num("outputTokens") as u64,
+            cache_read: num("cachedReadTokens") as u64,
+            cache_creation: num("cacheCreationTokens") as u64,
+            usd: num("costUsdTicks") / 1e10,
+            ts,
+        },
+        model: normalize_model(t.get("primaryModelId").and_then(|v| v.as_str()).unwrap_or("")),
+    })
+}
+
+/// Upstream CumulativeSampleGate: the ledger is fed a running TOTAL, so a
+/// cumulative file snapshot is admitted only when its numbers MOVED (an idle
+/// Grok agent re-reads the same file every beat and stays silent). `ts` is not
+/// part of the signature. A new session id always differs, so a respawned
+/// agent's first sample is admitted without an explicit forget.
+#[derive(Default)]
+pub struct CumulativeSampleGate {
+    last: Mutex<HashMap<String, String>>,
+}
+
+impl CumulativeSampleGate {
+    pub fn admits(&self, agent_id: &str, session_id: &str, g: &GrokUsage) -> bool {
+        let s = &g.sample;
+        let sig = format!(
+            "{session_id}|{}|{}|{}|{}|{}|{}",
+            s.input, s.output, s.cache_read, s.cache_creation, g.model, s.usd
+        );
+        let mut last = self.last.lock_safe();
+        if last.get(agent_id) == Some(&sig) {
+            return false;
+        }
+        last.insert(agent_id.to_string(), sig);
+        true
+    }
+}
+
 #[derive(Clone, Default)]
 struct Totals {
     input: u64,
@@ -132,12 +238,26 @@ pub struct UsageReader {
 }
 
 impl UsageReader {
-    /// Cumulative usage for an agent working in `cwd`, filtered to
-    /// `session_id` when known (registry.session_id — avoids the
-    /// co-located-agents double-count). Returns None when nothing readable.
+    /// Cumulative usage for an agent working in `cwd`, filtered to its own
+    /// `session_id` (registry.session_id — avoids the co-located-agents
+    /// double-count). With NO known session id this reports no data instead of
+    /// summing every transcript in the (routinely shared) cwd — upstream D11:
+    /// someone else's, or a past run's, history must never be attributed to
+    /// this agent. Returns None when nothing readable.
     pub fn sample(&self, cwd: &str, session_id: Option<&str>) -> Option<UsageSample> {
-        let dir = project_dir(cwd)?;
-        let rd = fs::read_dir(&dir).ok()?;
+        let sid = session_id.filter(|s| !s.is_empty())?;
+        // Grok before the transcript read (upstream grokFallback): a Grok
+        // agent has no Claude transcript, and its own file carries a real cost.
+        // A Claude session id is not a dir under ~/.grok/sessions → None.
+        if let Some(g) = grok_usage(cwd, sid) {
+            return Some(g.sample);
+        }
+        self.sample_in(&project_dir(cwd)?, Some(sid))
+    }
+
+    /// The directory-injectable core of `sample` (tests point it at a temp dir).
+    fn sample_in(&self, dir: &Path, session_id: Option<&str>) -> Option<UsageSample> {
+        let rd = fs::read_dir(dir).ok()?;
         let mut out = UsageSample::default();
         let mut seen = false;
         let mut files: Vec<PathBuf> = rd
@@ -180,7 +300,7 @@ impl UsageReader {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock_safe();
         if let Some(c) = cache.get(path) {
             if c.size == size && c.mtime_ms == mtime {
                 // Cloning the totals out under the lock keeps the borrow simple;
@@ -321,6 +441,64 @@ mod tests {
     fn project_key_dashes_every_non_alnum() {
         assert_eq!(project_key("C:\\Users\\me\\app"), "C--Users-me-app");
         assert_eq!(project_key("/Users/me/MDv0.3.0"), "-Users-me-MDv0-3-0");
+    }
+
+    #[test]
+    fn grok_usage_reads_ticks_and_gate_admits_only_movement() {
+        assert_eq!(encode_uri_component(r"D:\a b\é"), "D%3A%5Ca%20b%5C%C3%A9");
+        let root = std::env::temp_dir().join(format!("oa-grok-{}", uuid::Uuid::new_v4()));
+        let cwd = r"D:\work\proj";
+        let dir = root.join(encode_uri_component(cwd)).join("sess-1");
+        fs::create_dir_all(&dir).unwrap();
+        let write = |ticks: u64, out: u64| {
+            fs::write(
+                dir.join("usage.json"),
+                format!(
+                    r#"{{"updatedAt":"2026-01-01T00:00:00Z","session":{{"inputTokens":10,"outputTokens":{out},"cachedReadTokens":3,"cacheCreationTokens":1,"primaryModelId":"grok-4","costUsdTicks":{ticks}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(25_000_000_000, 7);
+        let g = grok_usage_in(&root, cwd, "sess-1").unwrap();
+        assert!((g.sample.usd - 2.5).abs() < 1e-9);
+        assert_eq!((g.sample.input, g.sample.output, g.sample.cache_read), (10, 7, 3));
+        assert_eq!(g.model, "grok-4");
+        assert!(g.sample.ts > 0);
+        // Missing session, traversal-ish ids, wrong cwd -> None.
+        assert!(grok_usage_in(&root, cwd, "other").is_none());
+        assert!(grok_usage_in(&root, cwd, "..").is_none());
+        assert!(grok_usage_in(&root, r"D:\elsewhere", "sess-1").is_none());
+
+        let gate = CumulativeSampleGate::default();
+        assert!(gate.admits("a1", "sess-1", &g));
+        assert!(!gate.admits("a1", "sess-1", &g), "unchanged -> silent");
+        write(26_000_000_000, 8);
+        let g2 = grok_usage_in(&root, cwd, "sess-1").unwrap();
+        assert!(gate.admits("a1", "sess-1", &g2), "moved -> admitted");
+        assert!(gate.admits("a2", "sess-1", &g2), "per agent");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sample_is_scoped_to_the_agents_own_session() {
+        let dir = std::env::temp_dir().join(format!("oa-usage-scope-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let rec = |sid: &str, out: u64| {
+            format!(
+                "{{\"type\":\"assistant\",\"sessionId\":\"{sid}\",\"message\":{{\"model\":\"claude-sonnet-5\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":{out}}}}}}}\n"
+            )
+        };
+        fs::write(dir.join("mine.jsonl"), rec("mine", 5)).unwrap();
+        fs::write(dir.join("foreign.jsonl"), rec("foreign", 1_000_000)).unwrap();
+        let r = UsageReader::default();
+        let s = r.sample_in(&dir, Some("mine")).unwrap();
+        assert_eq!((s.input, s.output), (10, 5));
+        assert!(r.sample_in(&dir, Some("nobody")).is_none());
+        // No known session id -> no data, never the whole directory's history.
+        assert!(r.sample("D:\\no\\such\\cwd", None).is_none());
+        assert!(r.sample("D:\\no\\such\\cwd", Some("")).is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

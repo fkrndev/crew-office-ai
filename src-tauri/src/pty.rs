@@ -5,6 +5,8 @@
 //! `pty-output` events; input flows back via `pty_write`. Semantics mirror the
 //! Electron version byte-for-byte where the crates allow it.
 
+use crate::lock_ext::LockExt;
+use crate::panic_guard;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -12,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// How a program resolved on PATH must be launched.
 pub enum Resolved {
@@ -531,6 +533,7 @@ pub fn spawn_cmd<R: tauri::Runtime>(
     cols: u16,
     rows: u16,
     app: AppHandle<R>,
+    owner: &str,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -594,7 +597,7 @@ pub fn spawn_cmd<R: tauri::Runtime>(
         .spawn_command(cmd)
         .with_context(|| format!("spawn {}", tokens.join(" ")))?;
     drop(pair.slave); // keep only the master; the slave side belongs to the child
-    finish(id, pair.master, child, cwd.to_string(), tokens.join(" "), cols, rows, app)
+    finish(id, pair.master, child, cwd.to_string(), tokens.join(" "), cols, rows, app, owner)
 }
 
 /// Make a value safe inside a double-quoted cmd arg: single line, no double
@@ -619,11 +622,103 @@ static NEXT_SPAWN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// global `ptys` mutex and write AFTER releasing it — a ConPTY write can block
 /// when the child isn't draining stdin, and must not stall every other lookup.
 #[derive(Clone)]
-pub struct PtyWriter(std::sync::Arc<std::sync::Mutex<Box<dyn Write + Send>>>);
+pub struct PtyWriter(
+    std::sync::Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
+    CursorGate,
+);
+
+/// ConPTY (portable-pty always passes `--inheritcursor`) opens every session by
+/// asking the terminal where the cursor is (`ESC[6n`) and holds the child until
+/// a reply arrives. The renderer's xterm answers; with no terminal view attached
+/// (background/headless spawns, a floor window not mounted yet, the gap between
+/// spawn and xterm attach) nobody does and the agent hangs. So when the very
+/// first output carries the query and no terminal has taken over within
+/// `CPR_GRACE`, the reader answers `ESC[1;1R` ONCE. State machine, so xterm and
+/// this fallback can never both answer: `Armed` until either a terminal shows up
+/// (`Terminal`: a cursor report was written by anyone, or `pty_redraw` - the
+/// terminal-mounted signal - ran) or the fallback fires (`Answered`, which also
+/// scrubs the query from the replay tail so a late-mounting xterm does not
+/// answer a second time). Plain `pty_write`/`pty_resize` deliberately do not
+/// count: the renderer seeds and resizes PTYs it has no terminal view for.
+const CPR_QUERY: &[u8] = b"\x1b[6n";
+const CPR_REPLY: &str = "\x1b[1;1R";
+const CPR_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// The query is ConPTY's session-start probe: only look in the first output.
+const CPR_SCAN_MAX: usize = 4096;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CursorState {
+    Armed,
+    Terminal,
+    Answered,
+}
+
+#[derive(Clone)]
+struct CursorGate(std::sync::Arc<std::sync::Mutex<CursorState>>);
+
+impl CursorGate {
+    fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(CursorState::Armed)))
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> CursorState {
+        *self.0.lock_safe()
+    }
+
+    /// A terminal is (about to be) answering the query: the fallback stands down.
+    fn terminal_attached(&self) {
+        let mut s = self.0.lock_safe();
+        if *s == CursorState::Armed {
+            *s = CursorState::Terminal;
+        }
+    }
+
+    /// Claim the single fallback answer (Armed -> Answered), running `scrub`
+    /// under the same lock so a concurrent `pty_redraw` replays either the
+    /// untouched tail (and its terminal answers) or the scrubbed one.
+    fn claim_answer(&self, scrub: impl FnOnce()) -> bool {
+        let mut s = self.0.lock_safe();
+        if *s != CursorState::Armed {
+            return false;
+        }
+        *s = CursorState::Answered;
+        scrub();
+        true
+    }
+}
+
+/// Does `data` contain a cursor position report (`ESC[<row>;<col>R`) - the
+/// answer to `ESC[6n`, however it reached the PTY?
+fn contains_cursor_report(data: &str) -> bool {
+    let b = data.as_bytes();
+    let mut i = 0;
+    while let Some(p) = b[i..].windows(2).position(|w| w == b"\x1b[") {
+        let mut j = i + p + 2;
+        let digits = |j: &mut usize| {
+            let from = *j;
+            while *j < b.len() && b[*j].is_ascii_digit() {
+                *j += 1;
+            }
+            *j > from
+        };
+        if digits(&mut j) && j < b.len() && b[j] == b';' {
+            j += 1;
+            if digits(&mut j) && j < b.len() && b[j] == b'R' {
+                return true;
+            }
+        }
+        i += p + 2;
+    }
+    false
+}
 
 impl PtyWriter {
     pub fn write(&self, data: &str) -> Result<()> {
-        let mut w = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if contains_cursor_report(data) {
+            self.1.terminal_attached();
+        }
+        let mut w = self.0.lock_safe();
         w.write_all(data.as_bytes())?;
         w.flush()?;
         Ok(())
@@ -634,7 +729,7 @@ impl PtyWriter {
 /// the (potentially blocking) write. Returns false when the PTY is gone or the
 /// write failed.
 pub fn write_pty(st: &crate::AppState, pty_id: &str, data: &str) -> bool {
-    let w = st.ptys.lock().unwrap().get(pty_id).map(|h| h.writer());
+    let w = st.ptys.lock_safe().get(pty_id).map(|h| h.writer());
     w.is_some_and(|w| w.write(data).is_ok())
 }
 
@@ -675,7 +770,13 @@ fn decode_utf8_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
 }
 
 pub struct PtyHandle {
+    /// Label of the window that spawned this PTY (`main` or `floor-<n>`) — the
+    /// ONLY window `pty:data` / `pty:exit` / `pty:relaunch` are routed to
+    /// (upstream PtySession.owner). See `crate::floors`.
+    pub owner: String,
     writer: std::sync::Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
+    /// Cursor-query fallback state - see `CursorGate`.
+    cursor: CursorGate,
     /// Spawn generation — see `NEXT_SPAWN_GEN`.
     pub spawn_gen: u64,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
@@ -724,6 +825,7 @@ pub fn spawn<R: tauri::Runtime>(
     cols: u16,
     rows: u16,
     app: AppHandle<R>,
+    owner: &str,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -763,6 +865,7 @@ pub fn spawn<R: tauri::Runtime>(
         cols,
         rows,
         app,
+        owner,
     )
 }
 
@@ -778,6 +881,7 @@ pub fn spawn_argv<R: tauri::Runtime>(
     cols: u16,
     rows: u16,
     app: AppHandle<R>,
+    owner: &str,
 ) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -798,7 +902,7 @@ pub fn spawn_argv<R: tauri::Runtime>(
         .chain(args.iter().cloned())
         .collect::<Vec<_>>()
         .join(" ");
-    finish(id, pair.master, child, cwd.to_string(), command, cols, rows, app)
+    finish(id, pair.master, child, cwd.to_string(), command, cols, rows, app, owner)
 }
 
 fn finish<R: tauri::Runtime>(
@@ -810,6 +914,7 @@ fn finish<R: tauri::Runtime>(
     cols: u16,
     rows: u16,
     app: AppHandle<R>,
+    owner: &str,
 ) -> Result<PtyHandle> {
     let mut reader = master.try_clone_reader().context("clone reader")?;
     let writer = master.take_writer().context("take writer")?;
@@ -826,50 +931,88 @@ fn finish<R: tauri::Runtime>(
     let tail_reader = tail.clone();
     let event_id = id.to_string();
     let app_reader = app.clone();
+    // Output routes ONLY to the window that spawned this PTY (see floors.rs).
+    let owner_reader = owner.to_string();
+    let owner_exit = owner.to_string();
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(writer));
+    let cursor = CursorGate::new();
+    let cpr_writer = PtyWriter(writer.clone(), cursor.clone());
+    let cpr_gate = cursor.clone();
+    let cpr_tail = tail.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         // Bytes of a multibyte char split across two reads.
         let mut pending: Vec<u8> = Vec::new();
+        // First output, scanned for ConPTY's cursor query until it is found
+        // (or the scan window is spent) - see `CursorGate`. Windows only.
+        let mut early: Option<Vec<u8>> = cfg!(windows).then(Vec::new);
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    saw_output.store(true, std::sync::atomic::Ordering::Relaxed);
-                    clock.store(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    let data = decode_utf8_chunk(&mut pending, &buf[..n]);
-                    if data.is_empty() {
-                        continue;
-                    }
-                    {
-                        let mut t = tail_reader.lock().unwrap();
-                        t.push_str(&data);
-                        if t.len() > TAIL_MAX {
-                            let cut = t.len() - TAIL_MAX;
-                            // Trim on a char boundary so the tail stays valid UTF-8.
-                            let mut idx = cut;
-                            while idx < t.len() && !t.is_char_boundary(idx) {
-                                idx += 1;
-                            }
-                            t.drain(..idx);
+                    if let Some(e) = early.as_mut() {
+                        e.extend_from_slice(&buf[..n]);
+                        if e.windows(CPR_QUERY.len()).any(|w| w == CPR_QUERY) {
+                            early = None;
+                            let (gate, w, t) = (cpr_gate.clone(), cpr_writer.clone(), cpr_tail.clone());
+                            std::thread::spawn(move || {
+                                std::thread::sleep(CPR_GRACE);
+                                let answered = gate.claim_answer(|| {
+                                    let mut t = t.lock_safe();
+                                    *t = t.replace("\u{1b}[6n", "");
+                                });
+                                if answered {
+                                    let _ = w.write(CPR_REPLY);
+                                }
+                            });
+                        } else if e.len() >= CPR_SCAN_MAX {
+                            early = None;
                         }
                     }
-                    let _ = app_reader.emit(
-                        "pty-output",
-                        PtyOutputPayload {
-                            id: event_id.clone(),
-                            data: data.clone(),
-                        },
-                    );
-                    // Upstream's per-id channel (`pty:data:<id>`) — the
-                    // preload payload there is the raw string.
-                    let _ =
-                        app_reader.emit(&format!("pty:data:{event_id}"), serde_json::json!(data));
+                    panic_guard::guarded("pty-reader-chunk", || {
+                        saw_output.store(true, std::sync::atomic::Ordering::Relaxed);
+                        clock.store(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        let data = decode_utf8_chunk(&mut pending, &buf[..n]);
+                        if data.is_empty() {
+                            return;
+                        }
+                        {
+                            let mut t = tail_reader.lock_safe();
+                            t.push_str(&data);
+                            if t.len() > TAIL_MAX {
+                                let cut = t.len() - TAIL_MAX;
+                                // Trim on a char boundary so the tail stays valid UTF-8.
+                                let mut idx = cut;
+                                while idx < t.len() && !t.is_char_boundary(idx) {
+                                    idx += 1;
+                                }
+                                t.drain(..idx);
+                            }
+                        }
+                        crate::floors::emit_to_owner(
+                            &app_reader,
+                            &owner_reader,
+                            "pty-output",
+                            PtyOutputPayload {
+                                id: event_id.clone(),
+                                data: data.clone(),
+                            },
+                        );
+                        // Upstream's per-id channel (`pty:data:<id>`) — the
+                        // preload payload there is the raw string.
+                        crate::floors::emit_to_owner(
+                            &app_reader,
+                            &owner_reader,
+                            &format!("pty:data:{event_id}"),
+                            serde_json::json!(data),
+                        );
+                    });
                 }
                 Err(_) => break,
             }
@@ -884,10 +1027,29 @@ fn finish<R: tauri::Runtime>(
     let pid = child.process_id();
     let event_id2 = id.to_string();
     let spawn_gen = NEXT_SPAWN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // By-value copies for the exit handler: the handle (and its tail) is
+    // dropped from the map before the handler runs.
+    let tail_exit = tail.clone();
+    let command_exit = command.clone();
     std::thread::spawn(move || {
-        let code = match child.wait() {
-            Ok(status) => Some(status.exit_code()),
-            Err(_) => None,
+        // `signal` is the killed-by-signal name (unix; always None on Windows):
+        // a SIGILL/SIGSEGV death must not read as a clean finish.
+        let (code, signal) = match child.wait() {
+            Ok(status) => (
+                Some(status.exit_code()),
+                status.signal().map(|s| s.to_string()),
+            ),
+            Err(_) => (None, None),
+        };
+        // The reader thread may still be draining the panic banner the child
+        // printed on its way out — give it a beat before snapshotting the tail.
+        if signal.is_some() || code.is_some_and(|c| c != 0) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let trace = ExitTrace {
+            signal: signal.clone(),
+            tail: tail_exit.lock_safe().clone(),
+            command: command_exit,
         };
         // Is the handle currently registered under this pty id OURS? A killed
         // agent's waiter can fire after the id was respawned — it must not
@@ -895,7 +1057,7 @@ fn finish<R: tauri::Runtime>(
         // here), `Some(false)` = a newer spawn owns the id, `None` = nothing
         // registered (an explicit kill already ran the teardown).
         let ours: Option<bool> = app.try_state::<crate::AppState>().and_then(|st| {
-            let mut ptys = st.ptys.lock().unwrap();
+            let mut ptys = st.ptys.lock_safe();
             match ptys.get(&event_id2).map(|h| h.spawn_gen) {
                 Some(g) if g == spawn_gen => {
                     ptys.remove(&event_id2);
@@ -911,9 +1073,11 @@ fn finish<R: tauri::Runtime>(
                     // inserter can tell the two apart (see
                     // `reap_if_already_exited`).
                     EARLY_EXITS
-                        .lock()
-                        .unwrap()
+                        .lock_safe()
                         .insert(event_id2.clone(), (spawn_gen, code));
+                    EARLY_EXIT_TRACES
+                        .lock_safe()
+                        .insert(event_id2.clone(), (spawn_gen, trace.clone()));
                     None
                 }
             }
@@ -921,19 +1085,27 @@ fn finish<R: tauri::Runtime>(
         if ours == Some(false) {
             return;
         }
-        let _ = app.emit(
-            "pty-exit",
-            PtyExitPayload {
-                id: event_id2.clone(),
-                code,
-            },
-        );
+        panic_guard::guarded("pty-exit-emit-1", || {
+            crate::floors::emit_to_owner(
+                &app,
+                &owner_exit,
+                "pty-exit",
+                PtyExitPayload {
+                    id: event_id2.clone(),
+                    code,
+                },
+            );
+        });
         // Upstream's per-id channel (`pty:exit:<id>`) — payload {exitCode,
-        // signal} there; code maps to exitCode, signal is always null here.
-        let _ = app.emit(
-            &format!("pty:exit:{event_id2}"),
-            serde_json::json!({ "exitCode": code, "signal": null }),
-        );
+        // signal}; signal is the killed-by-signal name on unix, null otherwise.
+        panic_guard::guarded("pty-exit-emit-2", || {
+            crate::floors::emit_to_owner(
+                &app,
+                &owner_exit,
+                &format!("pty:exit:{event_id2}"),
+                serde_json::json!({ "exitCode": code, "signal": signal }),
+            );
+        });
         // Natural-exit teardown (upstream's exitHandler, index.ts:595): a
         // child that exits on its own gets the same lifecycle cleanup as an
         // explicit kill — session removed, the pty↔agent mapping dropped,
@@ -941,11 +1113,15 @@ fn finish<R: tauri::Runtime>(
         // "already running" for a dead PTY.
         // (An explicit kill already tore the agent down — nothing left to do.)
         if ours == Some(true) {
-            finish_natural_exit(&app, &event_id2, code);
+            panic_guard::guarded("pty-natural-exit-teardown", || {
+                finish_natural_exit(&app, &event_id2, code, Some(trace));
+            });
         }
     });
     Ok(PtyHandle {
-        writer: std::sync::Arc::new(std::sync::Mutex::new(writer)),
+        owner: owner.to_string(),
+        writer,
+        cursor,
         spawn_gen,
         killer,
         pid,
@@ -959,12 +1135,95 @@ fn finish<R: tauri::Runtime>(
     })
 }
 
+/// Synchronously sweep the process TREES rooted at `pids` (Windows:
+/// `taskkill /T /F`, all launched at once then waited on, so N agents cost one
+/// taskkill's latency at quit). conpty's own kill is async and best-effort, so
+/// this is the only reliable reaper when the app is about to exit — a deferred
+/// sweep would never run. POSIX: a no-op here (closing the pty HUPs the
+/// foreground process group).
+pub fn kill_trees(pids: &[u32]) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let children: Vec<std::process::Child> = pids
+            .iter()
+            .filter_map(|pid| {
+                std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .ok()
+            })
+            .collect();
+        for mut c in children {
+            let _ = c.wait();
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pids;
+}
+
+/// Live PTYs owned by the window labelled `owner` — a floor's close
+/// confirmation is scoped to ITS terminals, not the whole app's (upstream
+/// PtyManager.countByOwner).
+pub fn count_by_owner(ptys: &HashMap<String, PtyHandle>, owner: &str) -> usize {
+    ptys.values().filter(|h| h.owner == owner).count()
+}
+
+/// Kill every PTY owned by `owner` (upstream PtyManager.killByOwner) so a
+/// closed floor never leaves its terminals running headless. Like upstream it
+/// only signals: the handles stay in the map and each PTY's waiter thread
+/// removes it and runs the normal natural-exit teardown (archive + worktree
+/// cleanup). Process trees are swept first, in one parallel taskkill batch
+/// and outside the map lock. Returns how many PTYs were signalled.
+pub fn kill_by_owner(
+    ptys: &std::sync::Mutex<HashMap<String, PtyHandle>>,
+    owner: &str,
+) -> usize {
+    let pids: Vec<u32> = ptys
+        .lock_safe()
+        .values()
+        .filter(|h| h.owner == owner)
+        .filter_map(|h| h.pid)
+        .collect();
+    kill_trees(&pids);
+    let mut n = 0;
+    {
+        let mut m = ptys.lock_safe();
+        for h in m.values_mut().filter(|h| h.owner == owner) {
+            let _ = h.kill_root();
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Exits whose waiter found no handle registered, keyed by pty id →
 /// `(spawn_gen, exit code)`. Tiny (one entry per pty id at most); consumed by
 /// `reap_if_already_exited`, and stale entries from explicit kills never match
 /// a later spawn because the generation differs.
 pub(crate) static EARLY_EXITS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, (u64, Option<u32>)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// What the exit handler is told about a process that just died (upstream
+/// PtyExitInfo). Passed by value: the handle is already out of the map.
+#[derive(Clone, Default)]
+pub(crate) struct ExitTrace {
+    /// Killed-by-signal name (unix only).
+    pub signal: Option<String>,
+    /// Trailing PTY output (TAIL_MAX).
+    pub tail: String,
+    pub command: String,
+}
+
+/// The `ExitTrace` twin of `EARLY_EXITS` (same key + generation) — kept as a
+/// separate map so EARLY_EXITS' shape stays `(gen, code)`.
+static EARLY_EXIT_TRACES: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, (u64, ExitTrace)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// The lifecycle cleanup for a child that exited on its own (shared by the
@@ -980,14 +1239,34 @@ pub(crate) fn finish_natural_exit<R: tauri::Runtime>(
     app: &AppHandle<R>,
     pty_id: &str,
     code: Option<u32>,
+    trace: Option<ExitTrace>,
 ) {
+    // Record an ABNORMAL death BEFORE teardown (upstream index.ts exitHandler):
+    // teardown drops the pty→agent mapping, after which we can no longer say
+    // whose process died. A clean exit writes nothing; install PTYs carry no
+    // mapping and are skipped.
+    if let (Some(t), Some(st)) = (&trace, app.try_state::<crate::AppState>()) {
+        if let Some(agent_id) = st.agent_for_pty(pty_id) {
+            st.hive.record_agent_exit(
+                &agent_id,
+                code,
+                t.signal.as_deref(),
+                &t.tail,
+                &t.command,
+            );
+        }
+    }
     if code == Some(0) {
         if let Some(pending) = crate::commands::PENDING_INSTALLS
-            .lock()
-            .unwrap()
+            .lock_safe()
             .remove(pty_id)
         {
-            let _ = app.emit(&format!("pty:relaunch:{pty_id}"), serde_json::json!({}));
+            crate::floors::emit_to_owner(
+                app,
+                pending.plan.owner.as_deref().unwrap_or(crate::floors::MAIN_LABEL),
+                &format!("pty:relaunch:{pty_id}"),
+                serde_json::json!({}),
+            );
             let mut plan = pending.plan;
             plan.pty_id = Some(pty_id.to_string());
             let _ = crate::commands::spawn_inner(app.clone(), pending.args, plan);
@@ -995,8 +1274,7 @@ pub(crate) fn finish_natural_exit<R: tauri::Runtime>(
         }
     } else {
         crate::commands::PENDING_INSTALLS
-            .lock()
-            .unwrap()
+            .lock_safe()
             .remove(pty_id);
     }
     crate::commands::teardown_pty_core(app, pty_id, "stopped");
@@ -1018,28 +1296,35 @@ pub(crate) fn reap_if_already_exited<R: tauri::Runtime>(
         return;
     };
     let early = {
-        let mut m = EARLY_EXITS.lock().unwrap();
+        let mut m = EARLY_EXITS.lock_safe();
         match m.get(pty_id) {
             Some((g, _)) if *g == spawn_gen => m.remove(pty_id).map(|(_, c)| c),
             _ => None,
         }
     };
+    let trace = {
+        let mut m = EARLY_EXIT_TRACES.lock_safe();
+        match m.get(pty_id) {
+            Some((g, _)) if *g == spawn_gen => m.remove(pty_id).map(|(_, t)| t),
+            _ => None,
+        }
+    };
     if let Some(code) = early {
         {
-            let mut ptys = st.ptys.lock().unwrap();
+            let mut ptys = st.ptys.lock_safe();
             if ptys.get(pty_id).map(|h| h.spawn_gen) == Some(spawn_gen) {
                 ptys.remove(pty_id);
             } else {
                 return; // already replaced/removed by someone else
             }
         }
-        finish_natural_exit(app, pty_id, code);
+        finish_natural_exit(app, pty_id, code, trace);
         return;
     }
     // Narrower window: the waiter ran between the insert and `map_pty` — its
     // teardown found no mapping, and map_pty then recorded a stale one for a
     // handle that is already gone.
-    let gone = !st.ptys.lock().unwrap().contains_key(pty_id);
+    let gone = !st.ptys.lock_safe().contains_key(pty_id);
     if gone && st.agent_for_pty(pty_id).is_some() {
         crate::commands::teardown_pty_core(app, pty_id, "stopped");
     }
@@ -1052,7 +1337,13 @@ impl PtyHandle {
 
     /// Clonable write half — see `PtyWriter` / `write_pty`.
     pub fn writer(&self) -> PtyWriter {
-        PtyWriter(self.writer.clone())
+        PtyWriter(self.writer.clone(), self.cursor.clone())
+    }
+
+    /// A terminal view just mounted on this PTY (`pty_redraw` replays the tail
+    /// into it, query included, and it will answer): stand the fallback down.
+    pub fn terminal_attached(&self) {
+        self.cursor.terminal_attached();
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
@@ -1062,35 +1353,39 @@ impl PtyHandle {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        *self.size.lock().unwrap() = (cols, rows);
+        *self.size.lock_safe() = (cols, rows);
         Ok(())
     }
 
     /// Current (cols, rows) — for the same-size redraw nudge.
     pub fn size(&self) -> (u16, u16) {
-        *self.size.lock().unwrap()
+        *self.size.lock_safe()
     }
 
     /// Trailing output buffer for `pty:redraw` (upstream PtyManager.redraw
     /// returns {ok, tail} so a remount replays the last TAIL_MAX bytes).
     pub fn tail(&self) -> String {
-        self.tail.lock().unwrap().clone()
+        self.tail.lock_safe().clone()
     }
 
     pub fn kill(&mut self) -> Result<()> {
         // The waiter thread reaps; kill only signals. ensureKilled
-        // (procKill.ts): the ConPTY root dies first, then the process TREE is
-        // swept — MCP servers and helper daemons the agent spawned would
-        // otherwise be orphaned.
-        let _ = self.killer.kill();
-        #[cfg(windows)]
+        // (procKill.ts): MCP servers and helper daemons the agent spawned would
+        // otherwise be orphaned, so the process TREE is swept — and FIRST, while
+        // the root is still alive: once the ConPTY root exits, taskkill can no
+        // longer enumerate descendants by its PID (upstream hardKillTree runs
+        // before proc.kill()). taskkill is waited on so the sweep has really
+        // happened by the time this returns.
         if let Some(pid) = self.pid {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            kill_trees(&[pid]);
         }
+        self.kill_root()
+    }
+
+    /// Signal ONLY the root process (the tree was swept already — see
+    /// `kill_trees`). The waiter thread reaps.
+    pub fn kill_root(&mut self) -> Result<()> {
+        let _ = self.killer.kill();
         Ok(())
     }
 }
@@ -1214,5 +1509,99 @@ mod tests {
             p.split(';').map(|d| d.to_lowercase()).any(|d| d == needle),
             "registry PATH must resolve System32: {p}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cpr_tests {
+    use super::*;
+
+    /// No terminal view is attached, so nothing answers the cursor query: the
+    /// child must still run (it used to stay blocked on ConPTY's ESC[6n).
+    #[cfg(windows)]
+    #[test]
+    fn headless_conpty_child_runs_without_a_terminal_answering_the_cursor_query() {
+        let app = tauri::test::mock_app();
+        let cwd = std::env::temp_dir().display().to_string();
+        let env: HashMap<String, String> = HashMap::new();
+        let h = spawn("pty-cpr", "echo hello-cpr", &cwd, &env, 80, 24, app.handle().clone(), "main")
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !h.tail().contains("hello-cpr") {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "child never ran; tail={:?}",
+                h.tail()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // answered exactly once, and the query is scrubbed from the replay tail
+        // so a terminal mounting later does not answer it a second time
+        assert_eq!(h.cursor.state(), CursorState::Answered);
+        assert!(!h.tail().contains("\u{1b}[6n"), "tail={:?}", h.tail());
+    }
+
+    /// A terminal that answers the query itself (or mounts via pty_redraw)
+    /// keeps the fallback from ever firing: the child stays blocked on whoever
+    /// is meant to answer, and the replay tail keeps the query for it.
+    #[cfg(windows)]
+    #[test]
+    fn an_attached_terminal_stands_the_fallback_down() {
+        let app = tauri::test::mock_app();
+        let cwd = std::env::temp_dir().display().to_string();
+        let env: HashMap<String, String> = HashMap::new();
+        let spawn_one = |id: &str| {
+            spawn(id, "echo hello-term", &cwd, &env, 80, 24, app.handle().clone(), "main").unwrap()
+        };
+        let wait_query = |h: &PtyHandle| {
+            let start = std::time::Instant::now();
+            while !h.tail().contains("\u{1b}[6n") {
+                assert!(start.elapsed() < std::time::Duration::from_secs(10), "no query");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        // mounted via pty_redraw: no answer from us, so the child stays blocked
+        let a = spawn_one("pty-cpr-a");
+        wait_query(&a);
+        a.terminal_attached();
+        std::thread::sleep(CPR_GRACE + std::time::Duration::from_millis(800));
+        assert_eq!(a.cursor.state(), CursorState::Terminal);
+        assert_eq!(a.tail(), "\u{1b}[6n");
+        // an xterm-style answer in time: the child runs, and we never answer
+        let b = spawn_one("pty-cpr-b");
+        wait_query(&b);
+        b.writer().write("\u{1b}[24;80R").unwrap();
+        let start = std::time::Instant::now();
+        while !b.tail().contains("hello-term") {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "tail={:?}", b.tail());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::thread::sleep(CPR_GRACE + std::time::Duration::from_millis(500));
+        assert_eq!(b.cursor.state(), CursorState::Terminal);
+    }
+
+    #[test]
+    fn cursor_report_detection_and_single_claim() {
+        assert!(contains_cursor_report("\u{1b}[1;1R"));
+        assert!(contains_cursor_report("x\u{1b}[24;80Ry"));
+        assert!(contains_cursor_report("\u{1b}[A\u{1b}[3;9R"));
+        for no in ["", "\u{1b}[6n", "\u{1b}[R", "\u{1b}[1R", "\u{1b}[1;R", "24;80R", "\u{1b}[1;2S"] {
+            assert!(!contains_cursor_report(no), "{no:?}");
+        }
+        let g = CursorGate::new();
+        let mut scrubbed = 0;
+        assert!(g.claim_answer(|| scrubbed += 1));
+        assert!(!g.claim_answer(|| scrubbed += 1));
+        assert_eq!((scrubbed, g.state()), (1, CursorState::Answered));
+        // a terminal that shows up first wins for good
+        let g = CursorGate::new();
+        g.terminal_attached();
+        assert!(!g.claim_answer(|| panic!("must not scrub")));
+        assert_eq!(g.state(), CursorState::Terminal);
+        // and never downgrades an answered gate
+        let g = CursorGate::new();
+        assert!(g.claim_answer(|| {}));
+        g.terminal_attached();
+        assert_eq!(g.state(), CursorState::Answered);
     }
 }

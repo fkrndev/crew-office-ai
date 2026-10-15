@@ -6,6 +6,7 @@
 //! Settings hero payload port (main/hero.ts + shared/heroPayload.ts), and the
 //! slack reply helper script the prompt rail points at.
 
+use crate::lock_ext::LockExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -330,36 +331,108 @@ pub struct NodeInstaller {
     sha256: String,
 }
 
+/// Lowest Node major we treat as usable. Below it we offer the install/upgrade;
+/// at or above it the user's own toolchain is left completely alone - an
+/// existing, working Node is never "upgraded" out from under them.
+pub const NODE_FLOOR_MAJOR: u32 = 20;
+
+/// Major version of `v24.19.0` / `24.19.0`, None if unparseable.
+pub fn node_major(version: &str) -> Option<u32> {
+    let v = version.trim();
+    let v = v.strip_prefix('v').unwrap_or(v);
+    let (major, _) = v.split_once('.')?;
+    major.parse().ok()
+}
+
+/// Is the user's own Node good enough to leave alone? Absent/unparseable
+/// (None) and anything below the floor route into the install rung.
+pub fn node_is_usable(version: Option<&str>) -> bool {
+    version
+        .and_then(node_major)
+        .is_some_and(|m| m >= NODE_FLOOR_MAJOR)
+}
+
+/// `node --version` from the binary the user's PATH resolves; None when absent
+/// or the probe fails/hangs (5s cap) - both mean "we cannot vouch for this
+/// runtime".
+pub fn detect_node_version(node_path: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new(node_path);
+    cmd.arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    let out = out.trim().to_string();
+    node_major(&out).map(|_| out)
+}
+
+/// The installer artifact for a platform/arch (`std::env::consts` spellings:
+/// "windows"/"macos"/"linux", "aarch64"/"x86_64"). Windows ARM gets the
+/// arm64 .msi (published, though index.json lists none); macOS has the single
+/// universal .pkg; Linux only has tarballs. None = unsupported.
+pub fn node_artifact_for(version: &str, os: &str, arch: &str) -> Option<String> {
+    match os {
+        "macos" => Some(format!("node-{version}.pkg")),
+        "windows" => {
+            let a = if arch == "aarch64" { "arm64" } else { "x64" };
+            Some(format!("node-{version}-{a}.msi"))
+        }
+        "linux" => {
+            let a = match arch {
+                "aarch64" => "arm64",
+                "x86_64" => "x64",
+                _ => return None,
+            };
+            Some(format!("node-{version}-linux-{a}.tar.xz"))
+        }
+        _ => None,
+    }
+}
+
+/// One bounded GET for the installer lookup - it runs INSIDE a spawn, so an
+/// unreachable nodejs.org must fail fast and drop the ladder to its next rung.
+fn node_dist_get(url: &str) -> Option<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(6)))
+        .https_only(true)
+        .build()
+        .into();
+    agent.get(url).call().ok()?.body_mut().read_to_string().ok()
+}
+
 fn resolve_node_installer() -> Option<NodeInstaller> {
-    let index: serde_json::Value = ureq::get(&format!("{NODE_DIST}/index.json"))
-        .call()
-        .ok()?
-        .body_mut()
-        .read_json()
-        .ok()?;
+    let index: serde_json::Value =
+        serde_json::from_str(&node_dist_get(&format!("{NODE_DIST}/index.json"))?).ok()?;
     let lts = index
         .as_array()?
         .iter()
         .find(|e| e["lts"].is_string() || e["lts"] == serde_json::json!(true))?;
     let version = lts["version"].as_str()?.to_string();
-    let file = if cfg!(windows) {
-        format!("node-{version}-x64.msi")
-    } else if cfg!(target_os = "macos") {
-        format!("node-{version}.pkg")
-    } else {
-        let a = match std::env::consts::ARCH {
-            "aarch64" => "arm64",
-            _ => "x64",
-        };
-        format!("node-{version}-linux-{a}.tar.xz")
-    };
-    let sha_body: String = ureq::get(&format!("{NODE_DIST}/{version}/SHASUMS256.txt"))
-        .call()
-        .ok()?
-        .body_mut()
-        .read_to_string()
-        .ok()?;
-    // "<sha>  <file>" lines — pull our artifact's digest.
+    let file = node_artifact_for(&version, std::env::consts::OS, std::env::consts::ARCH)?;
+    let sha_body = node_dist_get(&format!("{NODE_DIST}/{version}/SHASUMS256.txt"))?;
+    // "<sha>  <file>" lines — pull our artifact's digest. No digest = we would
+    // run an unverified installer: refuse.
     let sha256 = sha_body.lines().find_map(|l| {
         let mut it = l.split_whitespace();
         let sha = it.next()?;
@@ -442,6 +515,17 @@ fn node_install_script(n: &NodeInstaller) -> String {
 /// real newlines. No double-quotes anywhere: the arg is passed verbatim and
 /// a quote would unbalance cmd's parse.
 pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<(String, bool)> {
+    install_script_with_rung(provider, bin, npm_available).map(|(s, relaunch, _)| (s, relaunch))
+}
+
+/// `install_script` plus the rung that was chosen - `npm` | `node-then-npm` |
+/// `native` | `manual` (the closed `agent_install_started.rung` enum; the
+/// manual rung only prints a hint and is never armed for relaunch).
+pub fn install_script_with_rung(
+    provider: &str,
+    bin: &str,
+    npm_available: bool,
+) -> Option<(String, bool, &'static str)> {
     let (native_posix, native_win32, npm) = provider_install(provider);
     let native = if cfg!(windows) {
         native_win32
@@ -463,6 +547,7 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
         return Some((
             join(format!("echo {header}installing it with npm."), cmd),
             true,
+            "npm",
         ));
     }
 
@@ -485,6 +570,7 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
                     &format!("{path_fix}{cmd}"),
                 ),
                 true,
+                "node-then-npm",
             ));
         }
     }
@@ -497,6 +583,7 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
                 cmd,
             ),
             true,
+            "native",
         ));
     }
 
@@ -508,6 +595,7 @@ pub fn install_script(provider: &str, bin: &str, npm_available: bool) -> Option<
                 &format!("echo Install {bin} manually, then respawn this agent."),
             ),
             false,
+            "manual",
         ));
     }
     None
@@ -1003,8 +1091,11 @@ pub fn parse_hero_payload(raw: &Value) -> Value {
 /// One bounded GET — upstream getText(url, { timeoutMs }). Errors are plain
 /// strings; the caller always degrades rather than propagating.
 fn fetch_text(url: &str, timeout_ms: u64) -> Result<String, String> {
+    // https only (a redirect to http must not downgrade the payload) and a
+    // 512 KiB body cap — these are small JSON documents.
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_millis(timeout_ms)))
+        .https_only(true)
         .build();
     let agent = ureq::Agent::new_with_config(config);
     let mut resp = agent
@@ -1015,7 +1106,146 @@ fn fetch_text(url: &str, timeout_ms: u64) -> Result<String, String> {
     if !(200..300).contains(&resp.status().as_u16()) {
         return Err(format!("http {}", resp.status()));
     }
-    resp.body_mut().read_to_string().map_err(|e| e.to_string())
+    resp.body_mut()
+        .with_config()
+        .limit(512 * 1024)
+        .read_to_string()
+        .map_err(|e| e.to_string())
+}
+
+// ─── Remote model catalog (main/modelCatalog.ts + shared/modelCatalogPayload.ts) ──
+
+/// docs/model-catalog.json on this repo's main branch — editing that one file
+/// puts a new model in every installed copy within the TTL, with no release.
+pub const MODEL_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/fkrndev/crew-office-ai/main/docs/model-catalog.json";
+/// Models ship on a human timescale — six hours, same as the hero payload.
+pub const MODEL_CATALOG_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+/// The baked catalog, compiled in; the floor the pickers never fall below.
+pub const BAKED_MODEL_CATALOG: &str = include_str!("modelCatalog.json");
+const CATALOG_SCHEMA_VERSION: u64 = 1;
+
+/// str() from modelCatalogPayload.ts — control chars become spaces (an id with
+/// a newline would be a command-line splice), whitespace collapsed, trimmed,
+/// hard-capped; None when nothing usable remains.
+fn catalog_str(v: Option<&Value>, cap: usize) -> Option<String> {
+    let s = v?.as_str()?;
+    let flat: String = s
+        .chars()
+        .map(|c| if (c as u32) < 0x20 || c as u32 == 0x7f { ' ' } else { c })
+        .collect();
+    let clean = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return None;
+    }
+    Some(clean.chars().take(cap).collect())
+}
+
+/// Port of `parseModelCatalog` — total: None means "nothing usable, keep the
+/// baked catalog", never a partially-built catalog.
+pub fn parse_model_catalog(raw: &Value) -> Option<Value> {
+    let o = raw.as_object()?;
+    if o.get("version").and_then(|v| v.as_u64()) != Some(CATALOG_SCHEMA_VERSION) {
+        return None;
+    }
+    let providers_in = o.get("providers")?.as_object()?;
+    let mut providers = serde_json::Map::new();
+    for (key, list) in providers_in {
+        if providers.len() >= 40 {
+            break;
+        }
+        let key_ok = !key.is_empty()
+            && key.len() <= 40
+            && key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !matches!(key.as_str(), "__proto__" | "constructor" | "prototype");
+        let Some(rows) = list.as_array().filter(|_| key_ok) else {
+            continue;
+        };
+        let mut models: Vec<Value> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for entry in rows.iter().take(60) {
+            let Some(eo) = entry.as_object() else { continue };
+            let Some(label) = catalog_str(eo.get("label"), 60) else {
+                continue;
+            };
+            let mut m = serde_json::Map::new();
+            m.insert("label".into(), Value::String(label));
+            let id = catalog_str(eo.get("id"), 120);
+            if let Some(id) = &id {
+                m.insert("id".into(), Value::String(id.clone()));
+            }
+            if let Some(min) = catalog_str(eo.get("minAppVersion"), 24) {
+                m.insert("minAppVersion".into(), Value::String(min));
+            }
+            if let Some(max) = catalog_str(eo.get("maxAppVersion"), 24) {
+                m.insert("maxAppVersion".into(), Value::String(max));
+            }
+            if !seen.insert(id.unwrap_or_default()) {
+                continue;
+            }
+            models.push(Value::Object(m));
+        }
+        if models.is_empty() && !rows.is_empty() {
+            continue;
+        }
+        providers.insert(key.clone(), Value::Array(models));
+    }
+    if providers.is_empty() {
+        return None;
+    }
+    Some(json!({ "version": CATALOG_SCHEMA_VERSION, "providers": providers }))
+}
+
+/// Port of `loadModelCatalog`: cache while fresh, refetch otherwise, NEVER
+/// fatal. Always `{ catalog, fetchedAt, stale }`; catalog null = keep the
+/// baked one. The cache is re-validated on READ.
+pub fn load_model_catalog(cache_path: &Path, force: bool) -> Value {
+    load_model_catalog_with(cache_path, force, || {
+        fetch_text(MODEL_CATALOG_URL, 8000)
+    })
+}
+
+pub fn load_model_catalog_with(
+    cache_path: &Path,
+    force: bool,
+    fetch: impl FnOnce() -> Result<String, String>,
+) -> Value {
+    let now = now_ms();
+    let cached: Option<(Value, u64)> = std::fs::read_to_string(cache_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|read| {
+            let catalog = parse_model_catalog(read.get("catalog")?)?;
+            Some((catalog, read.get("fetchedAt")?.as_u64()?))
+        });
+    if let Some((catalog, at)) = &cached {
+        if !force && now.saturating_sub(*at) < MODEL_CATALOG_TTL_MS {
+            return json!({ "catalog": catalog, "fetchedAt": at, "stale": false });
+        }
+    }
+    let fresh = fetch()
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|raw| parse_model_catalog(&raw));
+    match fresh {
+        Some(catalog) => {
+            if let Some(dir) = cache_path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(
+                cache_path,
+                json!({ "catalog": catalog, "fetchedAt": now }).to_string(),
+            );
+            json!({ "catalog": catalog, "fetchedAt": now, "stale": false })
+        }
+        None => match cached {
+            Some((catalog, at)) => json!({ "catalog": catalog, "fetchedAt": at, "stale": true }),
+            None => json!({ "catalog": Value::Null, "fetchedAt": 0, "stale": true }),
+        },
+    }
 }
 
 /// Port of `loadHero`: serve the cache while fresh, refresh otherwise, and
@@ -1058,6 +1288,107 @@ pub fn load_hero(cache_path: &Path, force: bool) -> Value {
             Some(hero) => json!({ "hero": hero, "fetchedAt": cached_at, "stale": true }),
             None => json!({ "hero": default_hero(), "fetchedAt": 0, "stale": true }),
         },
+    }
+}
+
+// ─── stored-home normalisation (config.ts writeConfig / normalizeStoredHomes) ──
+
+/// Expanded, trimmed, de-duplicated string list (order kept) — registeredRepos
+/// and recentHives after `~` expansion.
+fn expand_dedupe(v: &Value) -> Option<Vec<Value>> {
+    let arr = v.as_array()?;
+    let mut seen = std::collections::HashSet::new();
+    Some(
+        arr.iter()
+            .filter_map(|e| e.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(expand_tilde)
+            .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+            .map(Value::String)
+            .collect(),
+    )
+}
+
+/// normalizeHiveHome: the new home expanded to an absolute path, pushed to the
+/// front of `prior` (itself expanded), de-duplicated, capped at 8 — so no
+/// consumer (mkdir, the hive root, the launch picker) ever sees a literal `~`.
+pub fn normalize_hive_home(home: &str, prior: &[Value]) -> (String, Vec<String>) {
+    let abs = expand_tilde(home);
+    let mut seen = std::collections::HashSet::from([abs.clone()]);
+    let mut recents = vec![abs.clone()];
+    for h in prior.iter().filter_map(|v| v.as_str()) {
+        if h.trim().is_empty() {
+            continue;
+        }
+        let e = expand_tilde(h);
+        if seen.insert(e.clone()) {
+            recents.push(e);
+        }
+    }
+    recents.truncate(8);
+    (abs, recents)
+}
+
+/// The write boundary: expand `~` and de-duplicate `registeredRepos` /
+/// `recentHives`, and expand `harnessHome` (also stamping it onto
+/// `recentHives`), in a config PATCH before it is persisted. `current_recents`
+/// is the on-disk recentHives the new home is merged into.
+pub fn normalize_config_patch(
+    patch: &mut serde_json::Map<String, Value>,
+    current_recents: &[Value],
+) {
+    if let Some(list) = patch.get("registeredRepos").and_then(expand_dedupe) {
+        patch.insert("registeredRepos".into(), Value::Array(list));
+    }
+    if let Some(list) = patch.get("recentHives").and_then(expand_dedupe) {
+        patch.insert("recentHives".into(), Value::Array(list));
+    }
+    if let Some(home) = patch
+        .get("harnessHome")
+        .and_then(|v| v.as_str())
+        .filter(|h| !h.is_empty())
+        .map(str::to_string)
+    {
+        // A patch carrying its own recentHives list wins as the prior set.
+        let prior: Vec<Value> = match patch.get("recentHives").and_then(|v| v.as_array()) {
+            Some(a) => a.clone(),
+            None => current_recents.to_vec(),
+        };
+        let (abs, recents) = normalize_hive_home(&home, &prior);
+        patch.insert("harnessHome".into(), Value::String(abs));
+        patch.insert(
+            "recentHives".into(),
+            Value::Array(recents.into_iter().map(Value::String).collect()),
+        );
+    }
+}
+
+/// normalizeStoredHomes — the read side: a config.json written before the
+/// boundary above learned to expand `~` still holds literal `~/…` strings, and
+/// nothing rewrites the file until the next write, so clean them on the way
+/// OUT. Expanded duplicates collapse.
+pub fn normalize_stored_homes(cfg: &mut serde_json::Map<String, Value>) {
+    if let Some(h) = cfg
+        .get("harnessHome")
+        .and_then(|v| v.as_str())
+        .filter(|h| !h.trim().is_empty())
+        .map(expand_tilde)
+    {
+        cfg.insert("harnessHome".into(), Value::String(h));
+    }
+    for key in ["recentHives", "registeredRepos"] {
+        if let Some(list) = cfg.get(key).and_then(expand_dedupe) {
+            cfg.insert(key.into(), Value::Array(list));
+        }
+    }
+}
+
+/// The read side's deep-fill of the list keys the renderer iterates: a fresh
+/// config has none of them, and `config.registeredRepos[0]` threw in the Add
+/// Agent modal (white screen). A present value of any shape is left alone.
+pub fn fill_list_defaults(cfg: &mut serde_json::Map<String, Value>) {
+    for key in ["registeredRepos", "recentHives"] {
+        cfg.entry(key).or_insert_with(|| Value::Array(Vec::new()));
     }
 }
 
@@ -1259,8 +1590,7 @@ pub fn power_resume_probe(app: &tauri::AppHandle, reason: &str, away_ms: u64) {
     let st = crate::commands::state(app);
     let ids: Vec<(String, Option<u32>)> = st
         .ptys
-        .lock()
-        .unwrap()
+        .lock_safe()
         .iter()
         .map(|(id, h)| (id.clone(), h.pid))
         .collect();
@@ -1637,5 +1967,132 @@ mod tests {
         #[cfg(not(windows))]
         assert!(is_filesystem_root(std::path::Path::new("/")));
     }
-}
 
+    #[test]
+    fn node_floor_and_artifacts() {
+        assert_eq!(node_major("v24.19.0"), Some(24));
+        assert_eq!(node_major(" 20.1.0\n"), Some(20));
+        assert_eq!(node_major("nope"), None);
+        assert!(node_is_usable(Some("v20.0.0")));
+        assert!(node_is_usable(Some("v24.19.0")));
+        assert!(!node_is_usable(Some("v18.20.4")));
+        assert!(!node_is_usable(Some("v19.9.0")));
+        assert!(!node_is_usable(None));
+        assert!(!node_is_usable(Some("garbage")));
+        // Windows ARM gets the arm64 msi, x64 the x64 one
+        assert_eq!(
+            node_artifact_for("v24.1.0", "windows", "aarch64").as_deref(),
+            Some("node-v24.1.0-arm64.msi")
+        );
+        assert_eq!(
+            node_artifact_for("v24.1.0", "windows", "x86_64").as_deref(),
+            Some("node-v24.1.0-x64.msi")
+        );
+        assert_eq!(
+            node_artifact_for("v24.1.0", "macos", "aarch64").as_deref(),
+            Some("node-v24.1.0.pkg")
+        );
+        assert_eq!(
+            node_artifact_for("v24.1.0", "linux", "aarch64").as_deref(),
+            Some("node-v24.1.0-linux-arm64.tar.xz")
+        );
+        assert_eq!(node_artifact_for("v24.1.0", "linux", "riscv64"), None);
+        assert_eq!(node_artifact_for("v24.1.0", "freebsd", "x86_64"), None);
+    }
+
+    #[test]
+    fn stored_homes_expand_tilde_and_dedupe() {
+        let home = dirs::home_dir().unwrap().display().to_string();
+        let mut patch = serde_json::Map::new();
+        patch.insert("harnessHome".into(), json!("~/HarnessAgents"));
+        patch.insert("registeredRepos".into(), json!(["~/dev/a", "~/dev/a", "", "C:/x"]));
+        let prior = vec![json!("~/HarnessAgents"), json!("D:/old"), json!("D:/old")];
+        normalize_config_patch(&mut patch, &prior);
+        let abs = patch["harnessHome"].as_str().unwrap().to_string();
+        assert!(abs.starts_with(&home) && abs.ends_with("HarnessAgents"), "{abs}");
+        assert!(!abs.contains('~'));
+        assert_eq!(patch["recentHives"], json!([abs, "D:/old"]));
+        let repos: Vec<&str> = patch["registeredRepos"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(repos.len(), 2);
+        assert!(repos[0].ends_with("dev/a") && !repos[0].contains('~'));
+        assert_eq!(repos[1], "C:/x");
+        // the read side cleans a legacy file
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("harnessHome".into(), json!("~/H"));
+        cfg.insert("recentHives".into(), json!(["~/H", "~/H", "E:/z"]));
+        normalize_stored_homes(&mut cfg);
+        assert!(!cfg["harnessHome"].as_str().unwrap().contains('~'));
+        assert_eq!(cfg["recentHives"].as_array().unwrap().len(), 2);
+        // untouched when absent
+        let mut empty = serde_json::Map::new();
+        normalize_config_patch(&mut empty, &prior);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn config_view_defaults_the_list_keys_the_ui_iterates() {
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("recentHives".into(), json!(["D:/h"]));
+        fill_list_defaults(&mut cfg);
+        assert_eq!(cfg["registeredRepos"], json!([]));
+        assert_eq!(cfg["recentHives"], json!(["D:/h"]));
+    }
+
+    #[test]
+    fn baked_model_catalog_copies_stay_identical() {
+        // The Rust-embedded copy and the renderer's build-time copy are one
+        // catalog; a drift would give the two sides different pickers.
+        assert_eq!(
+            include_str!("modelCatalog.json"),
+            include_str!("../../src/shared/modelCatalog.json"),
+        );
+        let v: Value = serde_json::from_str(BAKED_MODEL_CATALOG).unwrap();
+        assert!(parse_model_catalog(&v).is_some(), "baked catalog must validate");
+    }
+
+    #[test]
+    fn model_catalog_parser_rejects_and_sanitises() {
+        assert!(parse_model_catalog(&json!({"version": 2, "providers": {"a": []}})).is_none());
+        assert!(parse_model_catalog(&json!({"version": 1, "providers": {}})).is_none());
+        assert!(parse_model_catalog(&json!([1])).is_none());
+        let c = parse_model_catalog(&json!({"version": 1, "providers": {
+            "claude": [
+                {"id": "a\nb", "label": "A"}, {"id": "a b", "label": "dup"}, {"label": ""}, {"id": "x"}
+            ],
+            "bad": [{"nope": 1}],
+            "__proto__": [{"label": "x"}],
+            "custom": []
+        }})).unwrap();
+        let p = c["providers"].as_object().unwrap();
+        assert!(p.contains_key("claude") && p.contains_key("custom"));
+        assert!(!p.contains_key("bad") && !p.contains_key("__proto__"));
+        // newline neutralised to a space, duplicate id dropped, label-less row dropped
+        assert_eq!(c["providers"]["claude"], json!([{"id": "a b", "label": "A"}]));
+    }
+
+    #[test]
+    fn model_catalog_cache_ttl_force_and_fallback() {
+        let dir = std::env::temp_dir().join(format!("oa-mcat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = dir.join("model-catalog.json");
+        let body = r#"{"version":1,"providers":{"codex":[{"id":"m1","label":"M1"}]}}"#;
+        // cold + fetch fails -> null/stale
+        let r = load_model_catalog_with(&cache, false, || Err("offline".into()));
+        assert!(r["catalog"].is_null() && r["stale"] == true && r["fetchedAt"] == 0);
+        // fetch ok -> fresh + cached
+        let r = load_model_catalog_with(&cache, false, || Ok(body.into()));
+        assert_eq!(r["stale"], false);
+        assert_eq!(r["catalog"]["providers"]["codex"][0]["id"], "m1");
+        // within TTL: served from cache without fetching
+        let r = load_model_catalog_with(&cache, false, || panic!("must not fetch"));
+        assert_eq!(r["stale"], false);
+        // force + fetch fails -> cached copy, stale
+        let r = load_model_catalog_with(&cache, true, || Err("offline".into()));
+        assert_eq!(r["stale"], true);
+        assert_eq!(r["catalog"]["providers"]["codex"][0]["id"], "m1");
+        // garbage body -> falls back to cache too
+        let r = load_model_catalog_with(&cache, true, || Ok("{\"version\":9}".into()));
+        assert_eq!(r["stale"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
