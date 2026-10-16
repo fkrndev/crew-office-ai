@@ -20,7 +20,15 @@ const MAX_STEER_LEN: usize = 10_000;
 struct AgentControl {
     paused: bool,
     halted: bool,
+    /// `halted` was set by the simple-mode "Stop everything" (not by an
+    /// explicit per-agent halt): only those are lifted again by
+    /// [`ControlRegistry::resume_stopped`], so a deliberate halt survives it.
+    halted_by_stop_all: bool,
     auto_delivery_paused: bool,
+    /// The same for the auto-delivery hold "Stop everything" adds so queued
+    /// messages are not typed into a halted agent (and lost); it never touches a
+    /// hold the operator set themselves.
+    delivery_held_by_stop_all: bool,
     gated_tools: HashSet<String>,
     steer_queue: VecDeque<String>,
 }
@@ -73,7 +81,62 @@ impl ControlRegistry {
     }
 
     pub fn halt(&mut self, id: &str) {
-        self.ensure(id).halted = true;
+        let c = self.ensure(id);
+        c.halted = true;
+        // An explicit halt is the operator's own: "Stop everything" must not be
+        // the thing that later lifts it.
+        c.halted_by_stop_all = false;
+    }
+
+    /// Simple-mode "Stop everything": a clean halt for every id in `ids` (the
+    /// orchestrator and every worker) plus a hold on queued-message delivery, so
+    /// nothing is typed into a halted agent. Idempotent — running it again
+    /// changes nothing — and nothing is killed, archived or deleted. Returns how
+    /// many agents it covers.
+    pub fn halt_all<I, S>(&mut self, ids: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut n = 0;
+        for id in ids {
+            let c = self.ensure(id.as_ref());
+            // An explicit halt that is already in place keeps its own ownership.
+            if !c.halted {
+                c.halted = true;
+                c.halted_by_stop_all = true;
+            }
+            if !c.auto_delivery_paused {
+                c.auto_delivery_paused = true;
+                c.delivery_held_by_stop_all = true;
+            }
+            n += 1;
+        }
+        n
+    }
+
+    /// Lift what [`halt_all`] put in place — and only that — so the next message
+    /// the person sends is not blocked. Idempotent. Returns how many agents it
+    /// released.
+    pub fn resume_stopped(&mut self) -> usize {
+        let mut n = 0;
+        for c in self.map.values_mut() {
+            let mut touched = false;
+            if c.halted_by_stop_all {
+                c.halted = false;
+                c.halted_by_stop_all = false;
+                touched = true;
+            }
+            if c.delivery_held_by_stop_all {
+                c.auto_delivery_paused = false;
+                c.delivery_held_by_stop_all = false;
+                touched = true;
+            }
+            if touched {
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Drop all queued-but-undelivered steer notes — API parity with upstream;
@@ -90,6 +153,7 @@ impl ControlRegistry {
         let c = self.ensure(id);
         c.paused = false;
         c.halted = false;
+        c.halted_by_stop_all = false;
     }
 
     // ── reads (HookServer) ─────────────────────────────────────────────────
@@ -239,6 +303,47 @@ mod tests {
         assert!(r.snapshot("new").auto_delivery_paused, "agents the registry never saw are tracked");
         r.replace_auto_delivery_pauses(Vec::<String>::new());
         assert!(!r.snapshot("keep").auto_delivery_paused && !r.snapshot("new").auto_delivery_paused);
+    }
+
+    #[test]
+    fn halt_all_stops_everyone_idempotently_and_resume_stopped_lifts_only_it() {
+        let mut r = ControlRegistry::default();
+        // "boss" was halted explicitly by the operator; "w2" holds delivery itself.
+        r.halt("boss");
+        r.pause_auto_delivery("w2", true);
+        assert_eq!(r.halt_all(["boss", "w1", "w2"]), 3);
+        for id in ["boss", "w1", "w2"] {
+            assert!(r.should_halt(id), "{id} halted");
+            assert!(r.snapshot(id).auto_delivery_paused, "{id} delivery held");
+        }
+        // Running it again changes nothing (idempotent) and still reports everyone.
+        assert_eq!(r.halt_all(["boss", "w1", "w2"]), 3);
+        assert!(r.should_halt("w1"));
+        // Nothing but halting happened: no tool gate, no pause, no queued steer.
+        let s = r.snapshot("w1");
+        assert!(!s.paused && s.gated_tools.is_empty() && s.pending_steers == 0);
+
+        // The next message releases ONLY what Stop everything put in place.
+        assert_eq!(r.resume_stopped(), 3, "boss (delivery hold), w1 and w2 (halt) were touched");
+        assert!(!r.should_halt("w1"));
+        assert!(!r.snapshot("w1").auto_delivery_paused);
+        assert!(!r.snapshot("boss").auto_delivery_paused, "its delivery hold was ours");
+        assert!(r.should_halt("boss"), "an explicit halt survives");
+        assert!(r.snapshot("w2").auto_delivery_paused, "the operator's own hold survives");
+        assert!(!r.should_halt("w2"));
+        // Idempotent too.
+        assert_eq!(r.resume_stopped(), 0);
+    }
+
+    #[test]
+    fn explicit_halt_after_stop_all_takes_ownership() {
+        let mut r = ControlRegistry::default();
+        r.halt_all(["a"]);
+        r.halt("a"); // the operator now halts it on purpose
+        r.resume_stopped();
+        assert!(r.should_halt("a"), "no longer Stop-everything's to lift");
+        r.resume("a");
+        assert!(!r.should_halt("a"));
     }
 
     #[test]

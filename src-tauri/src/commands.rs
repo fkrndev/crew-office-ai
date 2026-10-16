@@ -2638,6 +2638,42 @@ pub fn control_halt(app: AppHandle, agent_id: String) -> Result<ControlSnapshot,
     })
 }
 
+/// What "Stop everything" reports back: how many agents it covers. Nothing is
+/// killed, archived or deleted — see [`control_stop_all`].
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopAllResult {
+    pub stopped: usize,
+    pub agents: Vec<String>,
+}
+
+/// Simple-mode "Stop everything": a clean halt for EVERY live agent (the
+/// orchestrator and all workers) through the same control registry the per-agent
+/// "stop" uses — each one stops at its next hook boundary — plus a hold on queued
+/// messages so nothing is typed into a halted agent. It never quits the app,
+/// kills a process, archives an agent or touches a file, and it is idempotent.
+/// The person's next message lifts it again ([`control_resume_stopped`]).
+#[tauri::command(async)]
+pub fn control_stop_all(app: AppHandle) -> Result<StopAllResult, String> {
+    crate::panic_guard::cmd_guard("control_stop_all", || {
+    let st = state(&app);
+    let mut agents: Vec<String> = st.live_agent_ids().into_iter().collect();
+    agents.sort();
+    let stopped = st.control.lock_safe().halt_all(agents.iter());
+    Ok(StopAllResult { stopped, agents })
+    })
+}
+
+/// Undo [`control_stop_all`] — and only it: an explicit per-agent halt or an
+/// operator's own delivery hold stays. Idempotent; returns how many agents it
+/// released.
+#[tauri::command(async)]
+pub fn control_resume_stopped(app: AppHandle) -> Result<usize, String> {
+    crate::panic_guard::cmd_guard("control_resume_stopped", || {
+    Ok(state(&app).control.lock_safe().resume_stopped())
+    })
+}
+
 #[tauri::command(async)]
 pub fn control_steer(
     app: AppHandle,

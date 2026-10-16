@@ -1351,6 +1351,8 @@ pub fn run() {
             commands::control_pause,
             commands::control_resume,
             commands::control_halt,
+            commands::control_stop_all,
+            commands::control_resume_stopped,
             commands::control_steer,
             commands::control_gate_tool,
             commands::control_pause_delivery,
