@@ -213,8 +213,12 @@ describe('failures: one clear button each', () => {
     render(<FirstRunProgress agentId="god" bridge={{ engineSetupRetry } as EngineSetupBridge} />);
     fail('engine_exit');
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/pty busy/));
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    // Simple mode: a friendly headline + hint, the raw text behind "Details".
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/Couldn't start your assistant/));
+    expect(screen.getByRole('alert').textContent).not.toMatch(/pty busy/);
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByRole('region', { name: 'Technical details' }).textContent).toBe('pty busy');
+    expect(screen.getAllByRole('button', { name: 'Try again' }).length).toBeGreaterThan(0);
   });
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
+import { ErrorNotice } from './FriendlyError';
 import { useEngineSetup } from '@/store/engineSetup';
 import { useNow } from '@/hooks/useNow';
 import { useIsSimpleMode, openAiConnection } from '@/hooks/useUiMode';
@@ -160,9 +161,13 @@ export function FirstRunProgress({ agentId, variant, bridge, reload }: FirstRunP
                 )}
               </div>
               {retryError && (
-                <div role="alert" style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-900)' }}>
-                  {t('firstRun.retryFailed', { error: retryError })}
-                </div>
+                <ErrorNotice
+                  error={retryError}
+                  legacy={t('firstRun.retryFailed', { error: retryError })}
+                  layout="inline"
+                  context="start"
+                  style={{ padding: 0 }}
+                />
               )}
             </>
           ) : (

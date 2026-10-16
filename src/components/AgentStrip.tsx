@@ -262,8 +262,8 @@ export function AgentStrip({ config }: AgentStripProps) {
           ref={restoreBtnRef}
           style={{ alignSelf: 'center', flexShrink: 0, marginLeft: 'auto' }}
           title={restoreBusy
-            ? t('agentStrip.restoringTitle')
-            : t('agentStrip.restoreTitle', { names: restorableAgents.map((a: Agent) => a.name).join(', ') })}
+            ? t('agentStrip.restoringTitle', simple ? { context: 'simple' } : undefined)
+            : t('agentStrip.restoreTitle', { names: restorableAgents.map((a: Agent) => a.name).join(', '), ...(simple ? { context: 'simple' } : {}) })}
         >
           <PixelButton
             variant="primary"
@@ -297,7 +297,7 @@ export function AgentStrip({ config }: AgentStripProps) {
               fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
               color: 'var(--cth-ink-500)', textTransform: 'uppercase'
             }}>
-              {t('agentStrip.previousSession')}
+              {t('agentStrip.previousSession', simple ? { context: 'simple' } : undefined)}
             </span>
             {/* Per-agent dismiss wires straight to removeRestorableAgent
                 (filters + persistRestorable), so a dismissed agent never
@@ -305,7 +305,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             {restorableAgents.map((a: Agent) => (
               <span
                 key={a.id}
-                title={t('agentStrip.restorable', { name: a.name })}
+                title={t('agentStrip.restorable', { name: a.name, ...(simple ? { context: 'simple' } : {}) })}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   height: 26, padding: '0 4px 0 8px',

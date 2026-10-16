@@ -18,6 +18,7 @@ import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { UpdatesSection } from './UpdatesSection';
 import { SettingsHeroCard } from './SettingsHeroCard';
+import { ErrorNotice } from './FriendlyError';
 import { SetupPanel } from './SetupPanel';
 import { Icon } from './Icon';
 import { OfficeThemePicker } from './OfficeThemePicker';
@@ -293,6 +294,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveNote, setSaveNote] = useState('');
   const [saveErr, setSaveErr] = useState(false);
+  // The raw error behind a failed save, so simple mode can show it in plain words.
+  const [saveRaw, setSaveRaw] = useState<unknown>(undefined);
   const stage = (patch: Partial<HarnessConfig>): void =>
     setPending((prev) => ({ ...prev, ...patch }));
 
@@ -450,7 +453,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   /** The one writer. Commits what the form currently shows, in a single
    *  updateConfig, so a half-applied save is not a state the app can reach. */
   const saveAll = async (): Promise<void> => {
-    setSaveBusy(true); setSaveNote(''); setSaveErr(false);
+    setSaveBusy(true); setSaveNote(''); setSaveErr(false); setSaveRaw(undefined);
     try {
       const patch: Partial<HarnessConfig> = {
         ...maxTurnsPatch(),
@@ -477,6 +480,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     } catch (e) {
       setSaveNote(e instanceof Error ? e.message : String(e));
       setSaveErr(true);
+      setSaveRaw(e);
     } finally { setSaveBusy(false); }
   };
 
@@ -1347,10 +1351,10 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                       <SettingsHeroCard />
                       <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
                       <div>
-                        <div style={sectionHead}>{t('settings.general.telemetry')}</div>
+                        <div style={sectionHead}>{t('simpleMode.settings.privacy')}</div>
                         <ToggleRow
-                          title={t('settings.general.telemetry')}
-                          desc={t('settings.general.telemetryDesc')}
+                          title={t('settings.general.telemetry', sctx)}
+                          desc={t('settings.general.telemetryDesc', sctx)}
                           on={telemetryOn}
                           onToggle={toggleTelemetry}
                         />
@@ -2217,9 +2221,18 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                 display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8,
                 background: 'var(--cth-cream-50)'
               }}>
-                {saveNote && (
+                {saveNote && (saveErr && simple && saveRaw !== undefined ? (
+                  <ErrorNotice
+                    error={saveRaw}
+                    context="save"
+                    friendly
+                    layout="inline"
+                    onRetry={() => { void saveAll(); }}
+                    style={{ maxWidth: '62%', padding: '4px 8px', background: 'var(--cth-coral-light)', boxShadow: 'inset 0 0 0 1px var(--cth-coral)' }}
+                  />
+                ) : (
                   <span style={{ fontSize: 12, color: saveErr ? 'var(--cth-coral)' : 'var(--cth-mint)' }}>{saveNote}</span>
-                )}
+                ))}
                 {dirty && !saveNote && (
                   <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.unsavedChanges')}</span>
                 )}

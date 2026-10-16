@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { ErrorNotice } from './FriendlyError';
 import type { HarnessConfig } from '@/store/config';
 
 export interface HivePickerProps {
@@ -152,10 +153,7 @@ export function HivePicker({ config, onOpenCurrent }: HivePickerProps) {
             )}
 
             {error && (
-              <div style={{
-                padding: '6px 10px', background: 'var(--cth-coral-light)',
-                boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
-              }}>{error}</div>
+              <ErrorNotice error={error} context="save" style={{ fontSize: 12 }} />
             )}
 
             {busy && (

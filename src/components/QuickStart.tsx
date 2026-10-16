@@ -69,6 +69,10 @@ export function QuickStart({
   const askSource = hermesChoice?.show === true;
   const source: HermesSource = hermesSource ?? hermesChoice?.defaultSource ?? 'app';
   const useOwn = askSource && source === 'own';
+  // ONE "RECOMMENDED" on screen: when the choice above already carries it (their own
+  // setup, which holds a key), the provider list does not repeat it — with "paste a
+  // key" selected there used to be two.
+  const ownIsRecommended = askSource && hermesChoice?.hasKeys === true;
 
   return (
     <>
@@ -133,7 +137,7 @@ export function QuickStart({
                     {t(`quickStart.${p.id}Blurb`)}
                   </span>
                 </span>
-                {p.recommended && (
+                {p.recommended && !ownIsRecommended && (
                   <span style={{
                     fontSize: 10, padding: '1px 5px', lineHeight: '16px',
                     background: 'var(--cth-lemon)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',

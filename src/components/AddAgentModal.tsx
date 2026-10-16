@@ -38,6 +38,7 @@ import { useRtl } from '@/i18n/useDirection';
 import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 import { useIsSimpleMode } from '@/hooks/useUiMode';
 import { engineCostHint } from '@shared/engineCost';
+import { ErrorNotice } from './FriendlyError';
 
 const ACCENTS: AccentColorName[] = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'];
 
@@ -332,7 +333,15 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const resuming = resumeSessionId.trim().length > 0;
   // Note shown when the folder was auto-filled from the pasted session id.
   const [folderNote, setFolderNote] = useState<string | undefined>();
-  const [error, setError] = useState<string | undefined>();
+  const [error, setErrorText] = useState<string | undefined>();
+  // The raw error behind `error` (a failed spawn, a throwing bridge, a bad import):
+  // simple mode shows a friendly version with the raw text under "Details";
+  // advanced mode shows `error` exactly as it always did.
+  const [errorRaw, setErrorRaw] = useState<unknown>(undefined);
+  /** A message of our own (already plain): clears any raw error behind it. */
+  const setError = (m?: string): void => { setErrorText(m); setErrorRaw(undefined); };
+  /** A failure with an underlying error; `legacy` is the technical wording. */
+  const fail = (legacy: string, raw: unknown): void => { setErrorText(legacy); setErrorRaw(raw); };
   const [busy, setBusy] = useState(false);
   // One-click spawn presets — raw config key `agentTemplates`, sanitized on
   // read so a hand-edited config.json can't crash the modal.
@@ -544,7 +553,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     if (errors.length > 0) {
       setError(tr('addAgent.hireSkipped', { n: errors.length, errors: errors.join(' · ') }));
     } else if (!res?.ok && res?.error && res.error !== 'cancelled') {
-      setError(res.error);
+      fail(res.error, res.error);
     }
   };
 
@@ -568,7 +577,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     } catch (e) {
       // A throwing bridge (spawn or the ShardX probe) must not leave the modal
       // stuck on "spawning…" with every control disabled.
-      setError(e instanceof Error ? e.message : String(e));
+      fail(e instanceof Error ? e.message : String(e), e);
     } finally {
       setBusy(false);
     }
@@ -641,7 +650,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       }
     });
     if (!spawnRes.ok) {
-      setError(spawnRes.error ?? tr('addAgent.spawnFailed'));
+      fail(spawnRes.error ?? tr('addAgent.spawnFailed'), spawnRes.error ?? tr('addAgent.spawnFailed'));
       return;
     }
     // #2 — the requested resume session id wasn't found anywhere; main fell back
@@ -954,7 +963,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                   fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
                   color: 'var(--cth-ink-500)', textTransform: 'uppercase'
                 }}>
-                  {tr('addAgent.agentTemplates')}
+                  {tr('addAgent.agentTemplates', sctx)}
                 </span>
                 {templates.map((t) => (
                   <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
@@ -996,15 +1005,15 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         if (e.key === 'Enter' && !isComposingKey(e)) saveTemplate();
                         if (e.key === 'Escape') { setTplSaving(false); setTplLabel(''); }
                       }}
-                      placeholder={tr('addAgent.templateLabelPlaceholder')}
+                      placeholder={tr('addAgent.templateLabelPlaceholder', sctx)}
                       style={{ ...inputStyle, width: 140, padding: '3px 7px', fontSize: 12 }}
                     />
-                    <PixelButton size="sm" onClick={saveTemplate}>{tr('addAgent.saveAsTemplate')}</PixelButton>
+                    <PixelButton size="sm" onClick={saveTemplate}>{tr('addAgent.saveAsTemplate', sctx)}</PixelButton>
                   </span>
                 ) : (
                   <button
                     onClick={() => setTplSaving(true)}
-                    title={tr('addAgent.saveAsTemplateTitle')}
+                    title={tr('addAgent.saveAsTemplateTitle', sctx)}
                     style={{
                       padding: '3px 8px 1px', border: 'none', cursor: 'pointer',
                       background: 'var(--cth-cream-100)',
@@ -1013,11 +1022,11 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       color: 'var(--cth-ink-500)'
                     }}
                   >
-                    {tplSaved ? tr('addAgent.templateSaved') : `+ ${tr('addAgent.saveAsTemplate')}`}
+                    {tplSaved ? tr('addAgent.templateSaved') : `+ ${tr('addAgent.saveAsTemplate', sctx)}`}
                   </button>
                 )}
                 <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
-                  {tr('addAgent.agentTemplatesHint')}
+                  {tr('addAgent.agentTemplatesHint', sctx)}
                 </span>
               </div>
             )}
@@ -1079,7 +1088,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       />
                     </Row>}
 
-                    <Row label={tr('addAgent.character')}>
+                    <Row label={tr('addAgent.character', sctx)}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {OFFICE_CAST.map(c => (
                           <button
@@ -1139,14 +1148,19 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                 {showSection('workspace') && (
                   <>
                     {simpleView && <div style={moreHead}>{tr('simpleMode.addAgent.workspaceHead')}</div>}
-                    <Row label={tr('addAgent.project')}>
+                    <Row label={tr('addAgent.project', sctx)}>
+                      {simpleView && (
+                        <span style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-500)' }}>
+                          {tr('addAgent.projectHelp', sctx)}
+                        </span>
+                      )}
                       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
                         <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
-                          {repos.length > 0 ? tr('addAgent.pickProject') : tr('addAgent.noProjects')}
+                          {repos.length > 0 ? tr('addAgent.pickProject', sctx) : tr('addAgent.noProjects', sctx)}
                         </span>
                         <button
                           onClick={addProject}
-                          title={tr('addAgent.addProjectTitle')}
+                          title={tr('addAgent.addProjectTitle', sctx)}
                           style={{
                             flexShrink: 0, padding: '2px 8px 1px', border: 'none', cursor: 'pointer',
                             background: 'var(--cth-cream-200)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
@@ -1154,7 +1168,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                             display: 'inline-flex', alignItems: 'center', gap: 4
                           }}
                         >
-                          <Icon name="plus" /> {tr('addAgent.addProject')}
+                          <Icon name="plus" /> {tr('addAgent.addProject', sctx)}
                         </button>
                       </div>
                       {repos.length > 0 && (
@@ -1219,14 +1233,14 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         />
                         <PixelButton variant="secondary" size="md" onClick={pickFolder}>
                           <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-                            <Icon name="folder" /> {tr('addAgent.pick')}
+                            <Icon name="folder" /> {tr('addAgent.pick', sctx)}
                           </span>
                         </PixelButton>
                       </div>
                       {cwd.trim() && !repos.includes(cwd.trim()) && (
                         <button
                           onClick={() => registerProject(cwd)}
-                          title={tr('addAgent.saveAsProjectTitle')}
+                          title={tr('addAgent.saveAsProjectTitle', sctx)}
                           style={{
                             alignSelf: 'flex-start', marginTop: 2,
                             padding: '2px 8px 1px', border: 'none', cursor: 'pointer',
@@ -1235,7 +1249,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                             display: 'inline-flex', alignItems: 'center', gap: 4
                           }}
                         >
-                          <Icon name="plus" /> {tr('addAgent.saveAsProject')}
+                          <Icon name="plus" /> {tr('addAgent.saveAsProject', sctx)}
                         </button>
                       )}
                     </Row>
@@ -1252,13 +1266,18 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         {tr('addAgent.gitIsolation', sctx)}
                       </span>
                     </label>
+                    {simpleView && (
+                      <span style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-500)', marginTop: -6 }}>
+                        {tr('addAgent.gitIsolationHelp', sctx)}
+                      </span>
+                    )}
 
                     {/* Per-agent MCP opt-in — only the consent-gated tiers
                         (safe-readonly servers already ship on globally). Each
                         agent decides for itself; nothing here affects others. */}
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-500)' }}>
-                        {tr('addAgent.mcpExtras')}
+                        {tr('addAgent.mcpExtras', sctx)}
                       </span>
                       {MCP_CATALOG.filter((e) => e.tier !== 'safe-readonly').map((e) => (
                         <label key={e.id} title={e.description} style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
@@ -1276,6 +1295,11 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         </label>
                       ))}
                     </div>
+                    {simpleView && (
+                      <span style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-500)', marginTop: -6 }}>
+                        {tr('addAgent.mcpExtrasHelp', sctx)}
+                      </span>
+                    )}
                     {/* ShardX account binding — blank keeps the auto-dedicated
                         office-<id> profile; a name binds this agent to that
                         account's profile so sibling agents share ONE login. */}
@@ -1325,7 +1349,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                 {showSection('engine') && (
                   <>
                     {simpleView && <div style={moreHead}>{tr('simpleMode.addAgent.engineHead')}</div>}
-                    <Row label={tr('addAgent.provider')}>
+                    <Row label={tr('addAgent.provider', sctx)}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {AGENT_PROVIDER_PRESETS.map((p) => {
                           const active = provider === p.id;
@@ -1374,7 +1398,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       )}
                     </Row>
 
-                    {preset.supportsModel && <Row label={tr('addAgent.model')}>
+                    {preset.supportsModel && <Row label={tr('addAgent.model', sctx)}>
                       {modelsForProvider(provider).length === 0 ? (
                         // Catalog-empty providers (hermes, openclaw, kimi,
                         // antigravity…) take a freeform --model string; empty
@@ -1479,11 +1503,16 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
 
                     {(provider === 'opencode' || provider === 'crush' || provider === 'pi' || provider === 'qwen') && (
                       <div style={{ fontSize: 12, color: 'var(--cth-ink-500)', lineHeight: '16px', margin: '2px 0 6px' }}>
-                        {tr('addAgent.byokNote')}
+                        {tr('addAgent.byokNote', sctx)}
                       </div>
                     )}
 
-                    <Row label={config.autoMode && preset.autoFlag ? tr('addAgent.commandAuto') : tr('addAgent.command')}>
+                    <Row label={config.autoMode && preset.autoFlag ? tr('addAgent.commandAuto', sctx) : tr('addAgent.command', sctx)}>
+                      {simpleView && (
+                        <span style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-500)' }}>
+                          {tr('addAgent.commandHelp', sctx)}
+                        </span>
+                      )}
                       <input
                         value={command}
                         onChange={(e) => { setCommand(e.target.value); if (error) setError(undefined); }}
@@ -1543,8 +1572,10 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
             </div>
             )}
 
-            {error && (
-              <div style={{
+            {error && (errorRaw !== undefined ? (
+              <ErrorNotice error={errorRaw} legacy={error} context="spawn" friendly={simpleUi} onRetry={busy ? undefined : () => { void submit(); }} />
+            ) : (
+              <div role="alert" style={{
                 padding: '6px 10px',
                 background: 'var(--cth-coral-light)',
                 boxShadow: 'inset 0 0 0 1px var(--cth-coral)',
@@ -1553,7 +1584,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
               }}>
                 {error}
               </div>
-            )}
+            ))}
 
             {/* Import-hire explainer + AI prompt generator (item 7) */}
             {showMoreFields && <div style={{
@@ -1564,7 +1595,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
             }}>
               <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: '17px' }}>
-                  {tr('addAgent.importHireDesc')}
+                  {tr('addAgent.importHireDesc', sctx)}
                 </span>
                 <button
                   onClick={() => setShowHirePrompt((v) => !v)}
@@ -1576,7 +1607,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)'
                   }}
                 >
-                  {showHirePrompt ? tr('addAgent.hideAIPrompt') : tr('addAgent.generateWithAI')}
+                  {showHirePrompt ? tr('addAgent.hideAIPrompt', sctx) : tr('addAgent.generateWithAI', sctx)}
                 </button>
               </div>
               {showHirePrompt && (
@@ -1613,7 +1644,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                 disabled={busy}
                 title={tr('addAgent.importHireBtnTitle')}
               >
-                {tr('addAgent.importHireBtn')}
+                {tr('addAgent.importHireBtn', sctx)}
               </PixelButton>}
               <div style={{ flex: 1 }} />
               {pendingHire && (

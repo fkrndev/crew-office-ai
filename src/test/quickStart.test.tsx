@@ -378,7 +378,11 @@ describe('onboarding: non-technical quick start', () => {
     await waitFor(() => expect(screen.getByText(/YOUR PROJECTS/)).toBeTruthy());
     click(/^next$/i);
     click(/^finish$/i);
-    await waitFor(() => expect(screen.getByText(/keyring locked/i)).toBeTruthy());
+    // A person on the non-technical path gets plain words; the raw reason is under Details.
+    await waitFor(() => expect(screen.getByText(/couldn't be stored safely/i)).toBeTruthy());
+    expect(screen.queryByText(/keyring locked/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText(/keyring locked/i)).toBeTruthy();
     expect(updateConfig).not.toHaveBeenCalled();
     expect(screen.getByText(/CONNECT YOUR AI/)).toBeTruthy();
   });

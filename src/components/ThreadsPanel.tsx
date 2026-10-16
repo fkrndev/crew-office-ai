@@ -4,6 +4,7 @@ import { formatDateTime } from '@shared/dateFormat';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { useRtl } from '@/i18n/useDirection';
+import { emitNotice } from '@shared/notice';
 
 // Derive the message shape from the preload-exposed API so the renderer never
 // reaches across project boundaries for a type (window.cth is globally typed).
@@ -81,9 +82,11 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
       }, 'human');
     } catch (e) {
       // Keep the draft and say why — the reply did not go out.
-      window.dispatchEvent(new CustomEvent('cth:notice', {
-        detail: { text: t('notice.sendFailed', { error: e instanceof Error ? e.message : String(e) }) }
-      }));
+      emitNotice({
+        text: t('notice.sendFailed', { error: e instanceof Error ? e.message : String(e) }),
+        raw: e,
+        context: 'send'
+      });
       return;
     }
     setDrafts(d => ({ ...d, [last.conversation]: '' }));

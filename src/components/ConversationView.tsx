@@ -11,6 +11,7 @@ import {
 import {
   Bubble, CONVO_CSS, EmptyConversation, MessageRow, WorkingIndicator
 } from './ConversationBubbles';
+import { ChatShowsQueueContext, fillComposer } from './composerBridge';
 
 /**
  * Simple-mode "talk" tab: a clean chat with the orchestrator instead of the raw
@@ -144,6 +145,7 @@ export function ConversationView({ agent, terminal, composer }: ConversationView
   const godName = useResolvedGodName();
   const name = agent.isGod ? godName : (agent.name || godName);
   const queue = useStore((s) => s.messageQueues[agent.id]) ?? EMPTY_QUEUE;
+  const removeQueuedMessage = useStore((s) => s.removeQueuedMessage);
   const working = isWorkingStatus(agent.status);
   const convo = useConversation(agent.id, working, queue);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -182,8 +184,14 @@ export function ConversationView({ agent, terminal, composer }: ConversationView
   }, []);
 
   useLayoutEffect(() => {
+    // An empty chat (the welcome text + starter ideas) reads from the TOP; it must
+    // never open scrolled to its bottom with the greeting cut off above.
+    if (isEmpty) {
+      if (logRef.current) logRef.current.scrollTop = 0;
+      return;
+    }
     if (stickRef.current) scrollToBottom(false);
-  }, [transcript.length, pending.length, working, terminalOpen, fallback, scrollToBottom]);
+  }, [transcript.length, pending.length, working, terminalOpen, fallback, isEmpty, convo.loaded, scrollToBottom]);
 
   const note = fallback
     ? convo.reason === 'starting'
@@ -232,38 +240,49 @@ export function ConversationView({ agent, terminal, composer }: ConversationView
           onScroll={onScroll}
           data-testid="convo-log"
           style={{
+            // Generous bottom padding: the last bubble's caption (time, "Waiting
+            // to send") always has air under it and never sits at the very edge.
             flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column',
-            gap: 10, padding: '12px 12px 8px'
+            gap: 10, padding: '12px 12px 20px'
           }}
         >
           {!convo.loaded ? null : isEmpty ? (
-            <EmptyConversation name={name} />
+            <EmptyConversation name={name} onPick={(text) => fillComposer(agent.id, text)} />
           ) : (
             <>
               {transcript.map((m) => <MessageRow key={m.id} m={m} name={name} />)}
               {pending.map((p) => (
-                <Bubble key={p.id} role="user" name={name} text={p.text} pending={p.state} />
+                <Bubble
+                  key={p.id}
+                  role="user"
+                  name={name}
+                  text={p.text}
+                  pending={p.state}
+                  onCancel={p.queueId ? () => removeQueuedMessage(agent.id, p.queueId!) : undefined}
+                />
               ))}
             </>
           )}
         </div>
         {working && <WorkingIndicator name={name} />}
+        {/* "Jump to latest" sits in the flow under the list, NOT floating over it:
+            a floating pill used to cover the last bubble's caption. */}
         {away && (
-          <button
-            type="button"
-            className="cth-convo-btn"
-            data-testid="convo-jump"
-            onClick={() => { stickRef.current = true; setAway(false); scrollToBottom(true); }}
-            style={{
-              position: 'absolute', insetInlineEnd: 16, bottom: working ? 38 : 12,
-              padding: '6px 12px', borderRadius: 16, cursor: 'pointer',
-              border: '1px solid var(--cth-ink-300)', background: 'var(--cth-paper-100)',
-              color: 'var(--cth-ink-900)', fontFamily: 'var(--cth-font-ui)', fontSize: 13,
-              boxShadow: 'var(--cth-shadow-hard)'
-            }}
-          >
-            {t('conversation.jumpToLatest')}
-          </button>
+          <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '4px 12px 6px' }}>
+            <button
+              type="button"
+              className="cth-convo-btn"
+              data-testid="convo-jump"
+              onClick={() => { stickRef.current = true; setAway(false); scrollToBottom(true); }}
+              style={{
+                padding: '4px 12px', borderRadius: 16, cursor: 'pointer',
+                border: '1px solid var(--cth-ink-300)', background: 'var(--cth-paper-100)',
+                color: 'var(--cth-ink-900)', fontFamily: 'var(--cth-font-ui)', fontSize: 13
+              }}
+            >
+              {t('conversation.jumpToLatest')}
+            </button>
+          </div>
         )}
       </div>
       )}
@@ -302,7 +321,9 @@ export function ConversationView({ agent, terminal, composer }: ConversationView
         {terminal}
       </div>
 
-      {composer}
+      {/* While the chat is on screen it already shows what is waiting to be sent,
+          so the composer must not list the same messages again. */}
+      <ChatShowsQueueContext.Provider value={!fallback}>{composer}</ChatShowsQueueContext.Provider>
     </div>
   );
 }

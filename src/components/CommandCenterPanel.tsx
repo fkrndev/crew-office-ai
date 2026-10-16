@@ -19,6 +19,7 @@ import { terminalInstanceKey } from './terminalRecovery';
 import { Icon } from './Icon';
 import { MemoryGraphPanel } from './MemoryGraphPanel';
 import { useFleetTelemetry } from '@/hooks/useTelemetry';
+import { useSetupBadges } from '@/store/engineSetup';
 import { COMMAND_GROUPS } from '@shared/claudeCommands';
 import { roleForHiveSpawn } from '@shared/agentRole';
 import { useStore, triggerHistoryVisible, type Agent } from '@/store/store';
@@ -147,6 +148,11 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
   const setFullscreen = useStore((s) => s.setFullscreen);
   const fullscreenAgentId = useStore((s) => s.fullscreenAgentId);
   const onPtyStream = usePtyParser(agent.id);
+  // The header chip and the first-run card must never contradict each other: while
+  // this agent's engine is being set up (the card says "Setting up…"), the chip
+  // says so too instead of "ready" / "offline" — both read the same engine-setup
+  // state, through the same visibility rule (a quick start stays invisible).
+  const setupChip = useSetupBadges()[agent.id];
   // True only for the DOCKED panel while the overlay holds this agent.
   const isFullscreenedHere = fullscreenAgentId === agent.id && !fullscreen;
   // v0.3.4: ONE floor-wide auto-delivery switch, moved off the per-agent
@@ -219,7 +225,14 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
           }}>{t('commandCenter.title', sctx)}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 1, minWidth: 0 }}>
-            <PixelBadge status={agent.status} />
+            <PixelBadge
+              status={setupChip ? (setupChip.failed ? 'blocked' : 'working') : agent.status}
+              label={setupChip
+                ? (setupChip.failed
+                  ? t('firstRun.card.failed')
+                  : t('firstRun.card.working', { current: setupChip.current, total: setupChip.total }))
+                : undefined}
+            />
             <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { CSSProperties } from 'react';
+import { useId, type CSSProperties } from 'react';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import type { ConversationMessage, PendingBubble } from '@shared/conversation';
 
@@ -53,9 +53,11 @@ export interface BubbleProps {
   ts?: number;
   /** a queued / sending message from the composer, shown greyed */
   pending?: PendingBubble['state'];
+  /** "Don't send" for a message still waiting in the queue. */
+  onCancel?: () => void;
 }
 
-export function Bubble({ role, name, text, ts = 0, pending }: BubbleProps) {
+export function Bubble({ role, name, text, ts = 0, pending, onCancel }: BubbleProps) {
   const { t, i18n } = useTranslation();
   const mine = role === 'user';
   const speaker = mine ? t('conversation.you') : name;
@@ -99,8 +101,26 @@ export function Bubble({ role, name, text, ts = 0, pending }: BubbleProps) {
         )}
       </div>
       {pending && (
-        <div style={{ ...captionStyle, textAlign: 'end', fontStyle: 'italic' }}>
-          {pending === 'sending' ? t('conversation.pendingSending') : t('conversation.pendingWaiting')}
+        <div style={{ ...captionStyle, textAlign: 'end', fontStyle: 'italic', margin: '2px 4px 0' }}>
+          <span>{pending === 'sending' ? t('conversation.pendingSending') : t('conversation.pendingWaiting')}</span>
+          {pending === 'waiting' && onCancel && (
+            <>
+              <span aria-hidden="true">{' · '}</span>
+              <button
+                type="button"
+                className="cth-convo-btn"
+                data-testid="convo-pending-cancel"
+                onClick={onCancel}
+                style={{
+                  border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 'inherit', fontStyle: 'normal',
+                  color: 'var(--cth-ink-700)', textDecoration: 'underline'
+                }}
+              >
+                {t('conversation.cancelPending')}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -139,13 +159,19 @@ export function WorkingIndicator({ name }: { name: string }) {
   );
 }
 
-export function EmptyConversation({ name }: { name: string }) {
+/** The starter ideas of the empty chat. Short, concrete and safe: every one is a
+ *  read-only or "ask me first" request — none deletes or sends anything. Texts are
+ *  `examples.<key>` in every locale. */
+export const STARTER_IDEAS = ['summarizeFolder', 'writeEmail', 'todoList', 'explainProject'] as const;
+
+export function EmptyConversation({ name, onPick }: { name: string; onPick?: (text: string) => void }) {
   const { t } = useTranslation();
+  const headId = useId();
   return (
     <div
       data-testid="convo-empty"
       style={{
-        margin: 'auto', maxWidth: 360, textAlign: 'center', padding: 16,
+        margin: 'auto', width: '100%', maxWidth: 380, textAlign: 'center', padding: 16,
         fontFamily: 'var(--cth-font-ui)', color: 'var(--cth-ink-700)'
       }}
     >
@@ -153,6 +179,41 @@ export function EmptyConversation({ name }: { name: string }) {
         {t('conversation.emptyTitle', { name })}
       </div>
       <div style={{ fontSize: 14, lineHeight: '20px' }}>{t('conversation.emptyBody', { name })}</div>
+
+      {onPick && (
+        <div
+          role="group"
+          aria-labelledby={headId}
+          data-testid="starter-ideas"
+          style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6, textAlign: 'start' }}
+        >
+          <div id={headId} style={{ fontSize: 13, fontWeight: 600, color: 'var(--cth-ink-900)' }}>
+            {t('examples.title')}
+          </div>
+          {STARTER_IDEAS.map((key) => {
+            const text = t(`examples.${key}`);
+            return (
+              <button
+                key={key}
+                type="button"
+                className="cth-convo-btn"
+                data-testid={`starter-${key}`}
+                onClick={() => onPick(text)}
+                style={{
+                  display: 'block', width: '100%', padding: '6px 10px', cursor: 'pointer',
+                  textAlign: 'start', border: 'none', borderRadius: 6,
+                  background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)',
+                  boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                  fontFamily: 'var(--cth-font-ui)', fontSize: 13, lineHeight: '19px'
+                }}
+              >
+                {text}
+              </button>
+            );
+          })}
+          <div style={{ fontSize: 12, lineHeight: '17px', color: 'var(--cth-ink-500)' }}>{t('examples.hint')}</div>
+        </div>
+      )}
     </div>
   );
 }

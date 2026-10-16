@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
+import { ErrorNotice } from './FriendlyError';
 import { useStore } from '@/store/store';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { type HiveTask, type HumanQA, openQuestion, waitsOnHuman } from './TasksKanban';
@@ -62,6 +63,8 @@ export function AskMeTab() {
   const openTaskDetail = useStore((s) => s.openTaskDetail);
   const [sending, setSending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | undefined>();
+  // The raw error behind it (simple mode shows a friendly version of it).
+  const [actionRaw, setActionRaw] = useState<unknown>(undefined);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -137,6 +140,7 @@ export function AskMeTab() {
       setAnswerDraft(task.id, '');
     } catch (e) {
       setActionError(e instanceof Error ? e.message : translate('askMe.sendFailed'));
+      setActionRaw(e);
     }
     setSending(null);
   };
@@ -168,6 +172,7 @@ export function AskMeTab() {
     } catch (e) {
       setTasks(tasks); // restore on failure so the user can retry
       setActionError(e instanceof Error ? e.message : translate('askMe.dismissFailed'));
+      setActionRaw(e);
     }
   };
 
@@ -185,12 +190,7 @@ export function AskMeTab() {
         </div>
       )}
       {actionError && (
-        <div style={{
-          padding: '6px 10px', background: 'var(--cth-coral-light)',
-          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
-        }}>
-          {actionError}
-        </div>
+        <ErrorNotice error={actionRaw ?? actionError} legacy={actionError} context="send" style={{ fontSize: 12 }} />
       )}
       {waiting.map((t) => {
         const open = openQuestion(t)!;

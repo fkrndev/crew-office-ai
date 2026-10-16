@@ -3,7 +3,7 @@
  * promise that a legacy config (no uiMode, technical audience) is unchanged.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, screen, fireEvent } from '@testing-library/react';
+import { render, waitFor, screen, fireEvent, act } from '@testing-library/react';
 import { installFakeBridge } from './fakeBridge';
 import { useStore } from '@/store/store';
 
@@ -96,6 +96,46 @@ describe('App in simple vs advanced mode', () => {
     window.addEventListener('cth:open-settings', (e) => seen.push((e as CustomEvent).detail));
     fireEvent.click(screen.getByText('Connect your AI'));
     expect(seen).toContainEqual({ section: 'AI connection' });
+  });
+
+  it('simple shows a "Stop everything" button in the title bar; advanced (and legacy) does not', async () => {
+    bridge({ ...CONFIG, audience: 'non-technical', uiMode: 'simple' });
+    const { unmount } = render(<App />);
+    const btn = await screen.findByRole('button', { name: 'Stop everything' });
+    expect(btn.closest('.cth-titlebar-drag')).toBeTruthy();
+    unmount();
+    window.localStorage.setItem('cth.skipHivePickerOnce', '1'); // read-once flag: re-arm for the 2nd render
+    useStore.setState({ uiMode: 'advanced' } as never);
+    bridge(CONFIG);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('auto mode on')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Stop everything' })).toBeNull();
+  });
+
+  it('the notice banner: raw text in advanced; friendly title + Details in simple', async () => {
+    const notice = (detail: Record<string, unknown>) =>
+      act(() => { window.dispatchEvent(new CustomEvent('cth:notice', { detail })); });
+    bridge(CONFIG);
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(screen.getByText('auto mode on')).toBeTruthy());
+    notice({ text: 'Could not send: Permission denied (os error 13)', raw: 'Permission denied (os error 13)', context: 'send' });
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not send: Permission denied (os error 13)');
+    unmount();
+
+    window.localStorage.setItem('cth.skipHivePickerOnce', '1');
+    useStore.setState({ uiMode: 'advanced' } as never);
+    bridge({ ...CONFIG, audience: 'non-technical', uiMode: 'simple' });
+    render(<App />);
+    await screen.findByTestId('show-advanced-link');
+    notice({ text: 'Could not send: Permission denied (os error 13)', raw: 'Permission denied (os error 13)', context: 'send' });
+    const friendly = await screen.findByTestId('notice-friendly');
+    expect(friendly.textContent).toMatch(/The app isn't allowed to do that/);
+    expect(friendly.textContent).not.toMatch(/os error 13/);
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByRole('region', { name: 'Technical details' }).textContent).toBe('Permission denied (os error 13)');
+    // a sentence with no raw error shows its plain variant
+    notice({ text: 'tech wording', simpleText: 'plain wording' });
+    await screen.findByText('plain wording');
   });
 
   it('"Need more? Show advanced options" writes uiMode and flips the layout', async () => {

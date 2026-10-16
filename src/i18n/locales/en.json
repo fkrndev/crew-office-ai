@@ -149,11 +149,15 @@
     "addAgent": "add agent",
     "addAgent_simple": "add teammate",
     "restoringTitle": "Your previous session's agents are being respawned with their original ids, so memory and inboxes reattach.",
+    "restoringTitle_simple": "Your team from last time is being brought back, with their notes and messages.",
     "restoreTitle": "Previous session: {{names}}",
+    "restoreTitle_simple": "From last time: {{names}}",
     "restoringTeam": "restoring your team…",
     "restoreTeam": "restore team ({{count}}) ▴",
     "previousSession": "previous session",
+    "previousSession_simple": "from last time",
     "restorable": "{{name}} — restorable from last session",
+    "restorable_simple": "{{name}} — can be brought back from last time",
     "dismiss": "Dismiss {{name}} — remove permanently from the restore list",
     "dismissAria": "Dismiss {{name}}",
     "restoreAll": "restore all ({{count}})"
@@ -183,7 +187,9 @@
     "fullscreenDesc": "This terminal is open in focus mode. Press Esc or exit focus mode to bring it back here.",
     "noPty": "No terminal",
     "noPtyDesc": "This agent has no live terminal. Spawn an agent through \"add agent\" to use the terminal tab.",
+    "noPtyDesc_simple": "This teammate isn't running right now. Add a teammate from the bar below to start talking.",
     "killConfirm": "Close {{name}}? The agent's process will stop and the agent is archived (kept in history, off the floor).",
+    "killConfirm_simple": "Remove {{name}} from your team? They stop what they are doing. Their history is kept.",
     "ideTip": "Open the IDE: browse and edit files in {{project}}, and see uncommitted changes as a diff.",
     "terminalTip": "Open your system terminal app in {{cwd}} — a normal shell in this agent's folder, separate from the agent's own terminal.",
     "openIde": "Open the IDE",
@@ -199,8 +205,15 @@
     "visit": "visit",
     "whatsNew": "what's new",
     "whatsNewTitle": "Show the release notes for the update you were last told about",
+    "whatsNewTitle_simple": "See what changed in the latest update",
     "reportProblem": "report a problem",
-    "fullChangelog": "full changelog →"
+    "fullChangelog": "full changelog →",
+    "fullChangelog_simple": "see everything that changed →",
+    "version": "Version {{v}}",
+    "updateAvailable": "A newer version ({{v}}) is available",
+    "download": "Download the new version",
+    "downloadTitle": "Download the new version and install it over this one yourself. The Updates tab can do it for you.",
+    "blurb": "Your AI team runs on this computer and works in your own folders. It uses your own AI account."
   },
   "officeTheme": {
     "title": "Office Theme",
@@ -285,7 +298,9 @@
       "autoUpdate": "Auto-update",
       "autoUpdateDesc": "Check GitHub releases and download updates in the background; you choose when to restart. Never restarts on its own.",
       "telemetry": "Anonymous usage stats",
+      "telemetry_simple": "Share anonymous usage counts",
       "telemetryDesc": "A handful of anonymous events (app opened, agent spawned, feature used) — never prompts, code, paths, or agent output. Full list in TELEMETRY.md.",
+      "telemetryDesc_simple": "Sends a few anonymous counts to help improve the app: that it was opened, which AI engine started, whether something failed to start, how many messages were sent (never what they say), whether you use a few optional features, your app version and operating system, and roughly how long you used it. It is not linked to your name or account. Never your messages, files, folder names, or anything your team writes. Turn it off and nothing is sent.",
       "language": "Language",
       "languageDesc": "Choose the language for the app interface. Bahasa Indonesia is the default; English is the fallback for any missing string.",
       "languageDesc_simple": "Pick the language you want to read the app in.",
@@ -572,16 +587,25 @@
     "name": "Name",
     "namePlaceholder": "Ada",
     "character": "Character",
+    "character_simple": "Face",
     "color": "Color",
     "project": "Project",
+    "project_simple": "Folder to work in",
     "pickProject": "Pick a project, or add a new one:",
+    "pickProject_simple": "Pick a folder, or add a new one:",
     "noProjects": "No projects yet — add one to get started:",
+    "noProjects_simple": "No folders yet — add one to get started:",
     "addProject": "add project",
+    "addProject_simple": "add folder",
     "addProjectTitle": "Pick a folder and register it as a project",
+    "addProjectTitle_simple": "Choose a folder on your computer to work in",
     "projectPlaceholder": "/path/to/your/project",
     "pick": "pick",
+    "pick_simple": "browse",
     "saveAsProject": "save as project",
+    "saveAsProject_simple": "remember this folder",
     "saveAsProjectTitle": "Save this folder to your projects so it's a one-click pick next time",
+    "saveAsProjectTitle_simple": "Keep this folder in your list so it is one click next time",
     "gitIsolation": "Git isolation (own worktree)",
     "gitIsolation_simple": "Work on its own copy of the files (safer)",
     "resumeSession": "Resume session ID (optional)",
@@ -589,10 +613,12 @@
     "folderFromSession": "folder set from session: {{path}}",
     "resumeNote": "Will resume this session in the chosen folder (git isolation disabled).",
     "provider": "Provider",
+    "provider_simple": "Which AI",
     "providerAntigravity": "Spawn the Antigravity CLI (agy) with a Gemini model",
     "providerCodex": "Spawn the Codex CLI (codex) without Claude-only flags",
     "providerCustom": "Run any command — no Claude-only flags",
     "model": "Model",
+    "model_simple": "AI model",
     "cliDefaultModel": "CLI default model",
     "fromHire": "{{model}} (from hire)",
     "ossModels": "OSS models",
@@ -601,8 +627,11 @@
     "ossLocalTitle": "{{slug}} · needs ~{{ram}} RAM — pull with: ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · set {{keyEnv}} in Settings → AI Engines",
     "byokNote": "BYOK keys & local endpoints for this engine live in Settings → AI Engines. Live end-to-end is pending real model calls (verify on-device).",
+    "byokNote_simple": "This AI needs its own key, or a model running on your computer. Add it in Settings → AI connection.",
     "command": "Command",
+    "command_simple": "Start-up command",
     "commandAuto": "Command (auto mode on)",
+    "commandAuto_simple": "Start-up command (it acts without asking)",
     "templates": "Templates",
     "templatesHint": {
       "repoJanitor": {
@@ -626,20 +655,29 @@
     "goal": "Goal (optional)",
     "goalPlaceholder": "long-running directive injected on every prompt",
     "agentTemplates": "Agent templates",
+    "agentTemplates_simple": "Saved setups",
     "agentTemplatesHint": "one-click spawn presets — click to fill the form",
+    "agentTemplatesHint_simple": "click one to fill in the form, or save this one for next time",
     "saveAsTemplate": "save as template",
+    "saveAsTemplate_simple": "save this setup",
     "saveAsTemplateTitle": "Save the current form as a reusable template",
+    "saveAsTemplateTitle_simple": "Keep what you filled in so you can use it again",
     "templateLabelPlaceholder": "template name…",
+    "templateLabelPlaceholder_simple": "name this setup…",
     "templateSaved": "saved ✓",
     "templateDeleteTitle": "Delete this template",
     "importHire": "Import hire",
     "importHireDesc": "Import hire loads a ready-made agent from a .json manifest — it fills in every field below for you to review. Nothing spawns until you hit spawn.",
+    "importHireDesc_simple": "You can also load a ready-made teammate from a file. It fills in the form for you to check. Nothing starts until you press Add teammate.",
     "generateWithAI": "generate one with AI…",
+    "generateWithAI_simple": "get help writing one…",
     "hideAIPrompt": "hide AI prompt",
+    "hideAIPrompt_simple": "hide the helper text",
     "aiPromptHint": "Copy this into Claude/ChatGPT/Gemini, fill in the details at the bottom, then save its JSON reply as a .json file and import it here.",
     "copied": "copied ✓",
     "copyPrompt": "copy prompt",
     "importHireBtn": "import hire…",
+    "importHireBtn_simple": "load from file…",
     "importHireBtnTitle": "Import a hire manifest (.json)",
     "spawn": "create",
     "spawn_simple": "Add teammate",
@@ -651,6 +689,7 @@
     "hireProgress": "hire {{current}} of {{total}}",
     "skipHire": "skip hire",
     "mcpExtras": "extra tools:",
+    "mcpExtras_simple": "Extra abilities:",
     "shardxNeedsInstall": "This agent needs the ShardX browser (marketplace profiles). Install and set it up automatically? We'll install and configure the browser tools for you — you only confirm this once.",
     "shardxSetupIncomplete": "ShardX setup did not finish — the agent spawned without browser tools. Retry from Settings → MCP.",
     "shardxProfilePh": "browser profile — blank = dedicated auto (office-<agent>)",
@@ -663,19 +702,23 @@
     "statusResumeMissing": "session not found — fresh start",
     "statusStarting": "starting up",
     "removeProjectTitle": "Remove {{name}} from this list. The folder itself is left alone.",
-    "removeProjectAria": "Remove {{name}} from the project list"
+    "removeProjectAria": "Remove {{name}} from the project list",
+    "projectHelp": "The folder your teammate can read and change files in. Pick the one you want help with.",
+    "gitIsolationHelp": "Your teammate edits a separate copy of the project, so your own files stay untouched until you decide to keep the changes.",
+    "mcpExtrasHelp": "Optional add-ons that let your teammate use your accounts, like Email & Calendar or GitHub. Everything stays off unless you tick it.",
+    "commandHelp": "Only change this if you know what you are doing. The default works for most people."
   },
   "onboarding": {
     "titles": {
       "persona": "WELCOME TO AGENT OFFICE",
       "welcome": "MEET YOUR OFFICE",
-      "home": "STEP 1 OF 4 · HARNESS HOME",
-      "homePlain": "STEP 1 OF 4 · A HOME FOR THE APP",
-      "orchestrator": "STEP 2 OF 4 · YOUR CLONE'S ENGINE",
-      "orchestratorPlain": "STEP 2 OF 4 · YOUR CLONE",
-      "repos": "STEP 3 OF 4 · YOUR REPOS",
-      "reposPlain": "STEP 3 OF 4 · YOUR PROJECTS",
-      "permissions": "STEP 4 OF 4 · PERMISSIONS & RELIABILITY",
+      "home": "HARNESS HOME",
+      "homePlain": "A HOME FOR THE APP",
+      "orchestrator": "YOUR CLONE'S ENGINE",
+      "orchestratorPlain": "YOUR CLONE",
+      "repos": "YOUR REPOS",
+      "reposPlain": "YOUR PROJECTS",
+      "permissions": "PERMISSIONS & RELIABILITY",
       "done": "ALL SET"
     },
     "persona": {
@@ -789,6 +832,7 @@
       "openAtLoginDesc": "Relaunch the harness after a reboot so scheduled missions resume on their own. No prompt — applies immediately.",
       "shareStats": "SHARE ANONYMOUS USAGE STATS",
       "shareStatsDesc": "A handful of anonymous events (app opened, agent spawned, feature used) that help improve Agent Office — never prompts, code, file paths, or agent output. Full list in TELEMETRY.md; change anytime in Settings.",
+      "shareStatsDesc_simple": "Sends a few anonymous counts to help improve the app: that it was opened, which AI engine started, whether something failed to start, how many messages were sent (never what they say), whether you use a few optional features, your app version and operating system, and roughly how long you used it. Never your messages, files, folder names, or anything your team writes. You can change this any time in Settings.",
       "stayAwake": "STAY AWAKE ON POWER (MANUAL)",
       "stayAwakeDescMac": "macOS only lets you set this one yourself. In Battery → Options, turn on \"Prevent automatic sleeping when the display is off\" (on power adapter) so timers keep firing with the display asleep. Without a sleep-preventing setting the Mac still truly sleeps — work survives and catches up on wake.",
       "stayAwakeDescWindows": "Windows only lets you set this one yourself. In Settings → System → Power & battery → Screen, blank & sleep, set \"On battery power, put my device to sleep\" and \"When plugged in\" to Never (or increase them) so timers keep firing. Without a sleep-preventing setting Windows still truly sleeps — work survives and catches up on wake.",
@@ -802,10 +846,11 @@
     "errCreateHome": "could not create harness home",
     "checking": "checking…",
     "checkAgain": "check again",
-    "installInstructions": "install instructions"
+    "installInstructions": "install instructions",
+    "stepOf": "STEP {{current}} OF {{total}}"
   },
   "quickStart": {
-    "title": "STEP 2 OF 4 · CONNECT YOUR AI",
+    "title": "CONNECT YOUR AI",
     "intro": "Your AI team needs an AI service to think with. Connecting one takes about a minute.",
     "whatIsKeyHead": "WHAT IS AN API KEY?",
     "whatIsKey": "An API key is like a password that lets this app use an AI service for you. You create it on the provider's website, copy it, and paste it below. It stays on this computer.",
@@ -911,7 +956,9 @@
       "waiting": "waiting",
       "needsYou": "needs you",
       "compacting": "compacting context",
+      "compacting_simple": "tidying up its notes",
       "looping": "looping — breaker armed",
+      "looping_simple": "seems stuck",
       "runningFloor": "running the floor",
       "idle": "idle"
     }
@@ -1495,16 +1542,23 @@
     "busyQueued": "{{name}} is busy — {{count}} queued",
     "busyQueued_simple": "{{name}} is busy — {{count}} waiting to send",
     "heldFloor": "held — delivery paused floor-wide",
+    "heldFloor_simple": "held — sending is paused",
     "heldDraft": "held — {{name}}'s terminal has unsent text on its prompt",
+    "heldDraft_simple": "held — there is unsent text in {{name}}'s live view",
     "heldPicker": "held — a slash-command picker is open in {{name}}'s terminal",
+    "heldPicker_simple": "held — a menu is open in {{name}}'s live view",
     "heldExited": "held — {{name}}'s terminal has exited",
+    "heldExited_simple": "held — {{name}} has stopped",
     "sendingOneByOne": "sending to {{name}} one-by-one…",
+    "sendingOneByOne_simple": "sending to {{name}}…",
     "pausedTitle": "Auto-delivery is paused for the whole floor. Resume it in the Command Center, or use \"send now\" on a message below.",
     "dropToAttach": "DROP TO ATTACH",
     "queue": "QUEUE",
     "queue_simple": "WAITING TO SEND",
     "closePicker": "close picker",
+    "closePicker_simple": "close the menu",
     "recoverPrompt": "recover prompt",
+    "recoverPrompt_simple": "move it here",
     "clearAllTitle": "Clear all queued messages",
     "clearAll": "clear all",
     "removeAttachment": "Remove attachment",
@@ -1534,7 +1588,9 @@
     "imagePasteFailed": "Could not read the pasted image: {{error}}",
     "clearAllConfirm": "Clear all {{n}} queued messages?",
     "closePickerTitle": "Close the picker this agent has open so queued messages can be delivered",
-    "recoverPromptTitle": "Move the leftover text on this agent's prompt into this box so queued messages can be delivered"
+    "closePickerTitle_simple": "Close the menu that is open so your waiting messages can be sent",
+    "recoverPromptTitle": "Move the leftover text on this agent's prompt into this box so queued messages can be delivered",
+    "recoverPromptTitle_simple": "Move the unsent text into this box so your waiting messages can be sent"
   },
   "idePanel": {
     "workspace": "{{name}}'s workspace",
@@ -1655,31 +1711,55 @@
   },
   "quit": {
     "title": "QUITTING NOW?",
+    "title_simple": "CLOSE THE APP?",
     "titleClosing": "CLOSING TIME",
+    "titleClosing_simple": "SAVING YOUR WORK",
     "agentsRunning": "{{count}} AGENT STILL RUNNING",
+    "agentsRunning_simple": "{{count}} TEAMMATE STILL WORKING",
     "agentsRunningPlural": "{{count}} AGENTS STILL RUNNING",
+    "agentsRunningPlural_simple": "{{count}} TEAMMATES STILL WORKING",
     "body": "Closing the app will terminate {{count}} running session and discard any unsaved progress it was holding in memory. The conversation history inside each session is lost when the terminal exits.",
+    "body_simple": "Closing the app now stops your teammate, and anything it has not saved yet is lost.",
     "bodyPlural": "Closing the app will terminate all {{count}} running sessions and discard any unsaved progress they were holding in memory. The conversation history inside each session is lost when the terminal exits.",
+    "bodyPlural_simple": "Closing the app now stops all {{count}} teammates, and anything they have not saved yet is lost.",
     "tip": "Tip: <strong>closing time</strong> is the safe way out — {{godName}} has every agent commit its work and save its memory, and the app closes itself once the whole floor has confirmed. No data loss.",
+    "tip_simple": "Tip: <strong>save & close</strong> is the safe way out — {{godName}} asks everyone to save their work first, and the app closes by itself when they are done. Nothing is lost.",
     "keepRunning": "keep them running",
+    "keepRunning_simple": "keep working",
     "closingTime": "closing time",
+    "closingTime_simple": "save & close",
     "killQuit": "kill {{what}} & quit",
+    "killQuit_simple": "stop {{what}} & close",
     "killIt": "it",
     "killAll": "all",
     "killing": "killing…",
+    "killing_simple": "stopping…",
     "forceQuit": "force quit now",
+    "forceQuit_simple": "close now anyway",
     "cancelBack": "cancel — back to work",
+    "cancelBack_simple": "no, keep working",
     "complete": "FLOOR SAVED — SEE YOU TOMORROW",
+    "complete_simple": "ALL SAVED — SEE YOU SOON",
     "timeout": "STILL WRAPPING UP…",
+    "timeout_simple": "STILL SAVING…",
     "wrapping": "WRAPPING UP THE FLOOR",
+    "wrapping_simple": "SAVING YOUR WORK",
     "completeBody": "Every agent saved its memory and {{godName}} confirmed the shutdown. The app closes itself in a moment.",
+    "completeBody_simple": "Everyone saved their work and {{godName}} confirmed it. The app closes by itself in a moment.",
     "wrappingBody": "{{godName}} broadcast closing time. Every worker parks its work, saves its memory, and reports back — the app closes only after {{godName}} confirms nothing will be lost.",
+    "wrappingBody_simple": "{{godName}} asked everyone to finish up and save. The app closes once {{godName}} confirms nothing will be lost.",
     "workersConfirmed": "{{acked}} / {{total}} WORKERS CONFIRMED",
+    "workersConfirmed_simple": "{{acked}} OF {{total}} TEAMMATES DONE",
     "workersConfirmedDone": "{{acked}} / {{total}} WORKERS CONFIRMED — WAITING FOR THE ORCHESTRATOR",
+    "workersConfirmedDone_simple": "{{acked}} OF {{total}} TEAMMATES DONE — WAITING FOR THE LEAD",
     "noWorkers": "NO WORKERS ON THE FLOOR — WAITING FOR THE ORCHESTRATOR",
+    "noWorkers_simple": "NO OTHER TEAMMATES — WAITING FOR THE LEAD",
     "timeoutNote": "This is taking a while (an agent may be mid-compaction or deep in a tool call). Keep waiting, or force quit and accept the data loss.",
+    "timeoutNote_simple": "This is taking a while — someone may be in the middle of a long task. Keep waiting, or close now and accept that unsaved work is lost.",
     "errorFallback": "Closing time could not start.",
-    "quitFailed": "Could not quit: {{error}}"
+    "errorFallback_simple": "Saving and closing could not start.",
+    "quitFailed": "Could not quit: {{error}}",
+    "quitFailed_simple": "Could not close the app: {{error}}"
   },
   "hivePicker": {
     "title": "SELECT A WORKSPACE",
@@ -1739,10 +1819,13 @@
   },
   "notice": {
     "queueDropped": "Message to {{agent}} could not be delivered and was dropped: \"{{text}}\"",
+    "queueDropped_simple": "Your message to {{agent}} could not be delivered, so it was not sent: \"{{text}}\". You can write it again.",
     "sendFailed": "Could not send: {{error}}",
     "hiveDegraded": {
       "proxyBind": "{{agent}} is running without hive events (its proxy bridge did not bind) — live status, cost and inbox wake are off. Respawn the agent to retry.",
-      "generic": "{{agent}} is running in a degraded mode without hive events. Respawn the agent to retry."
+      "proxyBind_simple": "{{agent}} is working, but you may not see its live progress. Close it and add it again to fix this.",
+      "generic": "{{agent}} is running in a degraded mode without hive events. Respawn the agent to retry.",
+      "generic_simple": "{{agent}} is working, but you may not see its live progress. Close it and add it again to fix this."
     }
   },
   "realtime": {
@@ -1794,21 +1877,27 @@
   },
   "restorePrompt": {
     "title": "Restore last session",
+    "title_simple": "Bring back your team?",
     "question": "Restore {{n}} agent(s) from your last session? ({{names}})",
+    "question_simple": "Bring back {{n}} teammate(s) from last time? ({{names}})",
     "restore": "restore",
+    "restore_simple": "bring back",
     "skip": "skip"
   },
   "agentStatus": {
     "usingTool": "using {{tool}}",
     "compacting": "compacting context",
+    "compacting_simple": "tidying up its notes",
     "resumed": "resumed",
     "thinking": "thinking",
     "idle": "idle",
     "readingInbox": "reading inbox",
+    "readingInbox_simple": "reading its messages",
     "runningFloor": "running the floor",
     "startingUp": "starting up",
     "revived": "revived after sleep",
     "breakerArmed": "breaker armed",
+    "breakerArmed_simple": "seems stuck — paused itself",
     "awaiting": "awaiting",
     "waitingOnYou": "waiting on you",
     "waitingOnGod": "waiting on {{godName}}",
@@ -1858,7 +1947,8 @@
     "hideTerminal": "Hide live terminal",
     "noteStarting": "{{name}} is getting ready… the chat will appear here in a moment. Meanwhile, this is what is happening behind the scenes.",
     "noteUnsupported": "With this AI, {{name}}'s replies appear in the live terminal below.",
-    "noteUnreadable": "We can't show this conversation as a chat right now, so here is the live terminal instead."
+    "noteUnreadable": "We can't show this conversation as a chat right now, so here is the live terminal instead.",
+    "cancelPending": "Don't send"
   },
   "simpleMode": {
     "needMore": "Need more? Show advanced options",
@@ -1899,7 +1989,8 @@
       "themeDesc": "Light or dark colors for the whole app.",
       "dark": "Dark",
       "light": "Light",
-      "hiddenNote": "Simple mode keeps this window short. Voice, integrations, memory, budgets and other technical settings stay hidden until you show advanced options."
+      "hiddenNote": "Simple mode keeps this window short. Voice, integrations, memory, budgets and other technical settings stay hidden until you show advanced options.",
+      "privacy": "Privacy"
     },
     "addAgent": {
       "goalLabel": "What should this teammate do?",
@@ -1908,7 +1999,7 @@
       "moreOptions": "More options",
       "lookHead": "Look",
       "workspaceHead": "Where it works",
-      "engineHead": "AI engine",
+      "engineHead": "Your AI",
       "roles": {
         "researcher": "Researcher",
         "writer": "Writer",
@@ -2016,5 +2107,121 @@
       "saved": "Saved. This applies the next time your assistant starts.",
       "saveFailed": "Couldn't save that choice. Please try again."
     }
+  },
+  "errors": {
+    "details": "Details",
+    "hideDetails": "Hide details",
+    "detailsLabel": "Technical details",
+    "action": {
+      "addKey": "Check my key",
+      "retry": "Try again",
+      "openSettings": "Open settings"
+    },
+    "key_rejected": {
+      "title": "Your AI key wasn't accepted",
+      "hint": "It may be mistyped, expired or switched off. Copy it again from your AI account and paste it in."
+    },
+    "no_key": {
+      "title": "Your assistant needs a key",
+      "hint": "Add your AI key and it will be ready."
+    },
+    "no_credit": {
+      "title": "Your AI account is out of credit",
+      "hint": "Add credit or check your plan on the AI service's website, then try again."
+    },
+    "rate_limit": {
+      "title": "The AI service is busy right now",
+      "hint": "You've reached its usage limit, or it is under heavy load. Wait a minute and try again."
+    },
+    "server": {
+      "title": "The AI service is having trouble",
+      "hint": "This is on their side, not yours. Try again in a few minutes."
+    },
+    "network": {
+      "title": "Can't reach the internet",
+      "hint": "Check your connection (and any VPN or firewall), then try again."
+    },
+    "timeout": {
+      "title": "That took too long",
+      "hint": "The connection may be slow. Try again in a moment."
+    },
+    "engine_missing": {
+      "title": "The assistant isn't installed yet",
+      "hint": "Try again to finish installing it. If it keeps failing, choose another AI in settings."
+    },
+    "engine_exit": {
+      "title": "The assistant stopped unexpectedly",
+      "hint": "Trying again often fixes this. If it keeps happening, check your key in settings."
+    },
+    "spawn_error": {
+      "title": "Couldn't start the assistant",
+      "hint": "Try again. If it keeps failing, open the details and share them with support."
+    },
+    "install_failed": {
+      "title": "The installation stopped",
+      "hint": "Nothing on your computer was harmed. Trying again usually fixes it."
+    },
+    "install_unavailable": {
+      "title": "It can't be installed automatically here",
+      "hint": "Choose another AI in settings, or install it yourself and restart the app."
+    },
+    "already_running": {
+      "title": "That teammate is already on your team",
+      "hint": "Pick a different name, or close the existing one first."
+    },
+    "folder_missing": {
+      "title": "That folder doesn't exist",
+      "hint": "It may have been moved or renamed. Pick the folder again."
+    },
+    "key_store": {
+      "title": "Your key couldn't be stored safely",
+      "hint": "Your computer's password storage did not accept it. Try again; if it keeps happening, restart the app."
+    },
+    "internal": {
+      "title": "Something went wrong inside the app",
+      "hint": "Your files are safe. Try again; if it keeps happening, restart the app and share the details with support."
+    },
+    "disk_full": {
+      "title": "Your computer is out of space",
+      "hint": "Free up some disk space, then try again."
+    },
+    "permission": {
+      "title": "The app isn't allowed to do that",
+      "hint": "It can't read or change that folder. Pick a different folder, or check the folder's permissions."
+    },
+    "not_found": {
+      "title": "Couldn't find that file or folder",
+      "hint": "It may have been moved or deleted. Pick it again."
+    },
+    "generic": {
+      "title": "Something went wrong",
+      "title_save": "Couldn't save your changes",
+      "title_send": "Couldn't send your message",
+      "title_spawn": "Couldn't add your teammate",
+      "title_key": "Couldn't save your key",
+      "title_load": "Couldn't open the app's settings",
+      "hint": "Please try again. If it keeps happening, open the details and share them with support.",
+      "title_stop": "Couldn't stop everything",
+      "title_start": "Couldn't start your assistant"
+    }
+  },
+  "stopAll": {
+    "button": "Stop everything",
+    "buttonTitle": "Stop everything your team is working on right now. Your files stay as they are.",
+    "confirmTitle": "Stop everything?",
+    "confirmBody": "This stops everything your team is working on right now. Your files stay as they are.",
+    "confirmYes": "Yes, stop everything",
+    "confirmNo": "No, keep going",
+    "stopping": "Stopping…",
+    "done": "Everything is stopping. Your team will pause at its next safe step. Nothing was deleted. Send a new message whenever you want to continue.",
+    "nothing": "Nothing is running right now, so there was nothing to stop."
+  },
+  "examples": {
+    "title": "Try one of these",
+    "hint": "Click one to put it in the message box. You can change it before you send it.",
+    "summarizeFolder": "Summarize what is in my project folder, in simple words.",
+    "writeEmail": "Help me write a short, polite email. Ask me what it is about first.",
+    "todoList": "Make a to-do list from my notes. I will paste them in my next message.",
+    "explainProject": "Explain what this project does, in simple words."
   }
 }

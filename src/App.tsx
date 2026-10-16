@@ -10,6 +10,9 @@ import { OfficeFloor } from '@/scene/office/OfficeFloor';
 import { useHive } from '@/hooks/useHive';
 import { useEngineSetupFeed } from '@/hooks/useEngineSetupFeed';
 import { FirstRunProgress } from '@/components/FirstRunProgress';
+import { StopEverything } from '@/components/StopEverything';
+import { ErrorNotice } from '@/components/FriendlyError';
+import { noticeFromEvent, type NoticeDetail } from '@shared/notice';
 import { useRestoreTeam, dismissRestorePrompt } from '@/hooks/useRestoreTeam';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { useGodNameSync } from '@/i18n/useGodNameSync';
@@ -104,14 +107,19 @@ export function App() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   // A dismissible banner for failures the user would otherwise never see
   // (a deep-link hire that could not be imported).
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNoticeState] = useState<NoticeDetail | null>(null);
+  /** A plain string is advanced wording as it always was; callers with a raw
+   *  error pass it along so simple mode can show a friendly version of it. */
+  const setNotice = useCallback((n: string | NoticeDetail | null): void => {
+    setNoticeState(typeof n === 'string' ? { text: n } : n);
+  }, []);
 
   // Failures that happen deep in the tree with no UI of their own (a queued
   // message that could not be delivered) surface through the banner below.
   useEffect(() => {
     const onNotice = (e: Event): void => {
-      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
-      if (text) setNotice(text);
+      const n = noticeFromEvent(e);
+      if (n) setNoticeState(n);
     };
     window.addEventListener('cth:notice', onNotice);
     return () => window.removeEventListener('cth:notice', onNotice);
@@ -213,9 +221,9 @@ export function App() {
       const res = await window.cth.newFloor();
       if (res && res.ok === false) setNotice(res.error ?? t('floor.disabled'));
     } catch (err) {
-      setNotice(t('floor.newFailed', { error: err instanceof Error ? err.message : String(err) }));
+      setNotice({ text: t('floor.newFailed', { error: err instanceof Error ? err.message : String(err) }), raw: err });
     }
-  }, [t]);
+  }, [setNotice, t]);
   // Ctrl+Shift+N. Capture phase: xterm would otherwise swallow it as a key for
   // the terminal's own process.
   useEffect(() => {
@@ -248,10 +256,10 @@ export function App() {
           enqueuePendingHires([res.manifest]);
           setAddAgentOpen(true);
         } else {
-          setNotice(t('app.hireFailed', { error: t('app.hireInvalid') }));
+          setNotice({ text: t('app.hireFailed', { error: t('app.hireInvalid') }), raw: t('app.hireInvalid'), context: 'spawn' });
         }
       }).catch((err: unknown) => {
-        if (alive) setNotice(t('app.hireFailed', { error: err instanceof Error ? err.message : String(err) }));
+        if (alive) setNotice({ text: t('app.hireFailed', { error: err instanceof Error ? err.message : String(err) }), raw: err, context: 'spawn' });
       });
     };
     // The backend parks every deep-link source on disk AND emits it; draining
@@ -269,7 +277,7 @@ export function App() {
     // deep links; packaged renderers load too fast for push-on-load).
     drain();
     return () => { alive = false; unsub?.(); };
-  }, [enqueuePendingHires, setAddAgentOpen, t]);
+  }, [enqueuePendingHires, setAddAgentOpen, setNotice, t]);
 
   // Closing-time progress: drives the quit dialog's "wrapping up" view. The
   // dialog stays up through the whole protocol; on 'complete' the main process
@@ -481,6 +489,10 @@ export function App() {
             {config.autoMode ? t('app.autoModeOn') : t('app.autoModeOff')}
           </span>
         )}
+        {/* Simple mode: one calm, always-visible way to stop all the work at once
+            (asks first; nothing is closed or deleted). It takes the auto margin
+            that pushes the right-hand cluster over. */}
+        {simple && <StopEverything style={{ marginInlineStart: 'auto' }} />}
         {/* v0.3.4: theme + fullscreen live HERE (top right), not buried in the
             terminal header — and the theme darkens the whole app, terminals
             included (design/theme.ts + tokens.css dark block). */}
@@ -504,7 +516,7 @@ export function App() {
           data-tip={appThemeNow === 'dark' ? t('app.lightTheme') : t('app.darkTheme')}
           aria-label={t('app.toggleDarkMode')}
           style={{
-            marginLeft: 'auto',
+            marginLeft: simple ? 0 : 'auto',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             width: 28, height: 28, padding: 0,
             background: 'var(--cth-paper-100)',
@@ -734,7 +746,8 @@ export function App() {
 
       {notice && (
         <div
-          role="alert"
+          // The friendly body is its own alert; don't announce it twice.
+          role={simple && notice.raw !== undefined ? undefined : 'alert'}
           style={{
             position: 'fixed', top: 44, left: '50%', transform: 'translateX(-50%)',
             zIndex: 900, maxWidth: '80vw',
@@ -745,7 +758,22 @@ export function App() {
             fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)'
           }}
         >
-          <span style={{ wordBreak: 'break-word' }}>{notice}</span>
+          {/* Simple mode: a friendly title + hint with the raw text behind "Details"
+              when there is an underlying error; else the plain-language variant of
+              the sentence. Advanced mode: the text, exactly as before. */}
+          {simple && notice.raw !== undefined ? (
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <ErrorNotice
+                error={notice.raw}
+                context={notice.context}
+                friendly
+                style={{ padding: 0, background: 'transparent', boxShadow: 'none' }}
+                testId="notice-friendly"
+              />
+            </div>
+          ) : (
+            <span style={{ wordBreak: 'break-word' }}>{simple ? (notice.simpleText ?? notice.text) : notice.text}</span>
+          )}
           <button
             onClick={() => setNotice(null)}
             aria-label={t('common.close')}
@@ -760,7 +788,7 @@ export function App() {
       {restorePrompt && restorableAgents.length > 0 && !quitWarn && (
         <div
           role="alertdialog"
-          aria-label={t('restorePrompt.title')}
+          aria-label={t('restorePrompt.title', simpleCtx)}
           style={{
             position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
             zIndex: 900, maxWidth: '90vw',
@@ -774,11 +802,12 @@ export function App() {
           <span style={{ wordBreak: 'break-word' }}>
             {t('restorePrompt.question', {
               n: restorableAgents.length,
-              names: restorableAgents.map((a) => a.name).join(', ')
+              names: restorableAgents.map((a) => a.name).join(', '),
+              ...simpleCtx
             })}
           </span>
           <PixelButton variant="primary" size="sm" onClick={() => { void restoreTeam(); }}>
-            {t('restorePrompt.restore')}
+            {t('restorePrompt.restore', simpleCtx)}
           </PixelButton>
           <PixelButton variant="secondary" size="sm" onClick={dismissRestorePrompt}>
             {t('restorePrompt.skip')}

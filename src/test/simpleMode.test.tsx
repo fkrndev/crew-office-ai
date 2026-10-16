@@ -247,11 +247,11 @@ describe('Add Agent', () => {
     expect(more.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(more);
     expect(more.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByText('Provider')).toBeTruthy();
-    expect(screen.getByText(/^Command/)).toBeTruthy();
+    expect(screen.getByText('Which AI')).toBeTruthy();
+    expect(screen.getByText(/^Start-up command/)).toBeTruthy();
     expect(screen.getByText(/own copy of the files/)).toBeTruthy();
     expect(screen.queryByText(/Resume session/i)).toBeNull();
-    expect(screen.getByText('Agent templates')).toBeTruthy();
+    expect(screen.getByText('Saved setups')).toBeTruthy();
     expect(screen.getByText('Recommended · low cost')).toBeTruthy();
     expect(screen.getByText('Higher cost')).toBeTruthy();
   });

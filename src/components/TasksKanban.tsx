@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDateTime } from '@shared/dateFormat';
 import { PixelPanel } from './PixelPanel';
@@ -9,6 +9,7 @@ import { useStore } from '@/store/store';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { useRtl } from '@/i18n/useDirection';
 import { useIsSimpleMode } from '@/hooks/useUiMode';
+import { ErrorNotice } from './FriendlyError';
 
 /** A card on the task kanban. Mirrors HiveTask in the main/preload process —
  *  re-declared locally so the renderer doesn't reach into the preload package
@@ -122,10 +123,12 @@ export function parseTasks(raw: unknown): HiveTask[] {
 export function TasksKanban() {
   const { t } = useTranslation();
   // Plain-language column / hint wording in simple mode (`key_simple` variants).
-  const sctx = useIsSimpleMode() ? { context: 'simple' } : undefined;
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
   const agents = useStore((s) => s.agents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
   const [dismissError, setDismissError] = useState<string | undefined>();
+  const [dismissRaw, setDismissRaw] = useState<unknown>(undefined);
   // Detail view: cards show just the title — clicking one opens the full
   // breakdown as an APP-WIDE overlay over the office floor (see
   // TaskDetailOverlay) — the content grows (contracts, deps, human Q&A), so it
@@ -148,10 +151,12 @@ export function TasksKanban() {
       const result = await window.cth.hiveDeleteTask(id);
       if (!result.ok) {
         setDismissError(t('kanban.dismissFailed'));
+        setDismissRaw(undefined);
         void refresh();
       }
     } catch (e) {
       setDismissError(e instanceof Error ? e.message : t('kanban.dismissFailed'));
+      setDismissRaw(e);
       void refresh();
     }
   }, [refresh, t]);
@@ -191,15 +196,39 @@ export function TasksKanban() {
       </div>
 
       {dismissError && (
-        <div style={{
-          padding: '6px 10px', background: 'var(--cth-coral-light)',
-          boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
-        }}>
-          {dismissError}
-        </div>
+        dismissRaw !== undefined
+          ? <ErrorNotice error={dismissRaw} legacy={dismissError} context="save" style={{ fontSize: 12 }} />
+          : (
+            <div style={{
+              padding: '6px 10px', background: 'var(--cth-coral-light)',
+              boxShadow: 'inset 0 0 0 1px var(--cth-coral)', fontSize: 12, color: 'var(--cth-ink-900)'
+            }}>
+              {dismissError}
+            </div>
+          )
       )}
 
-      {/* Columns */}
+      {/* Simple mode (narrow sidebar): ONE column of collapsible groups - to do,
+          in progress, waiting, done - instead of four side-by-side columns whose
+          last one (DONE) scrolled out of view. Advanced mode keeps the columns. */}
+      {simple ? (
+        <div data-testid="kanban-simple" style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', padding: 10,
+          display: 'flex', flexDirection: 'column', gap: 8
+        }}>
+          {COLUMNS.map((col) => (
+            <SimpleGroup
+              key={col.key}
+              col={col}
+              label={t(col.labelKey, sctx)}
+              cards={tasks.filter((c) => c.status === col.key)}
+              nameFor={nameFor}
+              onOpen={(id) => openTaskDetail(id)}
+              onDismiss={(id) => dismissTask(id)}
+            />
+          ))}
+        </div>
+      ) : (
       <div style={{
         flex: 1, minHeight: 0, display: 'flex', gap: 8, padding: 10, overflowX: 'auto'
       }}>
@@ -237,7 +266,63 @@ export function TasksKanban() {
           );
         })}
       </div>
+      )}
     </div>
+  );
+}
+
+/** One collapsible group of the simple-mode board. Open by default; a real
+ *  button with aria-expanded / aria-controls, so it works from the keyboard and
+ *  reads correctly with a screen reader. */
+function SimpleGroup({ col, label, cards, nameFor, onOpen, onDismiss }: {
+  col: { key: Status; labelKey: string; accent: string };
+  label: string;
+  cards: HiveTask[];
+  nameFor: (id?: string) => string | undefined;
+  onOpen: (id: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const bodyId = useId();
+  return (
+    <section data-testid={`kanban-group-${col.key}`} style={{
+      background: 'var(--cth-cream-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+    }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 8px 5px',
+          border: 'none', cursor: 'pointer', textAlign: 'start',
+          background: col.accent, boxShadow: 'inset 0 -1px 0 var(--cth-ink-900)',
+          fontFamily: 'var(--cth-font-display)', fontSize: 9, color: 'var(--cth-ink-900)'
+        }}
+      >
+        <span aria-hidden="true" style={{ display: 'inline-block', width: 10, fontFamily: 'var(--cth-font-ui)', fontSize: 11 }}>
+          {open ? '▾' : '▸'}
+        </span>
+        {label}
+        <span style={{ marginInlineStart: 'auto', fontSize: 12, fontFamily: 'var(--cth-font-ui)' }}>{cards.length}</span>
+      </button>
+      <div id={bodyId} hidden={!open} style={{ padding: 6, display: open ? 'flex' : 'none', flexDirection: 'column', gap: 6 }}>
+        {cards.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--cth-ink-500)', textAlign: 'center', padding: '4px 0' }}>—</div>
+        )}
+        {cards.map((c) => (
+          <TaskCard
+            key={c.id}
+            task={c}
+            accent={col.accent}
+            assigneeName={nameFor(c.assignee)}
+            showId={false}
+            onOpen={() => onOpen(c.id)}
+            onDismiss={() => onDismiss(c.id)}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -247,10 +332,13 @@ export function TasksKanban() {
 // lives in the detail view a click away: a kanban card can carry little more
 // than a title.
 
-function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
+function TaskCard({ task, accent, assigneeName, showId = true, onOpen, onDismiss }: {
   task: HiveTask;
   accent: string;
   assigneeName?: string;
+  /** The task id (bmt-12 / t-xxxx) is a handle for dispatches and Slack: advanced
+   *  mode shows it; simple mode leaves it out. */
+  showId?: boolean;
   onOpen: () => void;
   onDismiss: () => void;
 }) {
@@ -277,10 +365,10 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
               because it's an identifier you retype. Sits inside the text
               column, so the 18px right padding keeps it clear of the ✕ and
               the '?' badge. */}
-          <span style={{
+          {showId && <span style={{
             fontFamily: 'var(--cth-font-mono)', fontSize: 10,
             color: 'var(--cth-ink-500)'
-          }}>{task.id}</span>
+          }}>{task.id}</span>}
           <span style={{
             fontFamily: 'var(--cth-font-ui)', fontSize: 12, lineHeight: '16px',
             color: 'var(--cth-ink-900)',

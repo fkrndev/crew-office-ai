@@ -4,6 +4,8 @@ import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import { useEscape } from '@/hooks/useEscape';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
+import { ErrorNotice } from './FriendlyError';
 
 /** Renderer-side closing-time view state. Mirrors the main process's
  *  ClosingTimeEvent phases, plus a local 'error' for a failed start. */
@@ -33,19 +35,27 @@ const QUIT_SETTLE_MS = 6000;
 export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClosingTime }: QuitWarningModalProps) {
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const { t } = useTranslation();
+  // The raw error behind `localError` (simple mode shows a friendly version).
+  const [localRaw, setLocalRaw] = useState<unknown>(undefined);
+  const { t: t0 } = useTranslation();
+  // Simple mode words this dialog without "sessions", "closing time" or "kill".
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
+  const t = (key: string, opts?: Record<string, unknown>): string => t0(key, { ...opts, ...sctx });
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
 
   const confirm = async () => {
     setBusy(true);
     setLocalError(null);
+    setLocalRaw(undefined);
     try {
       await onConfirm();
       // The app is quitting; if it somehow is not, don't leave the dialog dead.
       settleTimer.current = setTimeout(() => setBusy(false), QUIT_SETTLE_MS);
     } catch (e) {
       setLocalError(t('quit.quitFailed', { error: e instanceof Error ? e.message : String(e) }));
+      setLocalRaw(e);
       setBusy(false);
     }
   };
@@ -54,6 +64,7 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
     if (!onClosingTime) return;
     setBusy(true);
     setLocalError(null);
+    setLocalRaw(undefined);
     try { await onClosingTime(); } finally { setBusy(false); }
   };
 
@@ -142,15 +153,19 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                 </div>
 
                 {localError && (
-                  <div role="alert" style={{
-                    padding: 8,
-                    background: 'var(--cth-coral-light)',
-                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
-                    fontSize: 12, lineHeight: '18px',
-                    color: 'var(--cth-ink-900)'
-                  }}>
-                    {localError}
-                  </div>
+                  localRaw !== undefined && simple
+                    ? <ErrorNotice error={localRaw} legacy={localError} context="stop" friendly />
+                    : (
+                      <div role="alert" style={{
+                        padding: 8,
+                        background: 'var(--cth-coral-light)',
+                        boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                        fontSize: 12, lineHeight: '18px',
+                        color: 'var(--cth-ink-900)'
+                      }}>
+                        {localError}
+                      </div>
+                    )
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -204,7 +219,7 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                   {/* <Trans>, not innerHTML: the god name is user-editable. Only the
                       <strong> in the translation becomes an element; markup in the
                       name is neither parsed into elements nor executed. */}
-                  <Trans i18nKey="quit.tip" components={{ strong: <strong /> }} />
+                  <Trans i18nKey="quit.tip" context={simple ? 'simple' : undefined} components={{ strong: <strong /> }} />
                 </div>
 
                 {(closing?.phase === 'error' || localError) && (

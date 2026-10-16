@@ -27,6 +27,8 @@ import { spawnWithShardxSetup } from '@/lib/spawnWithShardxSetup';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 import { isFloorWindow } from '@/floors';
+import { emitNotice } from '@shared/notice';
+import { simpleContextNow } from './useUiMode';
 
 const GOD_ID = 'god';
 /** Accent palette for MAIN-spawned (voice-hired) agents — picked deterministically
@@ -551,7 +553,7 @@ export function useHive(config: HarnessConfig | null): void {
       // pty-stream parser only refines the on-floor action/station).
       if (e.event === 'PreCompact') {
         // #5C — agent entered /compact; show it's boxing up context, not frozen.
-        if (!breakerArmed) updateAgent(e.agentId, { status: 'compacting', action: i18n.t('agentStatus.compacting'), carrying: undefined });
+        if (!breakerArmed) updateAgent(e.agentId, { status: 'compacting', action: i18n.t('agentStatus.compacting', simpleContextNow()), carrying: undefined });
       } else if (e.event === 'PostCompact') {
         if (!breakerArmed) updateAgent(e.agentId, { status: 'working', action: i18n.t('agentStatus.resumed'), carrying: undefined });
       } else if (e.event === 'PreToolUse' && e.tool) {
@@ -575,7 +577,7 @@ export function useHive(config: HarnessConfig | null): void {
         // A blocked Stop means the agent is being re-engaged to process its
         // inbox — it's NOT idle, so keep it working until it genuinely stops.
         if (e.blocked) {
-          if (!breakerArmed) updateAgent(e.agentId, { status: 'working', action: i18n.t('agentStatus.readingInbox'), carrying: undefined });
+          if (!breakerArmed) updateAgent(e.agentId, { status: 'working', action: i18n.t('agentStatus.readingInbox', simpleContextNow()), carrying: undefined });
         } else {
           // A genuine stop clears any breaker override — the run is over.
           breakerLevel.current[e.agentId] = 'healthy';
@@ -620,7 +622,7 @@ export function useHive(config: HarnessConfig | null): void {
       const { updateAgent, agents } = useStore.getState();
       if (!agents.some((a) => a.id === s.agentId)) return;
       if (s.level === 'constrained' || s.level === 'stopped') {
-        updateAgent(s.agentId, { status: 'looping', action: s.reason || i18n.t('agentStatus.breakerArmed'), carrying: undefined });
+        updateAgent(s.agentId, { status: 'looping', action: s.reason || i18n.t('agentStatus.breakerArmed', simpleContextNow()), carrying: undefined });
       }
       // 'healthy'/'steering' clear the pin; the next hook event refreshes status.
     });
@@ -951,14 +953,14 @@ export function useHive(config: HarnessConfig | null): void {
             `("${next.text.slice(0, 80)}${next.text.length > 80 ? '…' : ''}")`
           );
           // Not just the console: the user typed this and it is now gone.
-          window.dispatchEvent(new CustomEvent('cth:notice', {
-            detail: {
-              text: i18n.t('notice.queueDropped', {
-                agent: target.name,
-                text: `${next.text.slice(0, 60)}${next.text.length > 60 ? '…' : ''}`
-              })
-            }
-          }));
+          const droppedArgs = {
+            agent: target.name,
+            text: `${next.text.slice(0, 60)}${next.text.length > 60 ? '…' : ''}`
+          };
+          emitNotice({
+            text: i18n.t('notice.queueDropped', droppedArgs),
+            simpleText: i18n.t('notice.queueDropped', { ...droppedArgs, context: 'simple' })
+          });
         }
         return { sent: false };
       } finally {
@@ -1085,9 +1087,11 @@ export function useHive(config: HarnessConfig | null): void {
     // `proxy-degraded` to the hive log; this is the part the user can see.
     const offDegraded = window.cth.onHiveDegraded?.((e) => {
       const reason = e?.reason === 'proxy-bind' ? 'proxyBind' : 'generic';
-      window.dispatchEvent(new CustomEvent('cth:notice', {
-        detail: { text: i18n.t(`notice.hiveDegraded.${reason}`, { agent: e?.name || e?.agentId || '?' }) }
-      }));
+      const degradedArgs = { agent: e?.name || e?.agentId || '?' };
+      emitNotice({
+        text: i18n.t(`notice.hiveDegraded.${reason}`, degradedArgs),
+        simpleText: i18n.t(`notice.hiveDegraded.${reason}`, { ...degradedArgs, context: 'simple' })
+      });
     });
     return () => { offSpawn?.(); offArchive?.(); offDegraded?.(); };
   }, [config?.onboardingComplete]);

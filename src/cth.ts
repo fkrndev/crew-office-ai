@@ -442,6 +442,10 @@ export function installCth(): void {
     controlGateTool: (...args: unknown[]) => invoke('control_gate_tool', pack(args, ["agentId","tool","on"])),
     controlSteer: (...args: unknown[]) => invoke('control_steer', pack(args, ["agentId","text"])),
     controlHalt: (...args: unknown[]) => invoke('control_halt', pack(args, ["agentId"])),
+    // Simple-mode "Stop everything": halt every live agent (orchestrator + workers),
+    // hold queued messages; nothing is killed. `controlResumeStopped` lifts just that.
+    controlStopAll: (...args: unknown[]) => invoke('control_stop_all', pack(args, [])),
+    controlResumeStopped: (...args: unknown[]) => invoke('control_resume_stopped', pack(args, [])),
     controlSnapshot: (...args: unknown[]) => invoke('control_snapshot', pack(args, ["agentId"])),
     hiveAddTask: (...args: unknown[]) => invoke('hive_add_task', pack(args, ["fields"])),
     // Rust resolves the patched card / the remaining cards and rejects on

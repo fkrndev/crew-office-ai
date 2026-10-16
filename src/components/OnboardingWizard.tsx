@@ -16,6 +16,8 @@ import type { ToolStatus } from '@shared/toolCatalog';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { examplePath } from '@shared/platformLabels';
 import { QuickStart, type QuickStartCheckStatus } from './QuickStart';
+import { ErrorNotice } from './FriendlyError';
+import type { FriendlyContext } from '@shared/friendlyError';
 import {
   DEFAULT_QUICK_START_PROVIDER, checkQuickStartKey, quickStartProvider,
   hermesChoiceFor, saveQuickStart, validateQuickStartKey,
@@ -30,7 +32,7 @@ type Audience = 'technical' | 'non-technical';
 // 'connect' is the quick-start replacement for 'orchestrator' (see QuickStart.tsx):
 // non-technical users (or anyone who picks quick start) get ONE "Connect your AI"
 // step instead of the engine / model / orchestrator picker.
-type Step = 'persona' | 'welcome' | 'home' | 'connect' | 'orchestrator' | 'repos' | 'permissions' | 'done';
+export type Step = 'persona' | 'welcome' | 'home' | 'connect' | 'orchestrator' | 'repos' | 'permissions' | 'done';
 
 // First-run showcase "— the highest-value features a brand-new user should grasp
 // before any setup. Labels and copy live in i18n (two registers: `desc` for the
@@ -157,7 +159,18 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const qsSourceNow: HermesSource = qsSource ?? hermesChoice.defaultSource;
   /** "Use my existing Hermes setup": nothing to paste, nothing stored. */
   const qsOwn = quick && hermesChoice.show && qsSourceNow === 'own';
-  const [error, setError] = useState<string | undefined>();
+  const [error, setErrorText] = useState<string | undefined>();
+  // The raw error behind `error`, when there is one: a person who chose the
+  // non-technical path sees a friendly title + hint with the raw text behind
+  // "Details"; everyone else sees `error` exactly as before.
+  const [errorRaw, setErrorRaw] = useState<{ raw: unknown; context: FriendlyContext } | undefined>();
+  /** A message of our own (already plain) - clears any raw error behind it. */
+  const setError = (m?: string): void => { setErrorText(m); setErrorRaw(undefined); };
+  /** A failure with an underlying error: `legacy` is the technical wording. */
+  const fail = (legacy: string, raw: unknown, context: FriendlyContext): void => {
+    setErrorText(legacy);
+    setErrorRaw({ raw, context });
+  };
   const [busy, setBusy] = useState(false);
 
   // Which engine CLIs are actually on this machine. The picker used to record the
@@ -252,14 +265,14 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     setError(undefined);
     const res = await window.cth.chooseFolder();
     if (res.ok) setHome(res.path);
-    else if (res.error !== 'cancelled') setError(res.error);
+    else if (res.error !== 'cancelled') fail(res.error ?? '', res.error ?? '', 'save');
   };
 
   const pickRepo = async () => {
     setError(undefined);
     const res = await window.cth.chooseFolder();
     if (res.ok && !repos.includes(res.path)) setRepos([...repos, res.path]);
-    else if (!res.ok && res.error !== 'cancelled') setError(res.error);
+    else if (!res.ok && res.error !== 'cancelled') fail(res.error ?? '', res.error ?? '', 'save');
   };
 
   const removeRepo = (path: string) => setRepos(repos.filter(r => r !== path));
@@ -295,7 +308,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       if (!harnessHome) { setError(t('onboarding.errPickHome')); setStep('home'); return; }
       const ensure = await window.cth.ensureHarnessHome(harnessHome);
       if (!ensure.ok) {
-        setError(ensure.error ?? t('onboarding.errCreateHome'));
+        fail(ensure.error ?? t('onboarding.errCreateHome'), ensure.error ?? t('onboarding.errCreateHome'), 'save');
         return;
       }
       // The engine half of the patch. ALWAYS explicit: the runtime fallback for a
@@ -313,11 +326,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
           existing as Parameters<typeof saveQuickStart>[2]
         );
         if (!saved.ok) {
-          setError(t('quickStart.saveFailed', {
-            error: saved.error === 'short' ? t('quickStart.errShort')
-              : saved.error === 'whitespace' ? t('quickStart.errWhitespace')
-              : saved.error
-          }));
+          const ours = saved.error === 'short' ? t('quickStart.errShort')
+            : saved.error === 'whitespace' ? t('quickStart.errWhitespace')
+            : undefined;
+          if (ours) setError(t('quickStart.saveFailed', { error: ours }));
+          else fail(t('quickStart.saveFailed', { error: saved.error }), saved.error, 'key');
           setStep('connect');
           return;
         }
@@ -338,7 +351,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     } catch (e) {
       // A rejected invoke used to leave busy stuck true — the button sat on
       // "saving…" forever with no hint why. Surface the error instead.
-      setError(e instanceof Error ? e.message : String(e));
+      fail(e instanceof Error ? e.message : String(e), e, 'save');
     } finally {
       setBusy(false);
     }
@@ -366,7 +379,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       <div style={{ width: 640, maxWidth: '94vw', margin: 'auto' }}>
         <PixelPanel
           variant="dialog"
-          title={
+          title={stepCounter(step, quick, t) + (
             step === 'persona' ? t('onboarding.titles.persona')
             : step === 'welcome' ? t('onboarding.titles.welcome')
             : step === 'home' ? (plain ? t('onboarding.titles.homePlain') : t('onboarding.titles.home'))
@@ -375,7 +388,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
             : step === 'repos' ? (plain ? t('onboarding.titles.reposPlain') : t('onboarding.titles.repos'))
             : step === 'permissions' ? t('onboarding.titles.permissions')
             : t('onboarding.titles.done')
-          }
+          )}
           noPadding
         >
           <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '86vh', overflowY: 'auto' }}>
@@ -876,7 +889,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                 <ToggleRow
                   icon="info"
                   label={t('onboarding.permissions.shareStats')}
-                  desc={t('onboarding.permissions.shareStatsDesc')}
+                  desc={t('onboarding.permissions.shareStatsDesc', plain ? { context: 'simple' } : undefined)}
                   on={shareStats}
                   tint="var(--cth-lemon-light)"
                   edge="var(--cth-lemon)"
@@ -918,8 +931,10 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
               </>
             )}
 
-            {error && (
-              <div style={{
+            {error && (errorRaw ? (
+              <ErrorNotice error={errorRaw.raw} legacy={error} context={errorRaw.context} friendly={plain} />
+            ) : (
+              <div role="alert" style={{
                 padding: '6px 10px',
                 background: 'var(--cth-coral-light)',
                 boxShadow: 'inset 0 0 0 1px var(--cth-coral)',
@@ -927,7 +942,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                 color: 'var(--cth-ink-900)',
                 overflowWrap: 'anywhere'
               }}>{error}</div>
-            )}
+            ))}
 
             {/* Footer / nav */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
@@ -976,6 +991,12 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       </div>
     </div>
   );
+}
+
+/** "STEP 2 OF 6 · " - from the same list as the dots, so the two can never disagree. */
+function stepCounter(step: Step, quick: boolean, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const pos = stepPosition(step, quick);
+  return pos ? `${t('onboarding.stepOf', { current: pos.current, total: pos.total })} · ` : '';
 }
 
 function PersonaCard({ icon, title, desc, selected, onClick }: {
@@ -1052,10 +1073,32 @@ function ToggleRow({ icon, label, desc, on, tint, edge, onChange }: {
   );
 }
 
+/** The wizard's steps, in order. THE single source for the progress dots, the
+ *  "STEP n OF m" counter in the header and Back/Next - the engine step is the
+ *  quick-start "connect your AI" step on the quick path. `done` is the end, not a
+ *  step. */
+export function wizardSteps(quick: boolean): Step[] {
+  return ['persona', 'welcome', 'home', quick ? 'connect' : 'orchestrator', 'repos', 'permissions'];
+}
+
+/** 1-based position + length, e.g. `{ current: 2, total: 6 }`. Steps outside the list
+ *  (`done`) report null. Exported for tests. */
+export function stepPosition(step: Step, quick: boolean): { current: number; total: number } | null {
+  const order = wizardSteps(quick);
+  const i = order.indexOf(step);
+  return i < 0 ? null : { current: i + 1, total: order.length };
+}
+
 function Dots({ step, quick }: { step: Step; quick: boolean }) {
-  const order: Step[] = ['persona', 'welcome', 'home', quick ? 'connect' : 'orchestrator', 'repos', 'permissions'];
+  const order = wizardSteps(quick);
+  const pos = stepPosition(step, quick);
   return (
-    <div style={{ display: 'flex', gap: 4 }}>
+    <div
+      role="img"
+      data-testid="wizard-dots"
+      aria-label={pos ? `${pos.current}/${pos.total}` : undefined}
+      style={{ display: 'flex', gap: 4 }}
+    >
       {order.map((s) => (
         <span key={s} style={{
           width: 8, height: 8,
@@ -1068,21 +1111,16 @@ function Dots({ step, quick }: { step: Step; quick: boolean }) {
 }
 
 // `quick` swaps the engine step for the one-step "Connect your AI" (see QuickStart).
+function slot(s: Step, quick: boolean): number {
+  const order = wizardSteps(quick);
+  // Either engine step occupies the same slot, whichever path is active.
+  return order.indexOf(s === 'connect' || s === 'orchestrator' ? (quick ? 'connect' : 'orchestrator') : s);
+}
 function nextStep(s: Step, quick: boolean): Step {
-  return s === 'persona' ? 'welcome'
-    : s === 'welcome' ? 'home'
-    : s === 'home' ? (quick ? 'connect' : 'orchestrator')
-    : s === 'connect' || s === 'orchestrator' ? 'repos'
-    : s === 'repos' ? 'permissions'
-    : 'done';
+  return wizardSteps(quick)[slot(s, quick) + 1] ?? 'done';
 }
 function prevStep(s: Step, quick: boolean): Step {
-  return s === 'permissions' ? 'repos'
-    : s === 'repos' ? (quick ? 'connect' : 'orchestrator')
-    : s === 'connect' || s === 'orchestrator' ? 'home'
-    : s === 'home' ? 'welcome'
-    : s === 'welcome' ? 'persona'
-    : 'persona';
+  return wizardSteps(quick)[slot(s, quick) - 1] ?? 'persona';
 }
 
 const inputStyle: React.CSSProperties = {

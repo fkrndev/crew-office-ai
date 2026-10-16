@@ -24,6 +24,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { useIsSimpleMode } from '@/hooks/useUiMode';
 import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
@@ -31,6 +32,9 @@ const GITHUB_REPO_URL = 'https://github.com/fkrndev/crew-office-ai';
 
 export function SettingsHeroCard() {
   const { t } = useTranslation();
+  // Simple mode: plain wording - no plan badge, no marketing line, "version" in full.
+  const simple = useIsSimpleMode();
+  const sctx = simple ? { context: 'simple' } : undefined;
   const [version, setVersion] = useState<string | null>(null);
   // Starts on the compiled-in defaults, so there is no empty frame or spinner
   // while the fetch is in flight — it just fills in if anything changed.
@@ -91,29 +95,33 @@ export function SettingsHeroCard() {
             }}>AGENT OFFICE</span>
             {version && (
               <span style={{
-                fontFamily: MONO, fontSize: 15, fontWeight: 700, color: INK
-              }}>v{version}</span>
+                fontFamily: simple ? 'var(--cth-font-ui)' : MONO, fontSize: simple ? 14 : 15, fontWeight: 700, color: INK
+              }}>{simple ? t('settingsHero.version', { v: version, ...sctx }) : `v${version}`}</span>
             )}
-            <span style={{
-              fontFamily: MONO, fontSize: 9, letterSpacing: '.12em', textTransform: 'uppercase',
-              padding: '2px 7px', background: 'var(--cth-mint-light)',
-              boxShadow: 'inset 0 0 0 1px var(--cth-mint)', color: INK
-            }}>{PLAN.label}</span>
+            {!simple && (
+              <span style={{
+                fontFamily: MONO, fontSize: 9, letterSpacing: '.12em', textTransform: 'uppercase',
+                padding: '2px 7px', background: 'var(--cth-mint-light)',
+                boxShadow: 'inset 0 0 0 1px var(--cth-mint)', color: INK
+              }}>{PLAN.label}</span>
+            )}
             {pending && (
               <>
                 <span style={{ flex: 1 }} />
-                <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--cth-ink-700)' }}>
-                  v{pending} is out
+                <span style={{ fontFamily: simple ? 'var(--cth-font-ui)' : MONO, fontSize: simple ? 12 : 11, color: 'var(--cth-ink-700)' }}>
+                  {simple ? t('settingsHero.updateAvailable', { v: pending, ...sctx }) : `v${pending} is out`}
                 </span>
                 <PixelButton variant="primary" size="sm" onClick={downloadManually}
-                  title="Download the installer and replace the app yourself. Auto-update is in Updates below.">
-                  download v{pending}
+                  title={simple
+                    ? t('settingsHero.downloadTitle', sctx)
+                    : 'Download the installer and replace the app yourself. Auto-update is in Updates below.'}>
+                  {simple ? t('settingsHero.download', sctx) : `download v${pending}`}
                 </PixelButton>
               </>
             )}
           </div>
           <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: 'var(--cth-ink-700)', maxWidth: '64ch' }}>
-            {PLAN.blurb}
+            {simple ? t('settingsHero.blurb', sctx) : PLAN.blurb}
           </div>
         </div>
 
@@ -151,7 +159,7 @@ export function SettingsHeroCard() {
           paddingTop: 12, borderTop: `2px solid ${INK}`
         }}>
           <PixelButton variant="secondary" size="sm" onClick={showReleaseNotes}>
-            <span title={t('settingsHero.whatsNewTitle')}
+            <span title={t('settingsHero.whatsNewTitle', sctx)}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <Icon name="sparkle" /> {t('settingsHero.whatsNew')}
             </span>
@@ -171,7 +179,7 @@ export function SettingsHeroCard() {
             href={`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`}
             onClick={(e) => { e.preventDefault(); void window.cth.openExternal(`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`); }}
             style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}
-          >{t('settingsHero.fullChangelog')}</a>
+          >{t('settingsHero.fullChangelog', sctx)}</a>
         </div>
       </div>
     </div>

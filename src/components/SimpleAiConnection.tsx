@@ -14,6 +14,7 @@ import {
 } from '@shared/quickStart';
 import { HermesSourceChoice } from './HermesSourceChoice';
 import { PixelButton } from './PixelButton';
+import { ErrorNotice } from './FriendlyError';
 import { ProviderLogo } from './ProviderLogo';
 import {
   BACKENDS,
@@ -242,11 +243,13 @@ export function SimpleAiConnection({ config, engine, engineChanged, onPickEngine
             <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
               {t('simpleMode.aiConnection.serverAddressHint')}
             </span>
-            {endpoints.cliNote.hermes && (
+            {endpoints.cliNote.hermes && (endpoints.cliNote.hermes.ok || endpoints.cliNote.hermes.raw === undefined ? (
               <span style={{ fontSize: 11, color: endpoints.cliNote.hermes.ok ? 'var(--cth-mint)' : 'var(--cth-coral)' }}>
                 {endpoints.cliNote.hermes.msg}
               </span>
-            )}
+            ) : (
+              <ErrorNotice error={endpoints.cliNote.hermes.raw} legacy={endpoints.cliNote.hermes.msg} context="save" friendly layout="inline" />
+            ))}
           </label>
         )}
         <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>

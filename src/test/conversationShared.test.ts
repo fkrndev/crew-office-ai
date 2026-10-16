@@ -93,8 +93,8 @@ describe('pending + echo bubbles', () => {
     const queue = [q('a', 'first'), q('n', inboxNudgeText(['m'])), q('b', 'second'), q('e', '   ')];
     expect(humanQueued(queue).map((x) => x.id)).toEqual(['a', 'b']);
     expect(pendingBubbles(queue, [])).toEqual([
-      { id: 'queued-a', text: 'first', state: 'waiting' },
-      { id: 'queued-b', text: 'second', state: 'waiting' }
+      { id: 'queued-a', text: 'first', state: 'waiting', queueId: 'a' },
+      { id: 'queued-b', text: 'second', state: 'waiting', queueId: 'b' }
     ]);
   });
 

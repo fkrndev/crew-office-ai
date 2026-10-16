@@ -149,11 +149,15 @@
     "addAgent": "tambah agen",
     "addAgent_simple": "tambah rekan tim",
     "restoringTitle": "Agen dari sesi sebelumnya sedang di-respawn dengan id aslinya, jadi memori dan inbox tersambung kembali.",
+    "restoringTitle_simple": "Tim Anda yang terakhir sedang dipulihkan, lengkap dengan catatan dan pesannya.",
     "restoreTitle": "Sesi sebelumnya: {{names}}",
+    "restoreTitle_simple": "Dari terakhir kali: {{names}}",
     "restoringTeam": "memulihkan timmu…",
     "restoreTeam": "pulihkan tim ({{count}}) ▴",
     "previousSession": "sesi sebelumnya",
+    "previousSession_simple": "dari terakhir kali",
     "restorable": "{{name}} — bisa dipulihkan dari sesi terakhir",
+    "restorable_simple": "{{name}} — dapat dipulihkan dari terakhir kali",
     "dismiss": "Singkirkan {{name}} — hapus permanen dari daftar pulih",
     "dismissAria": "Singkirkan {{name}}",
     "restoreAll": "pulihkan semua ({{count}})"
@@ -183,7 +187,9 @@
     "fullscreenDesc": "Terminal ini terbuka di mode fokus. Tekan Esc atau keluar dari mode fokus untuk mengembalikannya ke sini.",
     "noPty": "Tidak ada terminal",
     "noPtyDesc": "Agen ini tidak punya terminal aktif. Spawn agen lewat \"tambah agen\" untuk memakai tab terminal.",
+    "noPtyDesc_simple": "Rekan tim ini sedang tidak berjalan. Tambahkan rekan tim dari bilah di bawah untuk mulai berbicara.",
     "killConfirm": "Tutup {{name}}? Proses agent akan berhenti dan agent diarsipkan (disimpan di riwayat, keluar dari floor).",
+    "killConfirm_simple": "Keluarkan {{name}} dari tim Anda? Pekerjaannya dihentikan. Riwayatnya tetap disimpan.",
     "ideTip": "Buka IDE: jelajahi dan edit file di {{project}}, dan lihat perubahan yang belum di-commit sebagai diff.",
     "terminalTip": "Buka aplikasi terminal sistem di {{cwd}} — shell biasa di folder agen ini, terpisah dari terminal milik agen.",
     "openIde": "Buka IDE",
@@ -199,8 +205,15 @@
     "visit": "kunjungi",
     "whatsNew": "apa yang baru",
     "whatsNewTitle": "Tampilkan catatan rilis untuk pembaruan yang terakhir diberitahukan kepadamu",
+    "whatsNewTitle_simple": "Lihat apa yang berubah di pembaruan terbaru",
     "reportProblem": "laporkan masalah",
-    "fullChangelog": "changelog lengkap →"
+    "fullChangelog": "changelog lengkap →",
+    "fullChangelog_simple": "lihat semua perubahan →",
+    "version": "Versi {{v}}",
+    "updateAvailable": "Versi yang lebih baru ({{v}}) tersedia",
+    "download": "Unduh versi baru",
+    "downloadTitle": "Unduh versi baru lalu pasang sendiri di atas versi ini. Tab Pembaruan bisa melakukannya untuk Anda.",
+    "blurb": "Tim AI Anda berjalan di komputer ini dan bekerja di folder Anda sendiri. Tim memakai akun AI Anda sendiri."
   },
   "officeTheme": {
     "title": "Tema Kantor",
@@ -285,7 +298,9 @@
       "autoUpdate": "Pembaruan otomatis",
       "autoUpdateDesc": "Memeriksa rilis GitHub dan mengunduh pembaruan di latar belakang; kamu yang memilih kapan restart. Tidak pernah restart sendiri.",
       "telemetry": "Statistik penggunaan anonim",
+      "telemetry_simple": "Bagikan hitungan penggunaan anonim",
       "telemetryDesc": "Segelintir event anonim (aplikasi dibuka, agen di-spawn, fitur dipakai) — tidak pernah prompt, kode, path, atau output agen. Daftar lengkap di TELEMETRY.md.",
+      "telemetryDesc_simple": "Mengirim beberapa hitungan anonim untuk membantu memperbaiki aplikasi: bahwa aplikasi dibuka, mesin AI mana yang dimulai, apakah ada yang gagal dimulai, berapa banyak pesan terkirim (tidak pernah isinya), apakah Anda memakai beberapa fitur opsional, versi aplikasi dan sistem operasi Anda, serta perkiraan lama pemakaian. Tidak terhubung ke nama atau akun Anda. Tidak pernah mengirim pesan, file, nama folder, atau apa pun yang ditulis tim Anda. Matikan, maka tidak ada yang dikirim.",
       "language": "Bahasa",
       "languageDesc": "Pilih bahasa untuk antarmuka aplikasi. Bahasa Indonesia adalah default; Inggris adalah fallback untuk string yang hilang.",
       "languageDesc_simple": "Pilih bahasa yang ingin Anda gunakan untuk membaca aplikasi.",
@@ -572,16 +587,25 @@
     "name": "Nama",
     "namePlaceholder": "Ada",
     "character": "Karakter",
+    "character_simple": "Wajah",
     "color": "Warna",
     "project": "Proyek",
+    "project_simple": "Folder tempat bekerja",
     "pickProject": "Pilih proyek, atau tambah yang baru:",
+    "pickProject_simple": "Pilih folder, atau tambahkan yang baru:",
     "noProjects": "Belum ada proyek — tambahkan satu untuk mulai:",
+    "noProjects_simple": "Belum ada folder — tambahkan satu untuk memulai:",
     "addProject": "tambah proyek",
+    "addProject_simple": "tambah folder",
     "addProjectTitle": "Pilih folder dan daftarkan sebagai proyek",
+    "addProjectTitle_simple": "Pilih folder di komputer Anda untuk bekerja",
     "projectPlaceholder": "/path/to/your/project",
     "pick": "pilih",
+    "pick_simple": "telusuri",
     "saveAsProject": "simpan sebagai proyek",
+    "saveAsProject_simple": "ingat folder ini",
     "saveAsProjectTitle": "Simpan folder ini ke proyekmu agar nanti tinggal sekali klik",
+    "saveAsProjectTitle_simple": "Simpan folder ini di daftar Anda agar cukup satu klik lain kali",
     "gitIsolation": "Isolasi git (worktree sendiri)",
     "gitIsolation_simple": "Bekerja pada salinan file sendiri (lebih aman)",
     "resumeSession": "Lanjutkan session ID (opsional)",
@@ -589,10 +613,12 @@
     "folderFromSession": "folder diambil dari sesi: {{path}}",
     "resumeNote": "Akan melanjutkan sesi ini di folder yang dipilih (isolasi git nonaktif).",
     "provider": "Provider",
+    "provider_simple": "AI yang dipakai",
     "providerAntigravity": "Spawn CLI Antigravity (agy) dengan model Gemini",
     "providerCodex": "Spawn CLI Codex (codex) tanpa flag khusus Claude",
     "providerCustom": "Jalankan command apa pun — tanpa flag khusus Claude",
     "model": "Model",
+    "model_simple": "Model AI",
     "cliDefaultModel": "Model default CLI",
     "fromHire": "{{model}} (dari rekrutan)",
     "ossModels": "Model OSS",
@@ -601,8 +627,11 @@
     "ossLocalTitle": "{{slug}} · butuh ~{{ram}} RAM — pull dengan: ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · atur {{keyEnv}} di Pengaturan → AI Engines",
     "byokNote": "Kunci BYOK & endpoint lokal untuk engine ini ada di Pengaturan → AI Engines. Live end-to-end masih menunggu pemanggilan model sungguhan (verifikasi di perangkat).",
+    "byokNote_simple": "AI ini memerlukan kuncinya sendiri, atau model yang berjalan di komputer Anda. Tambahkan di Pengaturan → Koneksi AI.",
     "command": "Command",
+    "command_simple": "Perintah awal",
     "commandAuto": "Command (mode auto aktif)",
+    "commandAuto_simple": "Perintah awal (bertindak tanpa bertanya)",
     "templates": "Template",
     "templatesHint": {
       "repoJanitor": {
@@ -626,20 +655,29 @@
     "goal": "Tujuan (opsional)",
     "goalPlaceholder": "direktif jangka panjang yang disuntikkan di setiap prompt",
     "agentTemplates": "Template agen",
+    "agentTemplates_simple": "Pengaturan tersimpan",
     "agentTemplatesHint": "preset spawn sekali klik — klik untuk mengisi form",
+    "agentTemplatesHint_simple": "klik untuk mengisi formulir, atau simpan pengaturan ini untuk lain kali",
     "saveAsTemplate": "simpan sebagai template",
+    "saveAsTemplate_simple": "simpan pengaturan ini",
     "saveAsTemplateTitle": "Simpan form saat ini sebagai template yang bisa dipakai ulang",
+    "saveAsTemplateTitle_simple": "Simpan isi formulir ini agar bisa dipakai lagi",
     "templateLabelPlaceholder": "nama template…",
+    "templateLabelPlaceholder_simple": "beri nama pengaturan ini…",
     "templateSaved": "tersimpan ✓",
     "templateDeleteTitle": "Hapus template ini",
     "importHire": "Impor rekrutan",
     "importHireDesc": "Impor rekrutan memuat agen siap pakai dari manifest .json — ia mengisi setiap kolom di bawah untuk kamu tinjau. Tidak ada yang di-spawn sampai kamu menekan spawn.",
+    "importHireDesc_simple": "Anda juga dapat memuat rekan tim siap pakai dari file. Formulir terisi untuk Anda periksa. Tidak ada yang berjalan sampai Anda menekan Tambah rekan tim.",
     "generateWithAI": "buat satu dengan AI…",
+    "generateWithAI_simple": "minta bantuan membuatnya…",
     "hideAIPrompt": "sembunyikan prompt AI",
+    "hideAIPrompt_simple": "sembunyikan teks bantuan",
     "aiPromptHint": "Salin ini ke Claude/ChatGPT/Gemini, isi detailnya di bagian bawah, lalu simpan balasan JSON-nya sebagai file .json dan impor di sini.",
     "copied": "tersalin ✓",
     "copyPrompt": "salin prompt",
     "importHireBtn": "impor rekrutan…",
+    "importHireBtn_simple": "muat dari file…",
     "importHireBtnTitle": "Impor manifest rekrutan (.json)",
     "spawn": "buat",
     "spawn_simple": "Tambah rekan tim",
@@ -651,6 +689,7 @@
     "hireProgress": "rekrutan {{current}} dari {{total}}",
     "skipHire": "lewati rekrutan",
     "mcpExtras": "tool tambahan:",
+    "mcpExtras_simple": "Kemampuan tambahan:",
     "shardxNeedsInstall": "Agent ini butuh browser ShardX (profil marketplace). Pasang dan atur otomatis? Kami akan memasang dan mengonfigurasi tool browser untukmu — kamu hanya konfirmasi sekali.",
     "shardxSetupIncomplete": "Setup ShardX belum selesai — agen dijalankan tanpa tools browser. Ulangi dari Pengaturan → MCP.",
     "shardxProfilePh": "profil browser — kosong = auto khusus (office-<agent>)",
@@ -663,19 +702,23 @@
     "statusResumeMissing": "sesi tidak ditemukan — mulai baru",
     "statusStarting": "sedang memulai",
     "removeProjectTitle": "Hapus {{name}} dari daftar ini. Folder aslinya tidak disentuh.",
-    "removeProjectAria": "Hapus {{name}} dari daftar proyek"
+    "removeProjectAria": "Hapus {{name}} dari daftar proyek",
+    "projectHelp": "Folder tempat rekan tim Anda dapat membaca dan mengubah file. Pilih folder yang ingin dibantu.",
+    "gitIsolationHelp": "Rekan tim Anda mengedit salinan terpisah dari proyek, sehingga file asli Anda tetap utuh sampai Anda memutuskan menyimpan perubahannya.",
+    "mcpExtrasHelp": "Tambahan opsional yang memungkinkan rekan tim memakai akun Anda, seperti Email & Kalender atau GitHub. Semuanya mati kecuali Anda mencentangnya.",
+    "commandHelp": "Ubah hanya jika Anda tahu apa yang dilakukan. Pengaturan bawaan cocok untuk kebanyakan orang."
   },
   "onboarding": {
     "titles": {
       "persona": "SELAMAT DATANG DI AGENT OFFICE",
       "welcome": "KENALI KANTORMU",
-      "home": "LANGKAH 1 DARI 4 · RUMAH HARNESS",
-      "homePlain": "LANGKAH 1 DARI 4 · RUMAH UNTUK APLIKASI",
-      "orchestrator": "LANGKAH 2 DARI 4 · ENGINE KLONMU",
-      "orchestratorPlain": "LANGKAH 2 DARI 4 · KLONMU",
-      "repos": "LANGKAH 3 DARI 4 · REPO-MU",
-      "reposPlain": "LANGKAH 3 DARI 4 · PROYEKMU",
-      "permissions": "LANGKAH 4 DARI 4 · IZIN & KEANDALAN",
+      "home": "RUMAH HARNESS",
+      "homePlain": "RUMAH UNTUK APLIKASI",
+      "orchestrator": "ENGINE KLONMU",
+      "orchestratorPlain": "KLONMU",
+      "repos": "REPO-MU",
+      "reposPlain": "PROYEKMU",
+      "permissions": "IZIN & KEANDALAN",
       "done": "SEMUA BERES"
     },
     "persona": {
@@ -789,6 +832,7 @@
       "openAtLoginDesc": "Buka ulang harness setelah reboot agar misi terjadwal lanjut sendiri. Tanpa prompt — langsung berlaku.",
       "shareStats": "BAGIKAN STATISTIK PENGGUNAAN ANONIM",
       "shareStatsDesc": "Segelintir event anonim (aplikasi dibuka, agen di-spawn, fitur dipakai) yang membantu meningkatkan Agent Office — tidak pernah prompt, kode, path file, atau output agen. Daftar lengkap di TELEMETRY.md; ubah kapan saja di Pengaturan.",
+      "shareStatsDesc_simple": "Mengirim beberapa hitungan anonim untuk membantu memperbaiki aplikasi: bahwa aplikasi dibuka, mesin AI mana yang dimulai, apakah ada yang gagal dimulai, berapa banyak pesan terkirim (tidak pernah isinya), apakah Anda memakai beberapa fitur opsional, versi aplikasi dan sistem operasi Anda, serta perkiraan lama pemakaian. Tidak pernah mengirim pesan, file, nama folder, atau apa pun yang ditulis tim Anda. Anda bisa mengubahnya kapan saja di Pengaturan.",
       "stayAwake": "TETAP TERJAGA SAAT TERSAMBUNG DAYA (MANUAL)",
       "stayAwakeDescMac": "macOS hanya mengizinkan kamu mengatur ini sendiri. Di Battery → Options, aktifkan \"Prevent automatic sleeping when the display is off\" (saat di adaptor daya) agar timer tetap berjalan dengan layar tertidur. Tanpa pengaturan pencegah tidur, Mac tetap benar-benar tidur — pekerjaan selamat dan mengejar ketinggalan saat bangun.",
       "stayAwakeDescWindows": "Windows hanya mengizinkan kamu mengatur ini sendiri. Di Settings → System → Power & battery → Screen, blank & sleep, atur \"On battery power, put my device to sleep\" dan \"When plugged in\" ke Never (atau perbesar nilainya) agar timer tetap berjalan. Tanpa pengaturan pencegah tidur, Windows tetap benar-benar tidur — pekerjaan selamat dan mengejar ketinggalan saat bangun.",
@@ -802,10 +846,11 @@
     "errCreateHome": "tidak bisa membuat rumah harness",
     "checking": "memeriksa…",
     "checkAgain": "periksa lagi",
-    "installInstructions": "petunjuk pemasangan"
+    "installInstructions": "petunjuk pemasangan",
+    "stepOf": "LANGKAH {{current}} DARI {{total}}"
   },
   "quickStart": {
-    "title": "LANGKAH 2 DARI 4 · HUBUNGKAN AI ANDA",
+    "title": "HUBUNGKAN AI ANDA",
     "intro": "Tim AI Anda butuh layanan AI untuk berpikir. Menghubungkannya hanya sekitar satu menit.",
     "whatIsKeyHead": "APA ITU KUNCI API?",
     "whatIsKey": "Kunci API itu seperti kata sandi yang memungkinkan aplikasi ini memakai layanan AI untuk Anda. Anda membuatnya di situs penyedia, menyalinnya, lalu menempelkannya di bawah. Kunci hanya tersimpan di komputer ini.",
@@ -911,7 +956,9 @@
       "waiting": "menunggu",
       "needsYou": "butuh kamu",
       "compacting": "memadatkan konteks",
+      "compacting_simple": "merapikan catatannya",
       "looping": "looping — pemutus siaga",
+      "looping_simple": "sepertinya macet",
       "runningFloor": "mengatur lantai",
       "idle": "menganggur"
     }
@@ -1495,16 +1542,23 @@
     "busyQueued": "{{name}} sibuk — {{count}} antre",
     "busyQueued_simple": "{{name}} sedang sibuk — {{count}} menunggu dikirim",
     "heldFloor": "ditahan — pengiriman dijeda di seluruh lantai",
+    "heldFloor_simple": "ditahan — pengiriman dijeda",
     "heldDraft": "ditahan — terminal {{name}} punya teks yang belum terkirim di prompt-nya",
+    "heldDraft_simple": "ditahan — ada teks yang belum terkirim di tampilan langsung {{name}}",
     "heldPicker": "ditahan — pemilih slash-command terbuka di terminal {{name}}",
+    "heldPicker_simple": "ditahan — ada menu terbuka di tampilan langsung {{name}}",
     "heldExited": "ditahan — terminal {{name}} sudah keluar",
+    "heldExited_simple": "ditahan — {{name}} berhenti",
     "sendingOneByOne": "mengirim ke {{name}} satu per satu…",
+    "sendingOneByOne_simple": "mengirim ke {{name}}…",
     "pausedTitle": "Pengiriman otomatis dijeda untuk seluruh lantai. Lanjutkan di Pusat Komando, atau pakai \"kirim sekarang\" pada pesan di bawah.",
     "dropToAttach": "LEPASKAN UNTUK MELAMPIRKAN",
     "queue": "ANTREAN",
     "queue_simple": "MENUNGGU DIKIRIM",
     "closePicker": "tutup pemilih",
+    "closePicker_simple": "tutup menu",
     "recoverPrompt": "pulihkan prompt",
+    "recoverPrompt_simple": "pindahkan ke sini",
     "clearAllTitle": "Hapus semua pesan antrean",
     "clearAll": "hapus semua",
     "removeAttachment": "Hapus lampiran",
@@ -1534,7 +1588,9 @@
     "imagePasteFailed": "Tidak dapat membaca gambar yang ditempel: {{error}}",
     "clearAllConfirm": "Hapus semua {{n}} pesan dalam antrean?",
     "closePickerTitle": "Tutup pemilih yang dibuka agen ini agar pesan dalam antrean dapat terkirim",
-    "recoverPromptTitle": "Pindahkan teks sisa di prompt agen ini ke kotak ini agar pesan dalam antrean dapat terkirim"
+    "closePickerTitle_simple": "Tutup menu yang terbuka agar pesan Anda yang menunggu dapat dikirim",
+    "recoverPromptTitle": "Pindahkan teks sisa di prompt agen ini ke kotak ini agar pesan dalam antrean dapat terkirim",
+    "recoverPromptTitle_simple": "Pindahkan teks yang belum terkirim ke kotak ini agar pesan Anda yang menunggu dapat dikirim"
   },
   "idePanel": {
     "workspace": "workspace {{name}}",
@@ -1612,31 +1668,55 @@
   },
   "quit": {
     "title": "KELUAR SEKARANG?",
+    "title_simple": "TUTUP APLIKASI?",
     "titleClosing": "WAKTU TUTUP",
+    "titleClosing_simple": "MENYIMPAN PEKERJAAN ANDA",
     "agentsRunning": "{{count}} AGENT MASIH BERJALAN",
+    "agentsRunning_simple": "{{count}} REKAN TIM MASIH BEKERJA",
     "agentsRunningPlural": "{{count}} AGENT MASIH BERJALAN",
+    "agentsRunningPlural_simple": "{{count}} REKAN TIM MASIH BEKERJA",
     "body": "Menutup aplikasi akan menghentikan {{count}} sesi yang berjalan dan membuang progres belum tersimpan yang dipegang di memori. Riwayat percakapan di dalam setiap sesi hilang saat terminal keluar.",
+    "body_simple": "Menutup aplikasi sekarang menghentikan rekan tim Anda, dan apa pun yang belum disimpannya akan hilang.",
     "bodyPlural": "Menutup aplikasi akan menghentikan semua {{count}} sesi yang berjalan dan membuang progres belum tersimpan yang dipegang di memori. Riwayat percakapan di dalam setiap sesi hilang saat terminal keluar.",
+    "bodyPlural_simple": "Menutup aplikasi sekarang menghentikan semua {{count}} rekan tim, dan apa pun yang belum disimpan akan hilang.",
     "tip": "Tips: <strong>waktu tutup</strong> adalah cara aman keluar — {{godName}} menyuruh setiap agent commit kerjanya dan simpan memori, dan aplikasi menutup sendiri setelah seluruh floor konfirmasi. Tidak ada data hilang.",
+    "tip_simple": "Tips: <strong>simpan & tutup</strong> adalah cara paling aman — {{godName}} meminta semua orang menyimpan pekerjaannya dahulu, lalu aplikasi menutup sendiri setelah selesai. Tidak ada yang hilang.",
     "keepRunning": "biarkan mereka jalan",
+    "keepRunning_simple": "lanjut bekerja",
     "closingTime": "waktu tutup",
+    "closingTime_simple": "simpan & tutup",
     "killQuit": "hentikan {{what}} & keluar",
+    "killQuit_simple": "hentikan {{what}} & tutup",
     "killIt": "ini",
     "killAll": "semua",
     "killing": "menghentikan…",
+    "killing_simple": "menghentikan…",
     "forceQuit": "paksa keluar sekarang",
+    "forceQuit_simple": "tutup sekarang saja",
     "cancelBack": "batal — kembali kerja",
+    "cancelBack_simple": "tidak, lanjut bekerja",
     "complete": "FLOOR AMAN — SAMPAI BESOK",
+    "complete_simple": "SEMUA TERSIMPAN — SAMPAI JUMPA",
     "timeout": "MASIH MERAPIKAN…",
+    "timeout_simple": "MASIH MENYIMPAN…",
     "wrapping": "MERAPPIKAN FLOOR",
+    "wrapping_simple": "MENYIMPAN PEKERJAAN ANDA",
     "completeBody": "Setiap agent menyimpan memori dan {{godName}} mengonfirmasi shutdown. Aplikasi menutup sendiri sebentar lagi.",
+    "completeBody_simple": "Semua orang telah menyimpan pekerjaannya dan {{godName}} sudah memastikannya. Aplikasi akan menutup sendiri sebentar lagi.",
     "wrappingBody": "{{godName}} menyiarkan waktu tutup. Setiap worker memarkir kerjanya, simpan memori, dan lapor balik — aplikasi menutup hanya setelah {{godName}} mengonfirmasi tidak ada yang hilang.",
+    "wrappingBody_simple": "{{godName}} meminta semua orang menyelesaikan dan menyimpan pekerjaan. Aplikasi menutup setelah {{godName}} memastikan tidak ada yang hilang.",
     "workersConfirmed": "{{acked}} / {{total}} WORKER KONFIRMASI",
+    "workersConfirmed_simple": "{{acked}} DARI {{total}} REKAN TIM SELESAI",
     "workersConfirmedDone": "{{acked}} / {{total}} WORKER KONFIRMASI — MENUNGGU ORKESTRATOR",
+    "workersConfirmedDone_simple": "{{acked}} DARI {{total}} REKAN TIM SELESAI — MENUNGGU KETUA",
     "noWorkers": "TIDAK ADA WORKER DI FLOOR — MENUNGGU ORKESTRATOR",
+    "noWorkers_simple": "TIDAK ADA REKAN TIM LAIN — MENUNGGU KETUA",
     "timeoutNote": "Ini lumayan lama (mungkin agent sedang di tengah compaction atau panggilan tool dalam). Tunggu, atau paksa keluar dan terima kehilangan data.",
+    "timeoutNote_simple": "Ini memakan waktu — mungkin ada yang sedang mengerjakan tugas panjang. Tunggu terus, atau tutup sekarang dan terima bahwa pekerjaan yang belum disimpan akan hilang.",
     "errorFallback": "Waktu tutup tidak bisa dimulai.",
-    "quitFailed": "Tidak dapat keluar: {{error}}"
+    "errorFallback_simple": "Penyimpanan dan penutupan tidak dapat dimulai.",
+    "quitFailed": "Tidak dapat keluar: {{error}}",
+    "quitFailed_simple": "Tidak dapat menutup aplikasi: {{error}}"
   },
   "editAgent": {
     "title": "EDIT AGENT",
@@ -1739,10 +1819,13 @@
   },
   "notice": {
     "queueDropped": "Pesan ke {{agent}} tidak dapat dikirim dan dibuang: \"{{text}}\"",
+    "queueDropped_simple": "Pesan Anda untuk {{agent}} tidak dapat disampaikan, jadi tidak terkirim: \"{{text}}\". Anda bisa menulisnya lagi.",
     "sendFailed": "Tidak dapat mengirim: {{error}}",
     "hiveDegraded": {
       "proxyBind": "{{agent}} berjalan tanpa event hive (proxy bridge-nya gagal terikat) — status langsung, biaya, dan pemicu inbox nonaktif. Spawn ulang agen untuk mencoba lagi.",
-      "generic": "{{agent}} berjalan dalam mode terdegradasi tanpa event hive. Spawn ulang agen untuk mencoba lagi."
+      "proxyBind_simple": "{{agent}} sedang bekerja, tetapi kemajuannya mungkin tidak terlihat langsung. Tutup lalu tambahkan lagi untuk memperbaikinya.",
+      "generic": "{{agent}} berjalan dalam mode terdegradasi tanpa event hive. Spawn ulang agen untuk mencoba lagi.",
+      "generic_simple": "{{agent}} sedang bekerja, tetapi kemajuannya mungkin tidak terlihat langsung. Tutup lalu tambahkan lagi untuk memperbaikinya."
     }
   },
   "realtime": {
@@ -1794,21 +1877,27 @@
   },
   "restorePrompt": {
     "title": "Pulihkan sesi terakhir",
+    "title_simple": "Pulihkan tim Anda?",
     "question": "Pulihkan {{n}} agen dari sesi terakhir? ({{names}})",
+    "question_simple": "Pulihkan {{n}} rekan tim dari terakhir kali? ({{names}})",
     "restore": "pulihkan",
+    "restore_simple": "pulihkan",
     "skip": "lewati"
   },
   "agentStatus": {
     "usingTool": "memakai {{tool}}",
     "compacting": "memadatkan konteks",
+    "compacting_simple": "merapikan catatannya",
     "resumed": "dilanjutkan",
     "thinking": "berpikir",
     "idle": "menganggur",
     "readingInbox": "membaca kotak masuk",
+    "readingInbox_simple": "membaca pesannya",
     "runningFloor": "mengelola lantai kerja",
     "startingUp": "sedang memulai",
     "revived": "dihidupkan kembali setelah tidur",
     "breakerArmed": "pemutus aktif",
+    "breakerArmed_simple": "sepertinya macet — berhenti sendiri",
     "awaiting": "menunggu",
     "waitingOnYou": "menunggu Anda",
     "waitingOnGod": "menunggu {{godName}}",
@@ -1858,7 +1947,8 @@
     "hideTerminal": "Sembunyikan terminal langsung",
     "noteStarting": "{{name}} sedang bersiap… obrolan akan muncul di sini sebentar lagi. Sementara itu, ini yang terjadi di balik layar.",
     "noteUnsupported": "Untuk AI ini, balasan {{name}} muncul di terminal langsung di bawah.",
-    "noteUnreadable": "Percakapan ini belum bisa ditampilkan sebagai obrolan, jadi terminal langsung ditampilkan."
+    "noteUnreadable": "Percakapan ini belum bisa ditampilkan sebagai obrolan, jadi terminal langsung ditampilkan.",
+    "cancelPending": "Jangan kirim"
   },
   "simpleMode": {
     "needMore": "Butuh lebih? Tampilkan opsi lanjutan",
@@ -1899,7 +1989,8 @@
       "themeDesc": "Warna terang atau gelap untuk seluruh aplikasi.",
       "dark": "Gelap",
       "light": "Terang",
-      "hiddenNote": "Mode sederhana membuat jendela ini tetap ringkas. Suara, integrasi, memori, anggaran, dan pengaturan teknis lainnya tetap tersembunyi sampai Anda menampilkan opsi lanjutan."
+      "hiddenNote": "Mode sederhana membuat jendela ini tetap ringkas. Suara, integrasi, memori, anggaran, dan pengaturan teknis lainnya tetap tersembunyi sampai Anda menampilkan opsi lanjutan.",
+      "privacy": "Privasi"
     },
     "addAgent": {
       "goalLabel": "Apa yang harus dikerjakan rekan tim ini?",
@@ -1908,7 +1999,7 @@
       "moreOptions": "Opsi lainnya",
       "lookHead": "Tampilan",
       "workspaceHead": "Tempat bekerja",
-      "engineHead": "Mesin AI",
+      "engineHead": "AI Anda",
       "roles": {
         "researcher": "Peneliti",
         "writer": "Penulis",
@@ -2016,5 +2107,121 @@
       "saved": "Tersimpan. Berlaku saat asisten Anda dimulai berikutnya.",
       "saveFailed": "Pilihan itu tidak bisa disimpan. Coba lagi."
     }
+  },
+  "errors": {
+    "details": "Rincian",
+    "hideDetails": "Sembunyikan rincian",
+    "detailsLabel": "Rincian teknis",
+    "action": {
+      "addKey": "Periksa kunci saya",
+      "retry": "Coba lagi",
+      "openSettings": "Buka pengaturan"
+    },
+    "key_rejected": {
+      "title": "Kunci AI Anda tidak diterima",
+      "hint": "Mungkin salah ketik, kedaluwarsa, atau dinonaktifkan. Salin lagi dari akun AI Anda lalu tempel."
+    },
+    "no_key": {
+      "title": "Asisten Anda memerlukan kunci",
+      "hint": "Tambahkan kunci AI Anda dan asisten siap digunakan."
+    },
+    "no_credit": {
+      "title": "Saldo akun AI Anda habis",
+      "hint": "Tambahkan saldo atau periksa paket Anda di situs layanan AI, lalu coba lagi."
+    },
+    "rate_limit": {
+      "title": "Layanan AI sedang sibuk",
+      "hint": "Batas pemakaian tercapai, atau layanan sedang ramai. Tunggu semenit lalu coba lagi."
+    },
+    "server": {
+      "title": "Layanan AI sedang bermasalah",
+      "hint": "Ini masalah di pihak mereka, bukan Anda. Coba lagi dalam beberapa menit."
+    },
+    "network": {
+      "title": "Tidak dapat terhubung ke internet",
+      "hint": "Periksa koneksi Anda (serta VPN atau firewall), lalu coba lagi."
+    },
+    "timeout": {
+      "title": "Terlalu lama",
+      "hint": "Koneksi mungkin lambat. Coba lagi sebentar lagi."
+    },
+    "engine_missing": {
+      "title": "Asisten belum terpasang",
+      "hint": "Coba lagi untuk menyelesaikan pemasangan. Jika terus gagal, pilih AI lain di pengaturan."
+    },
+    "engine_exit": {
+      "title": "Asisten berhenti tiba-tiba",
+      "hint": "Mencoba lagi biasanya menyelesaikannya. Jika terus terjadi, periksa kunci Anda di pengaturan."
+    },
+    "spawn_error": {
+      "title": "Tidak dapat memulai asisten",
+      "hint": "Coba lagi. Jika terus gagal, buka rincian dan bagikan ke tim dukungan."
+    },
+    "install_failed": {
+      "title": "Pemasangan berhenti",
+      "hint": "Tidak ada yang rusak di komputer Anda. Mencoba lagi biasanya menyelesaikannya."
+    },
+    "install_unavailable": {
+      "title": "Tidak dapat dipasang otomatis di sini",
+      "hint": "Pilih AI lain di pengaturan, atau pasang sendiri lalu mulai ulang aplikasi."
+    },
+    "already_running": {
+      "title": "Rekan tim itu sudah ada di tim Anda",
+      "hint": "Pilih nama lain, atau tutup yang sudah ada terlebih dahulu."
+    },
+    "folder_missing": {
+      "title": "Folder itu tidak ada",
+      "hint": "Mungkin sudah dipindahkan atau diganti namanya. Pilih foldernya lagi."
+    },
+    "key_store": {
+      "title": "Kunci Anda tidak dapat disimpan dengan aman",
+      "hint": "Penyimpanan kata sandi komputer Anda tidak menerimanya. Coba lagi; jika terus terjadi, mulai ulang aplikasi."
+    },
+    "internal": {
+      "title": "Terjadi masalah di dalam aplikasi",
+      "hint": "File Anda aman. Coba lagi; jika terus terjadi, mulai ulang aplikasi dan bagikan rincian ke tim dukungan."
+    },
+    "disk_full": {
+      "title": "Ruang penyimpanan komputer Anda habis",
+      "hint": "Kosongkan sedikit ruang penyimpanan, lalu coba lagi."
+    },
+    "permission": {
+      "title": "Aplikasi tidak diizinkan melakukannya",
+      "hint": "Aplikasi tidak bisa membaca atau mengubah folder itu. Pilih folder lain, atau periksa izin folder tersebut."
+    },
+    "not_found": {
+      "title": "File atau folder itu tidak ditemukan",
+      "hint": "Mungkin sudah dipindahkan atau dihapus. Pilih lagi."
+    },
+    "generic": {
+      "title": "Terjadi masalah",
+      "title_save": "Perubahan Anda tidak dapat disimpan",
+      "title_send": "Pesan Anda tidak dapat dikirim",
+      "title_spawn": "Rekan tim tidak dapat ditambahkan",
+      "title_key": "Kunci Anda tidak dapat disimpan",
+      "title_load": "Pengaturan aplikasi tidak dapat dibuka",
+      "hint": "Silakan coba lagi. Jika terus terjadi, buka rincian dan bagikan ke tim dukungan.",
+      "title_stop": "Tidak dapat menghentikan semuanya",
+      "title_start": "Asisten Anda tidak dapat dimulai"
+    }
+  },
+  "stopAll": {
+    "button": "Hentikan semuanya",
+    "buttonTitle": "Hentikan semua yang sedang dikerjakan tim Anda sekarang. File Anda tetap seperti semula.",
+    "confirmTitle": "Hentikan semuanya?",
+    "confirmBody": "Ini menghentikan semua yang sedang dikerjakan tim Anda sekarang. File Anda tetap seperti semula.",
+    "confirmYes": "Ya, hentikan semuanya",
+    "confirmNo": "Tidak, lanjutkan",
+    "stopping": "Menghentikan…",
+    "done": "Semuanya sedang dihentikan. Tim Anda akan berhenti pada langkah aman berikutnya. Tidak ada yang dihapus. Kirim pesan baru kapan pun Anda ingin melanjutkan.",
+    "nothing": "Tidak ada yang berjalan saat ini, jadi tidak ada yang perlu dihentikan."
+  },
+  "examples": {
+    "title": "Coba salah satu ini",
+    "hint": "Klik salah satu untuk memasukkannya ke kotak pesan. Anda bisa mengubahnya sebelum mengirim.",
+    "summarizeFolder": "Ringkas isi folder proyek saya dengan kata-kata sederhana.",
+    "writeEmail": "Bantu saya menulis email singkat yang sopan. Tanyakan dulu tentang apa isinya.",
+    "todoList": "Buatkan daftar tugas dari catatan saya. Saya akan menempelkannya di pesan berikutnya.",
+    "explainProject": "Jelaskan apa fungsi proyek ini dengan kata-kata sederhana."
   }
 }

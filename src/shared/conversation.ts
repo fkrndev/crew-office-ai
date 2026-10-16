@@ -158,6 +158,8 @@ export interface PendingBubble {
   text: string;
   /** 'waiting' = still in the composer queue; 'sending' = delivered, not in the transcript yet */
   state: 'waiting' | 'sending';
+  /** The composer-queue id of a 'waiting' bubble (what "don't send" removes). */
+  queueId?: string;
 }
 
 export interface Echo {
@@ -239,7 +241,7 @@ export function reconcileEchoes(
 export function pendingBubbles(queue: readonly QueuedLike[], echoes: readonly Echo[]): PendingBubble[] {
   return [
     ...echoes.map((e): PendingBubble => ({ id: `echo-${e.id}`, text: stripGoalBlock(e.text), state: 'sending' })),
-    ...humanQueued(queue).map((q): PendingBubble => ({ id: `queued-${q.id}`, text: stripGoalBlock(q.text), state: 'waiting' }))
+    ...humanQueued(queue).map((q): PendingBubble => ({ id: `queued-${q.id}`, text: stripGoalBlock(q.text), state: 'waiting', queueId: q.id }))
   ];
 }
 

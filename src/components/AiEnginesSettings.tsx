@@ -4,6 +4,7 @@ import type { HarnessConfig, AgentProvider } from '@/store/config';
 import { PixelButton } from './PixelButton';
 import { ProviderLogo } from './ProviderLogo';
 import { useStore } from '@/store/store';
+import { ErrorNotice } from './FriendlyError';
 
 /**
  * AiEnginesSettings — the v0.3.1 per-provider config surface for the BYOK CLI
@@ -88,6 +89,12 @@ export function useProviderKeys() {
   const [hasKey, setHasKey] = useState<Record<string, boolean>>({});
   const [draftKey, setDraftKey] = useState<Record<string, string>>({});
   const [note, setNote] = useState<Record<string, string>>({});
+  // The raw error behind a failed save (simple mode shows it in plain words).
+  const [noteRaw, setNoteRaw] = useState<Record<string, unknown>>({});
+  const setFail = (backend: string, raw: unknown, text: string) => {
+    setNote((s) => ({ ...s, [backend]: text }));
+    setNoteRaw((s) => ({ ...s, [backend]: raw }));
+  };
 
   // Reseed set/not-set flags on mount (write-only — only the boolean is fetched).
   useEffect(() => {
@@ -105,6 +112,7 @@ export function useProviderKeys() {
   const saveKey = async (backend: string) => {
     const key = (draftKey[backend] ?? '').trim();
     if (!key) return;
+    setNoteRaw((s) => { const n = { ...s }; delete n[backend]; return n; });
     try {
       const r = await window.cth.providerKeySet({ backend, key });
       if (r.ok) {
@@ -115,8 +123,8 @@ export function useProviderKeys() {
         if (backend === 'openai') setHasOpenAiKey(true);
         // A saved key answers a "needs an API key" spawn — drop the call to action.
         useStore.getState().setEngineNeedsKey(false);
-      } else setNote((s) => ({ ...s, [backend]: r.error ?? t('aiEngines.failed') }));
-    } catch (e) { setNote((s) => ({ ...s, [backend]: e instanceof Error ? e.message : String(e) })); }
+      } else setFail(backend, r.error ?? t('aiEngines.failed'), r.error ?? t('aiEngines.failed'));
+    } catch (e) { setFail(backend, e, e instanceof Error ? e.message : String(e)); }
   };
   const clearKey = async (backend: string) => {
     try {
@@ -129,7 +137,7 @@ export function useProviderKeys() {
   };
   const setDraft = (backend: string, value: string) =>
     setDraftKey((s) => ({ ...s, [backend]: value }));
-  return { hasKey, draftKey, note, saveKey, clearKey, setDraft };
+  return { hasKey, draftKey, note, noteRaw, saveKey, clearKey, setDraft };
 }
 export type ProviderKeys = ReturnType<typeof useProviderKeys>;
 
@@ -142,7 +150,7 @@ export function ProviderKeyField({ backend, keys, plain = false }: {
 }) {
   const { t } = useTranslation();
   const b = backend;
-  const { hasKey, draftKey, note } = keys;
+  const { hasKey, draftKey, note, noteRaw } = keys;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <label style={labelStyle}>
@@ -164,7 +172,9 @@ export function ProviderKeyField({ backend, keys, plain = false }: {
           <PixelButton variant="secondary" size="sm" onClick={() => keys.clearKey(b.id)}>{t('aiEngines.removeKey')}</PixelButton>
         )}
       </div>
-      {note[b.id] && <div style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{note[b.id]}</div>}
+      {note[b.id] && (plain && noteRaw[b.id] !== undefined
+        ? <ErrorNotice error={noteRaw[b.id]} legacy={note[b.id]} context="key" friendly layout="inline" />
+        : <div style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{note[b.id]}</div>)}
     </div>
   );
 }
@@ -181,7 +191,7 @@ export function useCliEndpoints(config: HarnessConfig) {
   );
   // Per-CLI save feedback for the blur-saved base-URL / model fields. Without
   // this the user gets zero signal — the field just keeps its value silently.
-  const [cliNote, setCliNote] = useState<Partial<Record<AgentProvider, { ok: boolean; msg: string }>>>({});
+  const [cliNote, setCliNote] = useState<Partial<Record<AgentProvider, { ok: boolean; msg: string; raw?: unknown }>>>({});
 
   const saveBaseUrl = async (id: AgentProvider, value: string) => {
     const next = { ...baseUrls, [id]: value.trim() || undefined };
@@ -190,7 +200,7 @@ export function useCliEndpoints(config: HarnessConfig) {
       await window.cth.updateConfig({ providerBaseUrls: next });
       setCliNote((s) => ({ ...s, [id]: { ok: true, msg: t('aiEngines.saved') } }));
     } catch (e) {
-      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e), raw: e } }));
     }
   };
   const saveModel = async (id: AgentProvider, value: string) => {
@@ -200,7 +210,7 @@ export function useCliEndpoints(config: HarnessConfig) {
       await window.cth.updateConfig({ providerDefaultModels: next });
       setCliNote((s) => ({ ...s, [id]: { ok: true, msg: t('aiEngines.saved') } }));
     } catch (e) {
-      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+      setCliNote((s) => ({ ...s, [id]: { ok: false, msg: e instanceof Error ? e.message : String(e), raw: e } }));
     }
   };
   return { baseUrls, models, cliNote, saveBaseUrl, saveModel };

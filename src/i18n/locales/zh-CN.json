@@ -149,11 +149,15 @@
     "addAgent": "添加智能体",
     "addAgent_simple": "添加队友",
     "restoringTitle": "上次会话的智能体正在以原始 ID 重新生成，以便记忆和收件箱重新挂载。",
+    "restoringTitle_simple": "正在恢复您上次的团队，包括他们的笔记和消息。",
     "restoreTitle": "上次会话：{{names}}",
+    "restoreTitle_simple": "上次的队友：{{names}}",
     "restoringTeam": "正在恢复你的团队…",
     "restoreTeam": "恢复团队（{{count}}）▴",
     "previousSession": "上次会话",
+    "previousSession_simple": "上次的团队",
     "restorable": "{{name}}——可从上次会话恢复",
+    "restorable_simple": "{{name}}——可以从上次恢复",
     "dismiss": "忽略 {{name}}——从恢复列表中永久移除",
     "dismissAria": "忽略 {{name}}",
     "restoreAll": "全部恢复（{{count}}）"
@@ -183,7 +187,9 @@
     "fullscreenDesc": "此终端已在聚焦模式中打开。按 Esc 或退出聚焦模式将其带回此处。",
     "noPty": "无终端",
     "noPtyDesc": "该智能体没有实时终端。通过「添加智能体」生成一个，即可使用终端标签页。",
+    "noPtyDesc_simple": "这位队友目前没有运行。请从下方栏添加队友后开始对话。",
     "killConfirm": "关闭 {{name}}?该 agent 的进程将停止并被归档(保留在历史中,离开工作区)。",
+    "killConfirm_simple": "要把 {{name}} 从团队中移除吗？它会停下手头的工作。历史记录会保留。",
     "ideTip": "打开 IDE：浏览并编辑 {{project}} 中的文件，并将未提交的更改作为差异查看。",
     "terminalTip": "在 {{cwd}} 中打开你的系统终端应用 —— 位于该智能体文件夹中的普通 shell，与该智能体自己的终端相互独立。",
     "openIde": "打开 IDE",
@@ -199,8 +205,15 @@
     "visit": "访问",
     "whatsNew": "新功能",
     "whatsNewTitle": "显示上次告知你的更新的发布说明",
+    "whatsNewTitle_simple": "查看最新更新的变化",
     "reportProblem": "反馈问题",
-    "fullChangelog": "完整更新日志 →"
+    "fullChangelog": "完整更新日志 →",
+    "fullChangelog_simple": "查看所有更新内容 →",
+    "version": "版本 {{v}}",
+    "updateAvailable": "有新版本（{{v}}）可用",
+    "download": "下载新版本",
+    "downloadTitle": "下载新版本并自行覆盖安装。您也可以让“更新”标签页代劳。",
+    "blurb": "您的 AI 团队在这台电脑上运行，在您自己的文件夹里工作，使用的是您自己的 AI 账户。"
   },
   "officeTheme": {
     "title": "办公室主题",
@@ -284,7 +297,9 @@
       "autoUpdate": "自动更新",
       "autoUpdateDesc": "后台检查 GitHub 发布并下载更新；由你选择何时重启。绝不会自行重启。",
       "telemetry": "匿名使用统计",
+      "telemetry_simple": "分享匿名使用统计",
       "telemetryDesc": "少量匿名事件（打开应用、生成智能体、使用功能）——绝不包含提示词、代码、路径或智能体输出。完整清单见 TELEMETRY.md。",
+      "telemetryDesc_simple": "会发送少量匿名统计数据来帮助改进应用：应用被打开、启动了哪个 AI 引擎、是否有启动失败、发送了多少条消息（绝不包含内容）、是否使用了少数可选功能、您的应用版本和操作系统，以及大致使用时长。这些数据不会关联到您的姓名或账户。绝不会发送您的消息、文件、文件夹名称或团队写下的任何内容。关闭后不会发送任何数据。",
       "language": "语言",
       "languageDesc": "选择应用界面语言。印尼语为默认;英语作为缺失字符串的回退。",
       "languageDesc_simple": "选择你希望使用的应用语言。",
@@ -572,16 +587,25 @@
     "name": "名字",
     "namePlaceholder": "Ada",
     "character": "角色",
+    "character_simple": "头像",
     "color": "颜色",
     "project": "项目",
+    "project_simple": "工作文件夹",
     "pickProject": "选择项目，或添加新项目：",
+    "pickProject_simple": "选择一个文件夹，或添加新的：",
     "noProjects": "还没有项目——添加一个开始：",
+    "noProjects_simple": "还没有文件夹——添加一个来开始：",
     "addProject": "添加项目",
+    "addProject_simple": "添加文件夹",
     "addProjectTitle": "选择一个文件夹并注册为项目",
+    "addProjectTitle_simple": "在您的电脑上选择一个工作文件夹",
     "projectPlaceholder": "/path/to/your/project",
     "pick": "选择",
+    "pick_simple": "浏览",
     "saveAsProject": "另存为项目",
+    "saveAsProject_simple": "记住这个文件夹",
     "saveAsProjectTitle": "把这个文件夹保存到你的项目里，下次一键选择",
+    "saveAsProjectTitle_simple": "把这个文件夹保留在列表中，下次一键即可选用",
     "gitIsolation": "Git 隔离（独立工作树）",
     "gitIsolation_simple": "在文件的独立副本上工作（更安全）",
     "resumeSession": "恢复会话 ID（可选）",
@@ -589,10 +613,12 @@
     "folderFromSession": "已根据会话设置文件夹：{{path}}",
     "resumeNote": "将在所选文件夹中恢复该会话（Git 隔离已禁用）。",
     "provider": "提供商",
+    "provider_simple": "使用哪个 AI",
     "providerAntigravity": "使用 Gemini 模型启动 Antigravity CLI（agy）",
     "providerCodex": "启动 Codex CLI（codex），不带 Claude 专属标志",
     "providerCustom": "运行任意命令——不带 Claude 专属标志",
     "model": "模型",
+    "model_simple": "AI 模型",
     "cliDefaultModel": "CLI 默认模型",
     "fromHire": "{{model}}（来自 hire）",
     "ossModels": "开源模型",
@@ -601,8 +627,11 @@
     "ossLocalTitle": "{{slug}} · 约需 {{ram}} 内存——拉取：ollama pull {{tag}}",
     "ossByokTitle": "{{slug}} · 在设置 → AI 引擎中设置 {{keyEnv}}",
     "byokNote": "该引擎的 BYOK 密钥和本地端点位于 设置 → AI 引擎。端到端实测仍在等待真实模型调用（请在设备上验证）。",
+    "byokNote_simple": "这个 AI 需要它自己的密钥，或在您电脑上运行的模型。请在“设置 → AI 连接”中添加。",
     "command": "命令",
+    "command_simple": "启动命令",
     "commandAuto": "命令（自动模式已开）",
+    "commandAuto_simple": "启动命令（会不经询问直接行动）",
     "templates": "模板",
     "templatesHint": {
       "repoJanitor": {
@@ -626,20 +655,29 @@
     "goal": "目标（可选）",
     "goalPlaceholder": "每次提示都会注入的长期指令",
     "agentTemplates": "智能体模板",
+    "agentTemplates_simple": "已保存的设置",
     "agentTemplatesHint": "一键生成预设——点击即可填表",
+    "agentTemplatesHint_simple": "点击即可填好表单，或保存当前设置以便下次使用",
     "saveAsTemplate": "存为模板",
+    "saveAsTemplate_simple": "保存此设置",
     "saveAsTemplateTitle": "将当前表单保存为可复用模板",
+    "saveAsTemplateTitle_simple": "保留表单中填写的内容，方便以后再用",
     "templateLabelPlaceholder": "模板名称…",
+    "templateLabelPlaceholder_simple": "给这个设置起个名字…",
     "templateSaved": "已保存 ✓",
     "templateDeleteTitle": "删除此模板",
     "importHire": "导入 hire",
     "importHireDesc": "导入 hire 会从一个 .json 清单加载现成的智能体——它会填好下方所有字段供你检查。不点 生成 就不会启动任何东西。",
+    "importHireDesc_simple": "您也可以从文件加载现成的队友。它会填好表单供您检查。在您点击“添加队友”之前不会启动任何东西。",
     "generateWithAI": "用 AI 生成一个…",
+    "generateWithAI_simple": "获取撰写帮助…",
     "hideAIPrompt": "隐藏 AI 提示词",
+    "hideAIPrompt_simple": "隐藏帮助文本",
     "aiPromptHint": "把它复制到 Claude/ChatGPT/Gemini，填写底部的详细信息，然后把它的 JSON 回复保存为 .json 文件，在这里导入。",
     "copied": "已复制 ✓",
     "copyPrompt": "复制提示词",
     "importHireBtn": "导入 hire…",
+    "importHireBtn_simple": "从文件加载…",
     "importHireBtnTitle": "导入 hire 清单（.json）",
     "spawn": "创建",
     "spawn_simple": "添加队友",
@@ -651,6 +689,7 @@
     "hireProgress": "hire 第 {{current}} / {{total}} 项",
     "skipHire": "跳过 hire",
     "mcpExtras": "额外工具：",
+    "mcpExtras_simple": "额外能力：",
     "shardxNeedsInstall": "该 agent 需要 ShardX 浏览器(市场配置文件)。自动安装并设置?我们将为你安装并配置浏览器工具 — 你只需确认一次。",
     "shardxSetupIncomplete": "ShardX 设置未完成——智能体已在没有浏览器工具的情况下启动。可在 设置 → MCP 中重试。",
     "shardxProfilePh": "浏览器配置——留空 = 自动专属（office-<agent>）",
@@ -663,19 +702,23 @@
     "statusResumeMissing": "未找到会话 — 全新启动",
     "statusStarting": "正在启动",
     "removeProjectTitle": "从此列表中移除 {{name}}。文件夹本身不会被改动。",
-    "removeProjectAria": "从项目列表中移除 {{name}}"
+    "removeProjectAria": "从项目列表中移除 {{name}}",
+    "projectHelp": "您的队友可以读取和修改文件的文件夹。请选择您想获得帮助的那个。",
+    "gitIsolationHelp": "您的队友会修改项目的一份独立副本，在您决定保留更改之前，您自己的文件不会被改动。",
+    "mcpExtrasHelp": "可选的附加功能，让您的队友使用您的账户，例如邮件与日历或 GitHub。除非您勾选，否则全部关闭。",
+    "commandHelp": "只有在您清楚自己在做什么时才修改。默认设置适合大多数人。"
   },
   "onboarding": {
     "titles": {
       "persona": "欢迎来到 AGENT OFFICE",
       "welcome": "认识你的办公室",
-      "home": "第 1 步，共 4 步 · HARNESS 主目录",
-      "homePlain": "第 1 步，共 4 步 · 为应用找一个家",
-      "orchestrator": "第 2 步，共 4 步 · 你的克隆引擎",
-      "orchestratorPlain": "第 2 步，共 4 步 · 你的克隆",
-      "repos": "第 3 步，共 4 步 · 你的仓库",
-      "reposPlain": "第 3 步，共 4 步 · 你的项目",
-      "permissions": "第 4 步，共 4 步 · 权限与可靠性",
+      "home": "HARNESS 主目录",
+      "homePlain": "为应用找一个家",
+      "orchestrator": "你的克隆引擎",
+      "orchestratorPlain": "你的克隆",
+      "repos": "你的仓库",
+      "reposPlain": "你的项目",
+      "permissions": "权限与可靠性",
       "done": "全部就绪"
     },
     "persona": {
@@ -789,6 +832,7 @@
       "openAtLoginDesc": "重启后自动重新启动 harness，让计划任务自行恢复。无提示——立即生效。",
       "shareStats": "共享匿名使用统计",
       "shareStatsDesc": "少量匿名事件（打开应用、生成智能体、使用功能），用于改进 Agent Office——绝不包含提示词、代码、文件路径或智能体输出。完整清单见 TELEMETRY.md；可随时在设置中更改。",
+      "shareStatsDesc_simple": "会发送少量匿名统计数据来帮助改进应用：应用被打开、启动了哪个 AI 引擎、是否有启动失败、发送了多少条消息（绝不包含内容）、是否使用了少数可选功能、您的应用版本和操作系统，以及大致使用时长。绝不会发送您的消息、文件、文件夹名称或团队写下的任何内容。您可以随时在设置中更改。",
       "stayAwake": "接电源时保持唤醒（手动）",
       "stayAwakeDescMac": "macOS 只允许你自己设置这一项。在「电池」→「选项」中，开启「防止显示器关闭时自动进入睡眠」（接电源适配器时），这样显示器休眠时定时器也能继续触发。没有防休眠设置的话 Mac 仍会真正休眠——工作会保存并在唤醒后补上。",
       "stayAwakeDescWindows": "Windows 只允许你自己设置这一项。在「设置」→「系统」→「电源和电池」→「屏幕和睡眠」中，将「使用电源时，使设备进入睡眠状态」设为「从不」（或延长时间），这样定时器也能继续触发。没有防休眠设置的话 Windows 仍会真正休眠——工作会保存并在唤醒后补上。",
@@ -802,10 +846,11 @@
     "errCreateHome": "无法创建 harness 主文件夹",
     "checking": "正在检查…",
     "checkAgain": "重新检查",
-    "installInstructions": "安装说明"
+    "installInstructions": "安装说明",
+    "stepOf": "第 {{current}} 步，共 {{total}} 步"
   },
   "quickStart": {
-    "title": "第 2 步，共 4 步 · 连接你的 AI",
+    "title": "连接你的 AI",
     "intro": "你的 AI 团队需要一个 AI 服务来思考。连接大约只需一分钟。",
     "whatIsKeyHead": "什么是 API 密钥？",
     "whatIsKey": "API 密钥就像一个密码，让本应用可以代你使用某个 AI 服务。你在服务商网站上创建它，复制后粘贴到下方。它只保存在这台电脑上。",
@@ -911,7 +956,9 @@
       "waiting": "等待中",
       "needsYou": "需要你",
       "compacting": "正在压缩上下文",
+      "compacting_simple": "正在整理笔记",
       "looping": "循环中——断路器已启动",
+      "looping_simple": "似乎卡住了",
       "runningFloor": "正在管理楼层",
       "idle": "空闲"
     }
@@ -1495,16 +1542,23 @@
     "busyQueued": "{{name}} 正在忙——{{count}} 条排队中",
     "busyQueued_simple": "{{name}} 正忙——有 {{count}} 条等待发送",
     "heldFloor": "暂挂——投递已全楼层暂停",
+    "heldFloor_simple": "已暂缓——发送已暂停",
     "heldDraft": "暂挂——{{name}} 的终端提示行有未发送文本",
+    "heldDraft_simple": "已暂缓——{{name}} 的实时画面中有尚未发送的文字",
     "heldPicker": "暂挂——{{name}} 的终端里有一个斜杠命令选择器开着",
+    "heldPicker_simple": "已暂缓——{{name}} 的实时画面中打开了一个菜单",
     "heldExited": "暂挂——{{name}} 的终端已退出",
+    "heldExited_simple": "已暂缓——{{name}} 已停止",
     "sendingOneByOne": "正在逐条发送给 {{name}}…",
+    "sendingOneByOne_simple": "正在发送给 {{name}}…",
     "pausedTitle": "整个楼层的自动投递已暂停。在命令中心恢复，或对下面的消息使用「立即发送」。",
     "dropToAttach": "拖放以附加",
     "queue": "队列",
     "queue_simple": "等待发送",
     "closePicker": "关闭选择器",
+    "closePicker_simple": "关闭菜单",
     "recoverPrompt": "恢复提示",
+    "recoverPrompt_simple": "移到这里",
     "clearAllTitle": "清空所有排队消息",
     "clearAll": "全部清空",
     "removeAttachment": "移除附件",
@@ -1534,7 +1588,9 @@
     "imagePasteFailed": "无法读取粘贴的图片：{{error}}",
     "clearAllConfirm": "清空全部 {{n}} 条排队消息？",
     "closePickerTitle": "关闭该智能体打开的选择器，以便送达排队的消息",
-    "recoverPromptTitle": "将该智能体提示符上残留的文本移到此输入框，以便送达排队的消息"
+    "closePickerTitle_simple": "关闭已打开的菜单，这样等待中的消息就能发出",
+    "recoverPromptTitle": "将该智能体提示符上残留的文本移到此输入框，以便送达排队的消息",
+    "recoverPromptTitle_simple": "把尚未发送的文字移到这个框里，这样等待中的消息就能发出"
   },
   "idePanel": {
     "workspace": "{{name}} 的工作区",
@@ -1612,31 +1668,55 @@
   },
   "quit": {
     "title": "现在退出?",
+    "title_simple": "要关闭应用吗？",
     "titleClosing": "打烊时间",
+    "titleClosing_simple": "正在保存您的工作",
     "agentsRunning": "还有 {{count}} 个 AGENT 在运行",
+    "agentsRunning_simple": "{{count}} 位队友仍在工作",
     "agentsRunningPlural": "还有 {{count}} 个 AGENT 在运行",
+    "agentsRunningPlural_simple": "{{count}} 位队友仍在工作",
     "body": "关闭应用将终止 {{count}} 个运行中的会话,并丢弃它们在内存中保存的未保存进度。每个会话内的对话历史在终端退出时丢失。",
+    "body_simple": "现在关闭应用会让您的队友停下，尚未保存的内容会丢失。",
     "bodyPlural": "关闭应用将终止全部 {{count}} 个运行中的会话,并丢弃它们在内存中保存的未保存进度。每个会话内的对话历史在终端退出时丢失。",
+    "bodyPlural_simple": "现在关闭应用会让全部 {{count}} 位队友停下，尚未保存的内容会丢失。",
     "tip": "提示:<strong>打烊时间</strong>是安全的退出方式 — {{godName}} 让每个 agent 提交工作并保存记忆,整个楼层确认后应用才自行关闭。无数据丢失。",
+    "tip_simple": "提示：<strong>保存并关闭</strong>是最安全的方式——{{godName}} 会先请大家保存工作，完成后应用会自动关闭。不会丢失任何内容。",
     "keepRunning": "让它们继续运行",
+    "keepRunning_simple": "继续工作",
     "closingTime": "打烊时间",
+    "closingTime_simple": "保存并关闭",
     "killQuit": "终止 {{what}} 并退出",
+    "killQuit_simple": "停止{{what}}并关闭",
     "killIt": "它",
     "killAll": "全部",
     "killing": "正在终止…",
+    "killing_simple": "正在停止…",
     "forceQuit": "立即强制退出",
+    "forceQuit_simple": "仍然立即关闭",
     "cancelBack": "取消 — 回去工作",
+    "cancelBack_simple": "不，继续工作",
     "complete": "楼层已保存 — 明天见",
+    "complete_simple": "全部已保存——回头见",
     "timeout": "仍在收尾…",
+    "timeout_simple": "仍在保存…",
     "wrapping": "正在收尾楼层",
+    "wrapping_simple": "正在保存您的工作",
     "completeBody": "每个 agent 都保存了记忆,{{godName}} 确认了关闭。应用稍后自行关闭。",
+    "completeBody_simple": "大家都已保存工作，{{godName}} 也已确认。应用稍后会自动关闭。",
     "wrappingBody": "{{godName}} 广播了打烊时间。每个 worker 停下工作、保存记忆并回报 — 应用只有在 {{godName}} 确认不会丢失任何内容后才关闭。",
+    "wrappingBody_simple": "{{godName}} 已请大家收尾并保存。待 {{godName}} 确认没有任何内容丢失后，应用才会关闭。",
     "workersConfirmed": "{{acked}} / {{total}} 个 WORKER 已确认",
+    "workersConfirmed_simple": "{{acked}} / {{total}} 位队友已完成",
     "workersConfirmedDone": "{{acked}} / {{total}} 个 WORKER 已确认 — 等待协调者",
+    "workersConfirmedDone_simple": "{{acked}} / {{total}} 位队友已完成——等待负责人",
     "noWorkers": "楼层没有 WORKER — 等待协调者",
+    "noWorkers_simple": "没有其他队友——等待负责人",
     "timeoutNote": "耗时较长(某个 agent 可能正在压缩或深入工具调用)。继续等待,或强制退出并接受数据丢失。",
+    "timeoutNote_simple": "这需要一些时间——可能有人正在做一项很长的任务。您可以继续等待，或现在关闭并接受未保存的内容会丢失。",
     "errorFallback": "打烊时间无法启动。",
-    "quitFailed": "无法退出：{{error}}"
+    "errorFallback_simple": "无法开始保存并关闭。",
+    "quitFailed": "无法退出：{{error}}",
+    "quitFailed_simple": "无法关闭应用：{{error}}"
   },
   "editAgent": {
     "title": "编辑 AGENT",
@@ -1739,10 +1819,13 @@
   },
   "notice": {
     "queueDropped": "发给 {{agent}} 的消息无法送达，已被丢弃：“{{text}}”",
+    "queueDropped_simple": "您发给 {{agent}} 的消息未能送达，因此没有发出：“{{text}}”。您可以重新写一次。",
     "sendFailed": "无法发送：{{error}}",
     "hiveDegraded": {
       "proxyBind": "{{agent}} 正在无 hive 事件的状态下运行（其代理桥未能绑定）— 实时状态、费用和收件箱唤醒均已关闭。重新启动该智能体即可重试。",
-      "generic": "{{agent}} 正以降级模式运行，没有 hive 事件。重新启动该智能体即可重试。"
+      "proxyBind_simple": "{{agent}} 正在工作，但您可能看不到它的实时进度。关闭后重新添加即可解决。",
+      "generic": "{{agent}} 正以降级模式运行，没有 hive 事件。重新启动该智能体即可重试。",
+      "generic_simple": "{{agent}} 正在工作，但您可能看不到它的实时进度。关闭后重新添加即可解决。"
     }
   },
   "realtime": {
@@ -1794,21 +1877,27 @@
   },
   "restorePrompt": {
     "title": "恢复上次会话",
+    "title_simple": "要恢复您的团队吗？",
     "question": "恢复上次会话中的 {{n}} 个智能体？（{{names}}）",
+    "question_simple": "要恢复上次的 {{n}} 位队友吗？（{{names}}）",
     "restore": "恢复",
+    "restore_simple": "恢复",
     "skip": "跳过"
   },
   "agentStatus": {
     "usingTool": "正在使用 {{tool}}",
     "compacting": "正在压缩上下文",
+    "compacting_simple": "正在整理笔记",
     "resumed": "已恢复",
     "thinking": "思考中",
     "idle": "空闲",
     "readingInbox": "正在读取收件箱",
+    "readingInbox_simple": "正在阅读消息",
     "runningFloor": "正在统筹办公室",
     "startingUp": "正在启动",
     "revived": "休眠后已恢复",
     "breakerArmed": "熔断已触发",
+    "breakerArmed_simple": "似乎卡住了——已自行暂停",
     "awaiting": "等待中",
     "waitingOnYou": "等待你",
     "waitingOnGod": "等待 {{godName}}",
@@ -1858,7 +1947,8 @@
     "hideTerminal": "隐藏实时终端",
     "noteStarting": "{{name}} 正在准备中…对话稍后会显示在这里。同时，下面是幕后正在发生的事情。",
     "noteUnsupported": "对于这个 AI，{{name}} 的回复会显示在下方的实时终端中。",
-    "noteUnreadable": "目前无法以聊天形式显示这段对话，因此改为显示实时终端。"
+    "noteUnreadable": "目前无法以聊天形式显示这段对话，因此改为显示实时终端。",
+    "cancelPending": "不发送"
   },
   "simpleMode": {
     "needMore": "需要更多功能？显示高级选项",
@@ -1899,7 +1989,8 @@
       "themeDesc": "整个应用使用浅色或深色。",
       "dark": "深色",
       "light": "浅色",
-      "hiddenNote": "简单模式让此窗口保持简洁。语音、集成、记忆、预算等技术设置在你显示高级选项之前都会隐藏。"
+      "hiddenNote": "简单模式让此窗口保持简洁。语音、集成、记忆、预算等技术设置在你显示高级选项之前都会隐藏。",
+      "privacy": "隐私"
     },
     "addAgent": {
       "goalLabel": "这位队友要做什么？",
@@ -1908,7 +1999,7 @@
       "moreOptions": "更多选项",
       "lookHead": "外观",
       "workspaceHead": "工作位置",
-      "engineHead": "AI 引擎",
+      "engineHead": "你的 AI",
       "roles": {
         "researcher": "研究员",
         "writer": "写作者",
@@ -2016,5 +2107,121 @@
       "saved": "已保存。下次启动助手时生效。",
       "saveFailed": "无法保存这个选择，请重试。"
     }
+  },
+  "errors": {
+    "details": "详细信息",
+    "hideDetails": "隐藏详细信息",
+    "detailsLabel": "技术详情",
+    "action": {
+      "addKey": "检查我的密钥",
+      "retry": "重试",
+      "openSettings": "打开设置"
+    },
+    "key_rejected": {
+      "title": "您的 AI 密钥未被接受",
+      "hint": "密钥可能输错、已过期或已被停用。请从您的 AI 账户重新复制并粘贴。"
+    },
+    "no_key": {
+      "title": "您的助手需要一个密钥",
+      "hint": "添加您的 AI 密钥后即可使用。"
+    },
+    "no_credit": {
+      "title": "您的 AI 账户余额不足",
+      "hint": "请在 AI 服务网站上充值或检查您的套餐，然后重试。"
+    },
+    "rate_limit": {
+      "title": "AI 服务目前很忙",
+      "hint": "您已达到使用上限，或服务负载较高。请等待一分钟后重试。"
+    },
+    "server": {
+      "title": "AI 服务出现了问题",
+      "hint": "这是对方的问题，与您无关。请几分钟后重试。"
+    },
+    "network": {
+      "title": "无法连接到互联网",
+      "hint": "请检查您的网络连接（以及 VPN 或防火墙），然后重试。"
+    },
+    "timeout": {
+      "title": "耗时太长",
+      "hint": "网络可能较慢。请稍后重试。"
+    },
+    "engine_missing": {
+      "title": "助手尚未安装",
+      "hint": "请重试以完成安装。如果仍然失败，请在设置中选择其他 AI。"
+    },
+    "engine_exit": {
+      "title": "助手意外停止了",
+      "hint": "重试通常能解决。如果一再发生，请在设置中检查您的密钥。"
+    },
+    "spawn_error": {
+      "title": "无法启动助手",
+      "hint": "请重试。如果仍然失败，请打开详细信息并发送给支持人员。"
+    },
+    "install_failed": {
+      "title": "安装中断了",
+      "hint": "您的电脑没有任何损坏。重试通常能解决。"
+    },
+    "install_unavailable": {
+      "title": "无法在此自动安装",
+      "hint": "请在设置中选择其他 AI，或自行安装后重新启动应用。"
+    },
+    "already_running": {
+      "title": "该队友已在您的团队中",
+      "hint": "请换一个名字，或先关闭现有的队友。"
+    },
+    "folder_missing": {
+      "title": "该文件夹不存在",
+      "hint": "它可能已被移动或重命名。请重新选择文件夹。"
+    },
+    "key_store": {
+      "title": "无法安全保存您的密钥",
+      "hint": "您电脑的密码存储没有接受它。请重试；如果一再发生，请重新启动应用。"
+    },
+    "internal": {
+      "title": "应用内部出了点问题",
+      "hint": "您的文件是安全的。请重试；如果一再发生，请重新启动应用并把详细信息发送给支持人员。"
+    },
+    "disk_full": {
+      "title": "您的电脑存储空间已满",
+      "hint": "请释放一些磁盘空间，然后重试。"
+    },
+    "permission": {
+      "title": "应用没有权限执行此操作",
+      "hint": "应用无法读取或修改该文件夹。请选择其他文件夹，或检查该文件夹的权限。"
+    },
+    "not_found": {
+      "title": "找不到该文件或文件夹",
+      "hint": "它可能已被移动或删除。请重新选择。"
+    },
+    "generic": {
+      "title": "出了点问题",
+      "title_save": "无法保存您的更改",
+      "title_send": "无法发送您的消息",
+      "title_spawn": "无法添加您的队友",
+      "title_key": "无法保存您的密钥",
+      "title_load": "无法打开应用设置",
+      "hint": "请重试。如果一再发生，请打开详细信息并发送给支持人员。",
+      "title_stop": "无法停止全部工作",
+      "title_start": "无法启动您的助手"
+    }
+  },
+  "stopAll": {
+    "button": "全部停止",
+    "buttonTitle": "立即停止您的团队正在进行的所有工作。您的文件保持原样。",
+    "confirmTitle": "要全部停止吗？",
+    "confirmBody": "这会立即停止您的团队正在进行的所有工作。您的文件保持原样。",
+    "confirmYes": "是，全部停止",
+    "confirmNo": "不，继续",
+    "stopping": "正在停止…",
+    "done": "正在停止全部工作。您的团队会在下一个安全的步骤暂停。没有任何内容被删除。想继续时，发送一条新消息即可。",
+    "nothing": "目前没有正在运行的工作，所以无需停止。"
+  },
+  "examples": {
+    "title": "试试这些",
+    "hint": "点击其中一个，它会放进消息框。发送前您可以随意修改。",
+    "summarizeFolder": "用简单的话总结一下我的项目文件夹里有什么。",
+    "writeEmail": "帮我写一封简短、礼貌的电子邮件。请先问我是关于什么的。",
+    "todoList": "根据我的笔记列一份待办清单。我会在下一条消息里粘贴笔记。",
+    "explainProject": "用简单的话解释这个项目是做什么的。"
   }
 }

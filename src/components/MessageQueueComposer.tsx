@@ -1,4 +1,4 @@
-import { ClipboardEvent, DragEvent, KeyboardEvent, type MouseEvent as ReactMouseEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ClipboardEvent, DragEvent, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
@@ -12,6 +12,10 @@ import { useTerminalFontSize } from './terminalFontSize';
 import { isComposingKey } from '@shared/imeGuard';
 import { altKeyLabel } from '@shared/platformLabels';
 import { useRtl } from '@/i18n/useDirection';
+import { humanQueued } from '@shared/conversation';
+import { releaseStopIfNeeded, type StopAllBridge } from '@shared/stopAll';
+import { emitNotice } from '@shared/notice';
+import { ChatShowsQueueContext, FOCUS_COMPOSER_EVENT } from './composerBridge';
 
 const EMPTY_QUEUE: QueuedMessage[] = [];
 
@@ -43,12 +47,36 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
   // Simple mode hides voice dictation (a Free Flow / Groq-key feature).
   const simple = useIsSimpleMode();
   const sctx = simple ? { context: 'simple' } : undefined;
+  // Simple mode: the chat above already shows what is waiting to be sent (greyed
+  // bubbles), so the composer neither lists those messages again nor counts the
+  // app's own nudges and work orders — only the person's own messages.
+  const chatShowsQueue = useContext(ChatShowsQueueContext);
+  const visibleQueue: QueuedMessage[] = simple ? humanQueued(queue) as QueuedMessage[] : queue;
+  const hideList = simple && chatShowsQueue;
 
   // Draft lives in the store, keyed by agent — switching agents remounts this
   // component, and component-local state would silently eat the typed text.
   const text = useStore((s) => s.drafts[agent.id] ?? '');
   const setDraft = useStore((s) => s.setDraft);
   const setText = (t: string) => setDraft(agent.id, t);
+
+  // A starter idea (or anything else) asked for this composer to take focus.
+  const areaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const onFocus = (e: Event): void => {
+      const id = (e as CustomEvent<{ agentId?: string }>).detail?.agentId;
+      if (id && id !== agent.id) return;
+      // After the draft the caller just wrote has rendered; caret at the end.
+      requestAnimationFrame(() => {
+        const el = areaRef.current;
+        if (!el) return;
+        el.focus();
+        try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* not focusable yet */ }
+      });
+    };
+    window.addEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+  }, [agent.id]);
 
   // Free Flow voice dictation (entry point A). The mic button shows only when the
   // feature is enabled in Settings; a transcript is appended to this draft for
@@ -114,8 +142,12 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
 
   // Paste a screenshot (no path → persist the native clipboard image to a temp
   // file) or paste files copied from the OS file manager (carry a real path).
-  const notify = (text: string) =>
-    window.dispatchEvent(new CustomEvent('cth:notice', { detail: { text } }));
+  const notifyPasteFailed = (error: unknown) =>
+    emitNotice({
+      text: t('queueComposer.imagePasteFailed', { error: typeof error === 'string' ? error : error instanceof Error ? error.message : '' }),
+      raw: error,
+      context: 'send'
+    });
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(e.clipboardData?.items ?? []);
@@ -157,13 +189,13 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
       });
       const res = await window.cth.clipboardImageToFile(dataUrl);
       if (!res?.ok || !res.path) {
-        notify(t('queueComposer.imagePasteFailed', { error: res?.error ?? '' }));
+        notifyPasteFailed(res?.error ?? '');
         return;
       }
       const name = res.path.split(/[\\/]/).pop() || 'pasted-image.png';
       addAttachments([{ path: res.path, name }]);
     } catch (err) {
-      notify(t('queueComposer.imagePasteFailed', { error: err instanceof Error ? err.message : String(err) }));
+      notifyPasteFailed(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -178,6 +210,9 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           ? `${text}\n\nAttached files:\n`
           : 'Attached files:\n') + attachments.map((a) => `- ${a.path} (${a.name})`).join('\n')
       : text;
+    // A person who pressed "Stop everything" and now writes again must not be met
+    // by a team that is still halted: lift that stop first (no-op otherwise).
+    void releaseStopIfNeeded(window.cth as unknown as StopAllBridge);
     enqueueMessage(agent.id, body);
     // Counted HERE, at the composer's submit, and NOT inside enqueueMessage:
     // that store action is also how work orders, Slack inbound, nudges and
@@ -210,19 +245,19 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
   // look permanently stuck with no explanation and no escape hatch.
   const deliveryPaused = useDeliveryPaused(agent.id, queue.length > 0);
 
-  const statusHint = queue.length === 0
+  const statusHint = visibleQueue.length === 0
     ? null
     : block === 'draft'
-    ? t('queueComposer.heldDraft', { name: agent.name })
+    ? t('queueComposer.heldDraft', { name: agent.name, ...sctx })
     : block === 'picker'
-    ? t('queueComposer.heldPicker', { name: agent.name })
+    ? t('queueComposer.heldPicker', { name: agent.name, ...sctx })
     : block === 'exited'
-    ? t('queueComposer.heldExited', { name: agent.name })
+    ? t('queueComposer.heldExited', { name: agent.name, ...sctx })
     : !idle
-    ? t('queueComposer.busyQueued', { name: agent.name, count: queue.length, ...sctx })
-    : deliveryPaused && !queue[0]?.manual
-    ? t('queueComposer.heldFloor')
-    : t('queueComposer.sendingOneByOne', { name: agent.name });
+    ? t('queueComposer.busyQueued', { name: agent.name, count: visibleQueue.length, ...sctx })
+    : deliveryPaused && !visibleQueue[0]?.manual
+    ? t('queueComposer.heldFloor', sctx)
+    : t('queueComposer.sendingOneByOne', { name: agent.name, ...sctx });
 
   return (
     <div
@@ -249,24 +284,27 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           color: 'var(--cth-ink-700)', textAlign: 'center'
         }}>{t('queueComposer.dropToAttach')}</span>
       )}
-      {/* Header: label, count, status, clear-all */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Header: label, count, status, clear-all. Simple mode shows it only while
+          something IS waiting — an always-on "WAITING TO SEND" over an empty queue
+          read as if a message were stuck. */}
+      {(!simple || visibleQueue.length > 0) && (
+      <div data-testid="composer-queue-header" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
           fontFamily: 'var(--cth-font-display)',
           fontSize: 9, lineHeight: '12px',
           color: 'var(--cth-ink-700)'
         }}>{t('queueComposer.queue', sctx)}</span>
-        {queue.length > 0 && (
+        {visibleQueue.length > 0 && (
           <span style={{
             fontSize: 11, padding: '1px 6px 0',
             background: 'var(--cth-cream-200)',
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
             fontFamily: 'var(--cth-font-ui)', color: 'var(--cth-ink-900)'
-          }}>{queue.length}</span>
+          }}>{visibleQueue.length}</span>
         )}
         {statusHint && (
           <span
-            title={deliveryPaused && !queue[0]?.manual
+            title={deliveryPaused && !visibleQueue[0]?.manual
               ? t('queueComposer.pausedTitle')
               : statusHint}
             style={{
@@ -291,19 +329,19 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
               if (discarded.trim()) setText(text ? `${text}\n${discarded}` : discarded);
             }}
             title={block === 'picker'
-              ? t('queueComposer.closePickerTitle')
-              : t('queueComposer.recoverPromptTitle')}
+              ? t('queueComposer.closePickerTitle', sctx)
+              : t('queueComposer.recoverPromptTitle', sctx)}
             style={{
               border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
               fontFamily: 'var(--cth-font-ui)', fontSize: 12,
               color: 'var(--cth-ink-900)', textDecoration: 'underline'
             }}
-          >{block === 'picker' ? t('queueComposer.closePicker') : t('queueComposer.recoverPrompt')}</button>
+          >{block === 'picker' ? t('queueComposer.closePicker', sctx) : t('queueComposer.recoverPrompt', sctx)}</button>
         )}
-        {queue.length > 1 && (
+        {visibleQueue.length > 1 && !hideList && (
           <button
             onClick={() => {
-              if (window.confirm(t('queueComposer.clearAllConfirm', { n: queue.length }))) clearQueue(agent.id);
+              if (window.confirm(t('queueComposer.clearAllConfirm', { n: visibleQueue.length }))) clearQueue(agent.id);
             }}
             title={t('queueComposer.clearAllTitle')}
             style={{
@@ -315,14 +353,16 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           >{t('queueComposer.clearAll')}</button>
         )}
       </div>
+      )}
 
-      {/* Pending list */}
-      {queue.length > 0 && (
-        <div style={{
+      {/* Pending list — not in simple mode while the chat above shows the very same
+          messages as greyed bubbles (one list, not two). */}
+      {visibleQueue.length > 0 && !hideList && (
+        <div data-testid="composer-queue-list" style={{
           display: 'flex', flexDirection: 'column', gap: 4,
           maxHeight: 280, overflowY: 'auto'
         }}>
-          {queue.map((m, i) => (
+          {visibleQueue.map((m, i) => (
             <QueuedMessageRow
               key={m.id}
               index={i}
@@ -385,6 +425,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
           with file/image attachment chips + paste-to-attach (rich-composer). */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <textarea
+          ref={areaRef}
           dir={rtl ? 'auto' : undefined}
           className="cth-input"
           value={text}

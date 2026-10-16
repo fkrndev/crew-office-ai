@@ -14,6 +14,13 @@ export function useUiMode(): UiMode {
   return useStore((s) => s.uiMode);
 }
 
+/** The i18next options that select the plain-language `key_simple` variants, read
+ *  at call time (for strings built outside a component, e.g. a status line written
+ *  from an event handler). `undefined` in advanced mode. */
+export function simpleContextNow(): { context: 'simple' } | undefined {
+  return useStore.getState().uiMode === 'simple' ? { context: 'simple' } : undefined;
+}
+
 /** Convenience for the many call sites that only branch on simple. */
 export function useIsSimpleMode(): boolean {
   return useStore((s) => s.uiMode) === 'simple';
