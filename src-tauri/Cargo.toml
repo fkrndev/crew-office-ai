@@ -8,7 +8,11 @@ default-run = "agent-office"
 
 [lib]
 name = "agent_office_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop only. `staticlib` and `cdylib` exist for Tauri's mobile targets; with
+# `lto = true` each extra crate type costs another full LTO link of the whole
+# app (measured: the lib took 612 s next to a 294 s bin). Restore both when
+# adding an iOS/Android build.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }

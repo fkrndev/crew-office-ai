@@ -12,7 +12,8 @@
     "test:rs": "cargo test --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:fast": "node scripts/build-fast.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

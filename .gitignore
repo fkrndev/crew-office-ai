@@ -10,3 +10,5 @@ src-tauri/permissions/
 # updater signing keys must never be committed
 *.key
 .tauri/
+
+src-tauri/target-fast

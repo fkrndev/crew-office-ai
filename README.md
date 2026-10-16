@@ -211,6 +211,9 @@ durable state in SQLite/WAL.
 npm install
 npm run tauri dev        # dev build (backend once, UI hot-reload)
 npm run tauri build      # release bundle → src-tauri/target/release/bundle/
+npm run tauri:build:fast # quick local exe (thin LTO, own target dir) → src-tauri/target-fast/release/
+                         #   add `-- --bundle` for the NSIS installer. For trying changes, not shipping:
+                         #   the official release keeps fat LTO (smaller, a bit faster, ~2-3x slower to build)
 
 npm test                 # full suite: renderer tests + backend suite
 npm run test:ui          # renderer only (vitest + jsdom, ~20 tests)
