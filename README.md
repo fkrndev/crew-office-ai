@@ -5,6 +5,8 @@ and lets them coordinate — a visual floor of AI workers that talk to each
 other over a shared file-based message bus, supervised by an orchestrator
 ("god") agent, while you watch, steer, and approve from one window.
 
+![Agent Office — the office floor with the command center open](docs/screenshot.png)
+
 ## What it is for
 
 Coding-agent CLIs are single-player tools: you open one terminal, run one
